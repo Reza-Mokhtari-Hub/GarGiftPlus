@@ -160,6 +160,7 @@ export function createZarinpalProvider(
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify(reqBody),
+          signal: AbortSignal.timeout(15_000),
         });
         const json = await res.json();
         parsed = parseZarinpalRequestResponse(json, sandbox);
@@ -259,6 +260,7 @@ export function createZibalProvider(
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify(reqBody),
+          signal: AbortSignal.timeout(15_000),
         });
         const json = await res.json();
         parsed = parseZibalRequestResponse(json);

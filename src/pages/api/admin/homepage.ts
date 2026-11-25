@@ -26,7 +26,7 @@ import {
   parseStorefrontFaqInput,
   type HomepageSectionKey,
 } from '../../../features/homepage/schema';
-import { uploadMedia, validateUpload } from '../../../features/media/upload';
+import { uploadMedia, validateUploadContent } from '../../../features/media/upload';
 import { optimizeUpload } from '../../../features/products/imageOptimize';
 import { getStorage } from '../../../features/storage';
 import { setSetting } from '../../../features/settings/db';
@@ -55,7 +55,7 @@ async function maybeUploadImageField(
   if (form) {
     const file = form.get(fieldName);
     if (file instanceof File && file.size > 0) {
-      const err = validateUpload(file);
+      const err = await validateUploadContent(file);
       if (err) return { ok: false, error: err };
       const uploaded = await uploadMedia(
         env.DB,

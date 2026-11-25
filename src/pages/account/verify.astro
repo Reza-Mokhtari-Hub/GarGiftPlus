@@ -5,6 +5,7 @@ import {
   verifyLoginToken,
   setCustomerSession,
 } from '../../features/auth/customer';
+import { isSecureRequest } from '../../features/http/origin';
 
 // Consume a magic link: verify the token → set the session cookie → /account.
 // Invalid/expired → back to login with a hint. (Cookie is Secure only over https,
@@ -14,6 +15,6 @@ if (!(await accountsEnabled())) return Astro.redirect('/', 303);
 const email = await verifyLoginToken(Astro.url.searchParams.get('token'));
 if (!email) return Astro.redirect('/account/login?error=expired', 303);
 
-await setCustomerSession(Astro.cookies, email, Astro.url.protocol === 'https:');
+await setCustomerSession(Astro.cookies, email, isSecureRequest(Astro.request, Astro.url));
 return Astro.redirect('/account', 303);
 ---

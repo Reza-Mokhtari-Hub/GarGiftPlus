@@ -39,9 +39,15 @@ function decodeSegment<T>(seg: string): T {
 
 async function fetchKeys(teamDomain: string, force: boolean): Promise<Jwk[]> {
   const base = teamDomain.replace(/\/$/, '');
+  const parsedBase = new URL(base);
+  if (parsedBase.protocol !== 'https:') {
+    throw new Error('Access teamDomain must be HTTPS');
+  }
   const cached = jwksCache.get(base);
   if (!force && cached && Date.now() - cached.fetchedAt < JWKS_TTL_MS) return cached.keys;
-  const res = await fetch(`${base}/cdn-cgi/access/certs`);
+  const res = await fetch(`${base}/cdn-cgi/access/certs`, {
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!res.ok) throw new Error(`Access JWKS fetch failed: ${res.status}`);
   const data = (await res.json()) as { keys?: Jwk[] };
   const keys = data.keys ?? [];

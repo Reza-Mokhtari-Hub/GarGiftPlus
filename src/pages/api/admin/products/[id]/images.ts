@@ -11,9 +11,8 @@ import {
   syncPrimaryImage,
 } from '../../../../../features/products/db';
 import { clearVariantImage } from '../../../../../features/products/variants';
-import { validateImage } from '../../../../../features/products/image';
 import { optimizeUpload } from '../../../../../features/products/imageOptimize';
-import { uploadMedia } from '../../../../../features/media/upload';
+import { uploadMedia, validateUploadContent } from '../../../../../features/media/upload';
 import { attachMediaToProduct, getMediaByPublicId } from '../../../../../features/media/db';
 import { getStorage } from '../../../../../features/storage';
 import { parsePublicId } from '../../../../../features/ids/publicId';
@@ -59,7 +58,7 @@ export const POST: APIRoute = async ({ request, params, redirect, locals, cookie
   if (action === 'add') {
     const files = form.getAll('images').filter((f): f is File => f instanceof File && f.size > 0);
     for (const file of files) {
-      const imgErr = validateImage(file);
+      const imgErr = await validateUploadContent(file);
       if (imgErr) return back(imgErr);
     }
     for (const file of files) {

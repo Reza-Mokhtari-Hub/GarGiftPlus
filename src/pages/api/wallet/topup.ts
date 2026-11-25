@@ -24,6 +24,7 @@ import {
   ZIBAL_API_BASE,
 } from '../../../features/payments/zibal';
 import { countActiveBankAccounts } from '../../../features/payments/bankAccountsDb';
+import { gatewayCallbackOrigin } from '../../../features/http/origin';
 
 export const prerender = false;
 
@@ -63,7 +64,7 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
 
   const amount = amountCheck.amount;
   const currency = 'irt';
-  const origin = url.origin;
+  const origin = gatewayCallbackOrigin(url, env.CANONICAL_ORIGIN);
 
   if (method === 'bank_transfer') {
     const activeBanks = await countActiveBankAccounts(env.DB);
@@ -148,8 +149,10 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
           method: 'POST',
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify(reqBody),
+          signal: AbortSignal.timeout(15_000),
         },
       );
+      if (res.status >= 500) throw new Error(`Zarinpal request HTTP ${res.status}`);
       const parsed = parseZarinpalRequestResponse(await res.json(), settings.zarinpalSandbox);
       if (!parsed.ok) {
         await transitionPaymentTxStatus(env.DB, tx.public_id, 'FAILED', {
@@ -221,7 +224,9 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(reqBody),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (res.status >= 500) throw new Error(`Zibal request HTTP ${res.status}`);
     const parsed = parseZibalRequestResponse(await res.json());
     if (!parsed.ok) {
       await transitionPaymentTxStatus(env.DB, tx.public_id, 'FAILED', {

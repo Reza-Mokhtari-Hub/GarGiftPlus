@@ -11,11 +11,12 @@ import {
 } from './permissions';
 
 describe('admin RBAC permissions and hierarchy', () => {
-  it('normalizes known roles and treats empty/unknown safely', () => {
+  it('normalizes known roles and fails closed to none on unknown roles', () => {
     expect(normalizeAdminRole('fulfillment_operator')).toBe('fulfillment_operator');
     expect(normalizeAdminRole(' FINANCE_MANAGER ')).toBe('finance_manager');
     expect(normalizeAdminRole('none')).toBe('none');
-    expect(normalizeAdminRole('unknown_role')).toBe('super_admin');
+    expect(normalizeAdminRole('unknown_role')).toBe('none');
+    expect(normalizeAdminRole('')).toBe('none');
   });
 
   it('grants super_admin every permission and blocks role=none completely', () => {

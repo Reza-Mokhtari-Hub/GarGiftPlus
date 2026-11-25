@@ -9,6 +9,7 @@ import { getStoreSettings } from '../../features/settings/db';
 import { listProductCheckoutFields } from '../../features/products/customFieldsDb';
 import { validateCustomerInputs } from '../../features/products/customFields';
 import { getOrCreateCartSession, saveCartLineInputs } from '../../features/cart/inputsDb';
+import { isSecureRequest } from '../../features/http/origin';
 
 export const prerender = false;
 
@@ -19,7 +20,7 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
   const action = String(form.get('_action'));
   const cart = readCart(cookies);
   const partial = request.headers.get('x-partial') === '1';
-  const secure = url.protocol === 'https:';
+  const secure = isSecureRequest(request, url);
 
   // Cart switched off in Settings → browse-only; refuse all cart mutations.
   if (!(await getStoreSettings(env.DB)).cartEnabled) {

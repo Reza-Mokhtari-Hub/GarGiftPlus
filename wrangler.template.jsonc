@@ -1,23 +1,22 @@
 {
-  // Template for a provisioned instance. scripts/provision-cf.sh fills the __…__
-  // placeholders, renders this to ./wrangler.jsonc, deploys, then restores the
-  // original. Keep shared runtime settings in sync with wrangler.jsonc; bindings
-  // intentionally differ because this template defaults to free-plan resources.
+  // GarGift+ Cloudflare Worker instance template.
+  // scripts/provision-cf.sh fills the __…__ placeholders, renders wrangler.jsonc,
+  // deploys, and restores the original config. Keep shared runtime settings aligned.
   //
-  // FREE-PLAN DEFAULT: only D1 + R2 — both included on the Cloudflare free plan.
-  // Every other integration degrades gracefully when its binding is absent; add a
-  // binding back (+ redeploy) to enable the feature:
-  //   • Semantic search — add  "ai": { "binding": "AI" }  and
+  // FREE-PLAN DEFAULT: D1 + two R2 buckets (public media + private deliverables/receipts).
+  // Optional bindings (add + redeploy to enable; code degrades gracefully when absent):
+  //   • Semantic search — add "ai": { "binding": "AI" } and
   //     "vectorize": [{ "binding": "VECTORIZE", "index_name": "<name>-products" }]
-  //     (create the index first: wrangler vectorize create <name>-products
-  //     --dimensions=768 --metric=cosine),
-  //     then flip it on in Admin → Settings → Search. Until then: keyword (FTS5).
+  //     then enable in Admin → Settings → Search. Default: SQLite FTS5.
   //   • Image optimize-on-upload — add "images": { "binding": "IMAGES" }, set
-  //     images.optimizeOnUpload in src/store.config.ts, and redeploy. Without the
-  //     binding, uploads are stored as-is in R2.
-  //   • Cloudflare-native email — add  "send_email": [{ "name": "EMAIL" }]  (Workers
-  //     PAID plan + onboarded sender domain). Resend (HTTP) works on the free plan
-  //     and is configured entirely in Admin → Settings → Email.
+  //     images.optimizeOnUpload in src/store.config.ts, and redeploy.
+  //   • Cloudflare-native email — add "send_email": [{ "name": "EMAIL" }] (Workers
+  //     Paid plan + onboarded sender domain). Resend (HTTP) works on the free plan
+  //     and its API key is stored encrypted in Admin → Settings → Email.
+  //
+  // Provider keys (Zarinpal, Zibal, Resend, Turnstile) are stored encrypted in D1 via
+  // Admin → Settings; only SECRETS_KEK, AUTH_SECRET, and optional CACHE_PURGE_SECRET
+  // live in Wrangler secrets (`wrangler secret put`).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "__NAME__",
   "main": "./src/worker.ts",
@@ -27,10 +26,9 @@
   // releases expired inventory holds without waiting for the next shopper.
   "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true, "traces": { "enabled": true, "head_sampling_rate": 1 } },
-  // Fresh instances begin on workers.dev and therefore stay uncached. A later
-  // custom-domain config may enable this only alongside CANONICAL_ORIGIN and
-  // workers_dev: false. cross_version_cache additionally requires a shared
-  // CACHE_PURGE_SECRET so scripts/deploy.mjs can purge after every deploy.
+  // Fresh instances begin on workers.dev and stay uncached. Custom-domain production
+  // configs should enable cache alongside CANONICAL_ORIGIN and workers_dev: false,
+  // plus a dedicated CACHE_PURGE_SECRET for post-deploy cache invalidation.
   "cache": { "enabled": false },
   "ratelimits": [
     {
@@ -63,17 +61,20 @@
     { "binding": "FILES", "bucket_name": "__FILES_BUCKET__" }
   ],
   "vars": {
-    "STORE_NAME": "My Shop",
-    "TIME_ZONE": "UTC"
+    "STORE_NAME": "GarGift+",
+    "TIME_ZONE": "Asia/Tehran"
+    // Custom domain canonical HTTPS origin (set for custom-domain production/staging):
+    // "CANONICAL_ORIGIN": "https://shop.example.com"
+    //
     // Serve product images from an R2 custom domain (bypasses the Worker /images
-    // route and unlocks on-demand delivery in Admin); connect a public custom
-    // domain to the bucket first. See README.
+    // route and unlocks on-demand delivery in Admin):
     // "IMAGE_BASE_URL": "https://images.example.com"
     //
-    // This store's MCP endpoint, if you deployed the optional mcp/ Worker.
-    // llms.txt advertises it to agents only when set — leave it unset and
-    // nothing is advertised, rather than pointing at an endpoint that is not
-    // there. See README → MCP server.
+    // Optional Cloudflare Access JWT verification for /admin/*:
+    // "CF_ACCESS_TEAM_DOMAIN": "https://<team>.cloudflareaccess.com",
+    // "CF_ACCESS_AUD": "<access-application-aud-tag>"
+    //
+    // Optional MCP endpoint advertised in llms.txt only when configured:
     // "MCP_URL": "https://your-mcp-host/mcp"
   }
 }

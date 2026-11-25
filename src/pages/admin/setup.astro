@@ -13,6 +13,7 @@ import { recordAdminAuditLog } from '../../features/audit/db';
 import { CACHE_TAG } from '../../features/cache/tags';
 import { purgeCacheTags } from '../../features/cache/purge';
 import { toPersianDigits } from '../../lib/format';
+import { isSecureRequest } from '../../features/http/origin';
 
 const cfg = getConfig();
 const SESSION_TTL = 7 * 24 * 3600;
@@ -86,7 +87,7 @@ if (Astro.request.method === 'POST') {
       Astro.cookies.delete('admin_actor', { path: '/' });
       Astro.cookies.set('admin_session', token, {
         httpOnly: true,
-        secure: Astro.url.protocol === 'https:',
+        secure: isSecureRequest(Astro.request, Astro.url),
         sameSite: 'lax',
         path: '/',
         maxAge: SESSION_TTL,

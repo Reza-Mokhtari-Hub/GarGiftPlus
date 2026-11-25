@@ -15,6 +15,7 @@ import {
 } from '../../features/auth/rbac';
 import { recordAdminAuditLog } from '../../features/audit/db';
 import { getSecret } from '../../features/secrets/store';
+import { isSecureRequest } from '../../features/http/origin';
 import Turnstile from '../../features/auth/Turnstile.astro';
 
 const cred = await adminCredential(env.DB);
@@ -75,7 +76,7 @@ if (Astro.request.method === 'POST') {
       Astro.cookies.delete('admin_session', { path: '/' });
       Astro.cookies.set(ADMIN_ACTOR_COOKIE, actorToken, {
         httpOnly: true,
-        secure: Astro.url.protocol === 'https:',
+        secure: isSecureRequest(Astro.request, Astro.url),
         sameSite: 'lax',
         path: '/',
         maxAge: SESSION_TTL,
@@ -100,7 +101,7 @@ if (Astro.request.method === 'POST') {
       Astro.cookies.delete(ADMIN_ACTOR_COOKIE, { path: '/' });
       Astro.cookies.set('admin_session', token, {
         httpOnly: true,
-        secure: Astro.url.protocol === 'https:',
+        secure: isSecureRequest(Astro.request, Astro.url),
         sameSite: 'lax',
         path: '/',
         maxAge: SESSION_TTL,

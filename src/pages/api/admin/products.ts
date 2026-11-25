@@ -16,9 +16,8 @@ import { replaceProductCheckoutFields } from '../../../features/products/customF
 import { zonesRequireWeight } from '../../../features/shipping/calculator';
 import { shippingFor } from '../../../features/shipping/effective';
 import { uniqueSlug } from '../../../features/products/slug';
-import { validateImage } from '../../../features/products/image';
 import { optimizeUpload } from '../../../features/products/imageOptimize';
-import { uploadMedia } from '../../../features/media/upload';
+import { uploadMedia, validateUploadContent } from '../../../features/media/upload';
 import { attachMediaToProduct } from '../../../features/media/db';
 import { getStorage, getFileStorage } from '../../../features/storage';
 import { uploadDigitalFile, validateDigitalFile } from '../../../features/products/digitalFile.ts';
@@ -55,7 +54,7 @@ export const POST: APIRoute = async ({ request, redirect, locals, cookies }) => 
   let mediaId: number | null = null;
   const file = form.get('image');
   if (file instanceof File && file.size > 0) {
-    const imgErr = validateImage(file);
+    const imgErr = await validateUploadContent(file);
     if (imgErr) return redirect(fail(imgErr), 303);
     const media = await uploadMedia(env.DB, getStorage(), await optimizeUpload(file), file.name);
     mediaId = media.id;

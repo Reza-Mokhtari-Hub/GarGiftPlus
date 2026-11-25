@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateUpload, mediaKeyFor } from './upload';
+import { validateUpload, validateUploadContent, mediaKeyFor } from './upload';
 import { mediaUrl } from './url';
 
 const file = (type: string, size: number, name = 'photo.png') =>
@@ -23,6 +23,27 @@ describe('validateUpload', () => {
   it('rejects files over 5 MB', () => {
     expect(validateUpload(file('image/png', 5 * 1024 * 1024 + 1))).toMatch(/5 MB/);
     expect(validateUpload(file('image/png', 5 * 1024 * 1024))).toBeNull();
+  });
+});
+
+describe('validateUploadContent', () => {
+  it('accepts genuine PNG magic bytes matching image/png', async () => {
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
+    const valid = new File([pngBytes], 'ok.png', { type: 'image/png' });
+    expect(await validateUploadContent(valid)).toBeNull();
+  });
+
+  it('rejects HTML/SVG payload masquerading with image/png MIME type', async () => {
+    const svg = new File(['<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'], 'xss.png', {
+      type: 'image/png',
+    });
+    expect(await validateUploadContent(svg)).toMatch(/signature/i);
+  });
+
+  it('rejects mismatched MIME type vs real JPEG header', async () => {
+    const jpgBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 0x4a, 0x46, 0x49, 0x46, 0, 1]);
+    const spoofed = new File([jpgBytes], 'pic.png', { type: 'image/png' });
+    expect(await validateUploadContent(spoofed)).toMatch(/match/i);
   });
 });
 

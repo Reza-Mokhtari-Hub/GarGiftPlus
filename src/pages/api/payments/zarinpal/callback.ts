@@ -15,6 +15,7 @@ import {
 } from '../../../../features/payments/zarinpal';
 import { getSecret } from '../../../../features/secrets/store';
 import { settleWalletTopupOnce, updateWalletTopupStatus } from '../../../../features/wallet/db';
+import { gatewayCallbackOrigin } from '../../../../features/http/origin';
 
 async function resolveOrderToken(orderPublicId: string): Promise<string> {
   const access = await getGuestAccess(env.DB, orderPublicId);
@@ -51,6 +52,12 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
     return redirect(`/order/${orderToken}`, 303);
   }
 
+  // Verify authority matches the initiated transaction BEFORE allowing cancellation
+  // so a forged query string with a wrong Authority cannot cancel a live transaction.
+  if (tx.authority_or_track_id && authority && tx.authority_or_track_id !== authority) {
+    return redirect(failureDestination, 303);
+  }
+
   // Never trust query params alone to mark verified; if Status !== OK, mark cancelled
   if (statusParam.toUpperCase() !== 'OK' || !authority) {
     await transitionPaymentTxStatus(env.DB, tx.public_id, 'CANCELLED', {
@@ -59,11 +66,6 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
     if (tx.target_type === 'wallet_topup') {
       await updateWalletTopupStatus(env.DB, tx.target_public_id, 'cancelled');
     }
-    return redirect(failureDestination, 303);
-  }
-
-  // Verify authority matches the initiated transaction if one was stored
-  if (tx.authority_or_track_id && tx.authority_or_track_id !== authority) {
     return redirect(failureDestination, 303);
   }
 
@@ -89,7 +91,9 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(verifyBody),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (res.status >= 500) throw new Error(`Zarinpal verify HTTP ${res.status}`);
     rawResponse = await res.json();
   } catch (err) {
     console.error('[GarGift+] Zarinpal verify HTTP error:', err);
@@ -132,7 +136,7 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
   const settled = await settlePendingOrderFromTx(
     env.DB,
     claim.tx,
-    url.origin,
+    gatewayCallbackOrigin(url, env.CANONICAL_ORIGIN),
     locals.settings,
   );
   if (!settled.ok) {

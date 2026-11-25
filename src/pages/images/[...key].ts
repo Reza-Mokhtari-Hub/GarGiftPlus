@@ -32,6 +32,8 @@ export const GET: APIRoute = async ({ params, request, locals }) => {
     headers: {
       'content-type': obj.contentType,
       'cache-control': IMMUTABLE,
+      'content-security-policy': "default-src 'none'; sandbox",
+      'x-content-type-options': 'nosniff',
     },
   });
 

@@ -16,6 +16,7 @@ import {
 } from '../../../../features/payments/zibal';
 import { getSecret } from '../../../../features/secrets/store';
 import { settleWalletTopupOnce, updateWalletTopupStatus } from '../../../../features/wallet/db';
+import { gatewayCallbackOrigin } from '../../../../features/http/origin';
 
 async function resolveOrderToken(orderPublicId: string): Promise<string> {
   const access = await getGuestAccess(env.DB, orderPublicId);
@@ -51,6 +52,10 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
     return redirect(`/order/${orderToken}`, 303);
   }
 
+  if (tx.authority_or_track_id && trackId && tx.authority_or_track_id !== trackId) {
+    return redirect(failureDestination, 303);
+  }
+
   if (successParam !== '1' || !trackId) {
     await transitionPaymentTxStatus(env.DB, tx.public_id, 'CANCELLED', {
       failureReason: 'لغو توسط کاربر یا بازگشت ناموفق از درگاه زیبال',
@@ -58,10 +63,6 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
     if (tx.target_type === 'wallet_topup') {
       await updateWalletTopupStatus(env.DB, tx.target_public_id, 'cancelled');
     }
-    return redirect(failureDestination, 303);
-  }
-
-  if (tx.authority_or_track_id && tx.authority_or_track_id !== trackId) {
     return redirect(failureDestination, 303);
   }
 
@@ -79,7 +80,9 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(verifyBody),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (res.status >= 500) throw new Error(`Zibal verify HTTP ${res.status}`);
     rawResponse = await res.json();
   } catch (err) {
     console.error('[GarGift+] Zibal verify HTTP error:', err);
@@ -124,7 +127,7 @@ export const GET: APIRoute = async ({ url, locals, redirect }) => {
   const settled = await settlePendingOrderFromTx(
     env.DB,
     claim.tx,
-    url.origin,
+    gatewayCallbackOrigin(url, env.CANONICAL_ORIGIN),
     locals.settings,
   );
   if (!settled.ok) {

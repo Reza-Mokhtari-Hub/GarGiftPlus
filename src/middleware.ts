@@ -27,6 +27,7 @@ import {
 import { addCacheTags, responseCacheTags } from './features/cache/tags';
 import { normalizeSearchQuery } from './features/search/query';
 import { isForbiddenFormOrigin } from './features/auth/formOrigin';
+import { resolveEffectiveRequestUrl } from './features/http/origin';
 
 /**
  * Admin auth gate. Protects BOTH the admin UI (`/admin/*`) and the admin API
@@ -234,11 +235,7 @@ async function route(context: APIContext, next: MiddlewareNext): Promise<Respons
   const path = context.url.pathname;
   const productError = path.startsWith('/products/') && context.url.searchParams.has('error');
 
-  const effectiveUrl = new URL(context.url);
-  const fwdProto = context.request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-  const fwdHost = context.request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
-  if (fwdProto) effectiveUrl.protocol = `${fwdProto.replace(/:$/, '')}:`;
-  if (fwdHost) effectiveUrl.host = fwdHost;
+  const effectiveUrl = resolveEffectiveRequestUrl(context.url, context.request.headers);
 
   let response = isForbiddenFormOrigin(context.request, effectiveUrl)
     ? new Response(`Cross-site ${context.request.method} form submissions are forbidden`, {
@@ -293,11 +290,25 @@ const SECURITY_HEADERS: Record<string, string> = {
   'strict-transport-security': 'max-age=31536000; includeSubDomains', // force HTTPS for a year
 };
 
+const DEFAULT_SECURITY_HEADERS: Record<string, string> = {
+  // Preserve route-specific stricter headers such as 'no-referrer' on /order and /pay.
+  'referrer-policy': 'strict-origin-when-cross-origin',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=()',
+  'x-permitted-cross-domain-policies': 'none',
+};
+
+function applySecurityHeaders(headers: Headers): void {
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+  for (const [k, v] of Object.entries(DEFAULT_SECURITY_HEADERS)) {
+    if (!headers.has(k)) headers.set(k, v);
+  }
+}
+
 /** Add the security headers, rebuilding when the response's headers are immutable
  *  (e.g. a Response.redirect to a payment provider, or a Cache API hit). */
 function withSecurityHeaders(res: Response): Response {
   try {
-    for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
+    applySecurityHeaders(res.headers);
     return res;
   } catch {
     const rebuilt = new Response(res.body, {
@@ -305,7 +316,7 @@ function withSecurityHeaders(res: Response): Response {
       statusText: res.statusText,
       headers: new Headers(res.headers),
     });
-    for (const [k, v] of Object.entries(SECURITY_HEADERS)) rebuilt.headers.set(k, v);
+    applySecurityHeaders(rebuilt.headers);
     return rebuilt;
   }
 }

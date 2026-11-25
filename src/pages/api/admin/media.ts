@@ -9,7 +9,7 @@ import {
 } from '../../../features/media/db';
 import { mediaUsageForIds, isUnused } from '../../../features/media/usage';
 import { mediaUrl } from '../../../features/media/url';
-import { uploadMedia, validateUpload } from '../../../features/media/upload';
+import { uploadMedia, validateUploadContent } from '../../../features/media/upload';
 import { optimizeUpload } from '../../../features/products/imageOptimize';
 import { prewarmImageTransforms } from '../../../features/products/image';
 import { getSetting } from '../../../features/settings/db';
@@ -123,7 +123,7 @@ export const POST: APIRoute = async ({ request, redirect, locals, cookies }) => 
   if (files.length === 0) return fail('حداقل یک تصویر انتخاب کنید.');
 
   for (const file of files) {
-    const err = validateUpload(file);
+    const err = await validateUploadContent(file);
     if (err) return fail(err);
   }
 

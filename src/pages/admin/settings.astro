@@ -376,10 +376,12 @@ if (Astro.request.method === 'POST') {
   }
 
   if (!validationError) {
+    const fwdProto = Astro.request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
     Astro.cookies.set('flash', 'تنظیمات با موفقیت ذخیره و در فروشگاه اعمال شد.', {
       path: '/admin/settings',
       maxAge: 15,
       httpOnly: true,
+      secure: Astro.url.protocol === 'https:' || fwdProto === 'https',
       sameSite: 'lax',
     });
     const dest = returnTab && returnTab !== 'all' ? `/admin/settings?tab=${encodeURIComponent(returnTab)}` : '/admin/settings';

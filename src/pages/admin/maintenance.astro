@@ -21,28 +21,42 @@ if (Astro.request.method === 'POST') {
     'maintenance.manage',
   );
   if (!auth.ok) {
-    flashErr = 'دسترسی لازم برای اجرای عملیات نگهداری را ندارید.';
-  } else {
-    const form = await Astro.request.formData();
-    const action = String(form.get('_action') ?? '').trim();
-    if (action === 'sweep_outbox') {
-      await sweepStaleNotifications(env.DB, Astro.url.origin);
-      await recordAdminAuditLog(env.DB, {
-        action: 'maintenance_outbox_swept',
-        module: 'maintenance',
-        targetType: 'outbox',
-        targetId: 'sweep',
-        actor: auth.actor.id,
-      });
-      return Astro.redirect(
-        `/admin/maintenance?msg=${encodeURIComponent('بررسی و پردازش ایمیل‌های معوق صف Outbox اجرا شد.')}`,
-        303,
-      );
-    }
+    return auth.response;
+  }
+  let form: FormData;
+  try {
+    form = await Astro.request.formData();
+  } catch {
+    return new Response('درخواست نامعتبر است.', { status: 400 });
+  }
+  const action = String(form.get('_action') ?? '').trim();
+  if (action === 'sweep_outbox') {
+    await sweepStaleNotifications(env.DB, Astro.url.origin);
+    await recordAdminAuditLog(env.DB, {
+      action: 'maintenance_outbox_swept',
+      module: 'maintenance',
+      targetType: 'outbox',
+      targetId: 'sweep',
+      actor: auth.actor.id,
+    });
+    return Astro.redirect(
+      `/admin/maintenance?msg=${encodeURIComponent('بررسی و پردازش ایمیل‌های معوق صف Outbox اجرا شد.')}`,
+      303,
+    );
   }
 }
 
-async function countTable(table: string): Promise<number> {
+type MaintenanceTable =
+  | 'orders'
+  | 'products'
+  | 'customers'
+  | 'wallets'
+  | 'payment_transactions'
+  | 'bank_transfer_receipts'
+  | 'support_tickets'
+  | 'admin_audit_logs';
+
+async function countTable(table: MaintenanceTable): Promise<number> {
   try {
     const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>();
     return row?.n ?? 0;

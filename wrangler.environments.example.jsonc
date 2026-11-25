@@ -1,0 +1,147 @@
+{
+  // Isolated Environment Separation Example for GarGift+ (Staging & Production).
+  // Copy selected sections into your deployment wrangler config and substitute
+  // real IDs created in your Cloudflare account. Never commit live account IDs
+  // or secret values.
+  //
+  // IMPORTANT: Wrangler environments do NOT inherit top-level bindings (`d1_databases`,
+  // `r2_buckets`, `ratelimits`, `vars`) unless declared explicitly inside each `env.*`
+  // block — this guarantees Staging and Production remain 100% isolated.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gargift-plus",
+  "main": "./src/worker.ts",
+  "compatibility_date": "2026-07-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": {
+    "enabled": true,
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
+  "env": {
+    "staging": {
+      "name": "gargift-plus-staging",
+      "workers_dev": true,
+      "cache": { "enabled": false },
+      "ratelimits": [
+        {
+          "name": "AUTH_RATE_LIMITER",
+          "namespace_id": "20001",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "CHECKOUT_RATE_LIMITER",
+          "namespace_id": "20002",
+          "simple": { "limit": 20, "period": 60 }
+        },
+        {
+          "name": "SEARCH_RATE_LIMITER",
+          "namespace_id": "20003",
+          "simple": { "limit": 60, "period": 60 }
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "gargift-staging-db",
+          "database_id": "<STAGING_D1_DATABASE_ID>",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "SESSION",
+          "id": "<STAGING_SESSION_KV_ID>"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "BUCKET",
+          "bucket_name": "gargift-staging-images"
+        },
+        // Private deliverables & bank transfer receipts: never enable r2.dev or attach a custom domain.
+        {
+          "binding": "FILES",
+          "bucket_name": "gargift-staging-files"
+        }
+      ],
+      "vars": {
+        "STORE_NAME": "GarGift+ (Staging)",
+        "TIME_ZONE": "Asia/Tehran",
+        "SEARCH_PROVIDER": "fts",
+        "CANONICAL_ORIGIN": "https://staging.example.com"
+        // Protect staging admin panel with Cloudflare Access:
+        // "CF_ACCESS_TEAM_DOMAIN": "https://<team>.cloudflareaccess.com",
+        // "CF_ACCESS_AUD": "<STAGING_ACCESS_AUD>"
+      }
+      // Secrets required via:
+      //   npx wrangler secret put SECRETS_KEK --env staging
+      //   npx wrangler secret put AUTH_SECRET --env staging
+      //   npx wrangler secret put CACHE_PURGE_SECRET --env staging
+    },
+    "production": {
+      "name": "gargift-plus-production",
+      // Disable workers.dev in production so CANONICAL_ORIGIN is the sole ingress.
+      "workers_dev": false,
+      // Custom domain route example:
+      // "routes": [{ "pattern": "shop.example.com/*", "zone_name": "example.com" }],
+      "cache": { "enabled": true },
+      "ratelimits": [
+        {
+          "name": "AUTH_RATE_LIMITER",
+          "namespace_id": "30001",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "CHECKOUT_RATE_LIMITER",
+          "namespace_id": "30002",
+          "simple": { "limit": 20, "period": 60 }
+        },
+        {
+          "name": "SEARCH_RATE_LIMITER",
+          "namespace_id": "30003",
+          "simple": { "limit": 60, "period": 60 }
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "gargift-prod-db",
+          "database_id": "<PRODUCTION_D1_DATABASE_ID>",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "SESSION",
+          "id": "<PRODUCTION_SESSION_KV_ID>"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "BUCKET",
+          "bucket_name": "gargift-prod-images"
+        },
+        // Private deliverables & bank transfer receipts: never enable r2.dev or attach a custom domain.
+        {
+          "binding": "FILES",
+          "bucket_name": "gargift-prod-files"
+        }
+      ],
+      "vars": {
+        "STORE_NAME": "GarGift+",
+        "TIME_ZONE": "Asia/Tehran",
+        "SEARCH_PROVIDER": "fts",
+        "CANONICAL_ORIGIN": "https://shop.example.com"
+        // Optional public custom domain for BUCKET media only (never BUCKET=FILES):
+        // "IMAGE_BASE_URL": "https://images.example.com",
+        // Strongly recommended production Cloudflare Access gate for /admin/*:
+        // "CF_ACCESS_TEAM_DOMAIN": "https://<team>.cloudflareaccess.com",
+        // "CF_ACCESS_AUD": "<PRODUCTION_ACCESS_AUD>"
+      }
+      // Secrets required via:
+      //   npx wrangler secret put SECRETS_KEK --env production
+      //   npx wrangler secret put AUTH_SECRET --env production
+      //   npx wrangler secret put CACHE_PURGE_SECRET --env production
+    }
+  }
+}

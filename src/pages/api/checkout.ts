@@ -54,6 +54,7 @@ import { getVerifiedCustomer } from '../../features/auth/customer';
 import { applyWalletMutation, getOrCreateWalletByCustomerId } from '../../features/wallet/db';
 import { createPaymentTransaction } from '../../features/payments/transactionsDb';
 import { recordPaidWebhookOrder } from '../../features/orders/recordWebhook';
+import { gatewayCallbackOrigin, isSecureRequest } from '../../features/http/origin';
 
 export const prerender = false;
 
@@ -133,7 +134,7 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
   }
 
   const form = await request.formData();
-  const origin = url.origin;
+  const origin = gatewayCallbackOrigin(url, env.CANONICAL_ORIGIN);
 
   let lines: LineDraft[] = [];
   let cancelUrl = `${origin}/`;
@@ -204,7 +205,7 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
       }
       customerInputs = validation.values;
       if (customerInputs.length > 0) {
-        const sid = getOrCreateCartSession(cookies, url.protocol === 'https:');
+        const sid = getOrCreateCartSession(cookies, isSecureRequest(request, url));
         buyNowCartInputId = await saveCartLineInputs(env.DB, sid, product.public_id, customerInputs);
       }
     }
@@ -633,7 +634,7 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
  * flow, so shipping/tax/discounts behave the same.
  */
 async function handleJsonCheckout(request: Request, url: URL): Promise<Response> {
-  const origin = url.origin;
+  const origin = gatewayCallbackOrigin(url, env.CANONICAL_ORIGIN);
 
   // Early reject on the declared size, then enforce the cap on the bytes we
   // actually read — a missing/lying content-length header can't slip past.

@@ -255,7 +255,7 @@ export function parseStrictAdminRole(rawRole: string | null | undefined): AdminR
 }
 
 export function normalizeAdminRole(rawRole: string | null | undefined): AdminRole {
-  return parseStrictAdminRole(rawRole) ?? 'super_admin';
+  return parseStrictAdminRole(rawRole) ?? 'none';
 }
 
 export const resolveAdminRole = normalizeAdminRole;

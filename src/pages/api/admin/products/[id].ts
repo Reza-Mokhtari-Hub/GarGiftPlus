@@ -27,9 +27,8 @@ import {
   listVariants,
   listExtras,
 } from '../../../../features/products/variants';
-import { validateImage } from '../../../../features/products/image';
 import { optimizeUpload } from '../../../../features/products/imageOptimize';
-import { uploadMedia } from '../../../../features/media/upload';
+import { uploadMedia, validateUploadContent } from '../../../../features/media/upload';
 import {
   attachMediaToProduct,
   replaceProductImageFromMedia,
@@ -212,7 +211,7 @@ export const POST: APIRoute = async ({ request, params, redirect, locals, cookie
   let uploadedMediaId: number | null = null;
   const file = form.get('image');
   if (file instanceof File && file.size > 0) {
-    const imgErr = validateImage(file);
+    const imgErr = await validateUploadContent(file);
     if (imgErr) return fail(imgErr);
     const media = await uploadMedia(env.DB, storage, await optimizeUpload(file), file.name);
     uploadedMediaId = media.id;

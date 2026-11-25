@@ -1,0 +1,196 @@
+---
+import type { StorefrontShellModel } from '../../features/storefront/models';
+import BrandLogo from '../../features/storefront/controls/BrandLogo.astro';
+import StoreImage from '../../features/storefront/controls/StoreImage.astro';
+
+/**
+ * فوتر چندستونه و برندینگ‌شده GarGift+ با لینک‌های دسته‌بندی، حساب کاربری،
+ * پیگیری سفارش، اطلاعات پشتیبانی، صفحات راهنما و قوانین.
+ */
+interface Props {
+  model: StorefrontShellModel;
+}
+
+const { model } = Astro.props;
+const year = new Date().getFullYear();
+
+const description =
+  model.footerInfo?.description ??
+  'گرگیفت+ (GarGift+) پلتفرم تخصصی خرید گیفت‌کارت‌های اورجینال، اشتراک‌های هوش مصنوعی و شارژ بازی‌های آنلاین با پرداخت امن ریالی، کیف پول اختصاصی و تحویل تخصصی توسط تیم پشتیبانی است.';
+const supportHours = model.footerInfo?.supportHours ?? 'همه‌روزه از ساعت ۹:۰۰ تا ۲۴:۰۰';
+const supportEmail = model.footerInfo?.supportEmail ?? 'support@gargift.ir';
+const supportPhone = model.footerInfo?.supportPhone ?? '۰۲۱-۹۱۰۰۲۴۰۰';
+const copyrightText =
+  model.footerInfo?.copyrightText ??
+  'تمامی حقوق برای پلتفرم محصولات دیجیتال GarGift+ محفوظ است.';
+const trustNote =
+  model.footerInfo?.trustNote ??
+  'تمامی سفارش‌ها پس از تایید پرداخت، توسط تیم تخصصی گرگیفت+ بررسی و تحویل می‌شوند و جزئیات کامل تحویل در حساب کاربری شما ثبت می‌گردد.';
+
+const categoryLinks =
+  model.categoryLinks && model.categoryLinks.length > 0
+    ? model.categoryLinks
+    : [
+        { text: 'همه محصولات دیجیتال', href: '/products' },
+        { text: 'محصولات ویژه و منتخب', href: '/products?featured=1' },
+        { text: 'پیشنهادهای تخفیف‌دار', href: '/products?discounted=1' },
+      ];
+---
+
+<footer class="mt-20 border-t border-line bg-surface">
+  <div class="mx-auto max-w-6xl px-4 py-12 sm:px-6 lg:py-14">
+    <div class="grid grid-cols-1 gap-8 md:grid-cols-2 lg:grid-cols-12">
+      <!-- ستون برند و معرفی -->
+      <div class="flex flex-col gap-4 lg:col-span-5">
+        <a href="/" class="inline-flex w-fit items-center rounded-lg hover:opacity-90">
+          {
+            model.logo ? (
+              <StoreImage
+                image={model.logo}
+                class="h-8 w-auto max-w-40 object-contain"
+              />
+            ) : (
+              <BrandLogo variant="full" label={model.storeName} />
+            )
+          }
+        </a>
+
+        <p class="max-w-md text-xs leading-relaxed text-muted">
+          {description}
+        </p>
+
+        <div class="rounded-xl border border-line bg-paper p-3.5 text-xs">
+          <div class="flex items-center gap-2 font-bold text-ink">
+            <span class="inline-flex h-2 w-2 rounded-full bg-accent"></span>
+            <span>تحویل تخصصی و پشتیبانی سفارش‌ها</span>
+          </div>
+          <p class="mt-1.5 leading-relaxed text-muted">
+            {trustNote}
+          </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 text-xs text-muted">
+          <span class="inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5">
+            <span class="text-faint">پشتیبانی:</span>
+            <strong class="font-semibold text-ink">{supportHours}</strong>
+          </span>
+          {supportPhone && (
+            <span class="inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5">
+              <span class="text-faint">تلفن:</span>
+              <strong dir="ltr" class="gg-numeric font-semibold text-ink">{supportPhone}</strong>
+            </span>
+          )}
+          {supportEmail && (
+            <span class="inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5">
+              <span class="text-faint">ایمیل:</span>
+              <strong dir="ltr" class="font-mono text-[11px] font-semibold text-ink">{supportEmail}</strong>
+            </span>
+          )}
+        </div>
+      </div>
+
+      <!-- ستون دسته‌بندی‌ها و فروشگاه -->
+      <div class="flex flex-col gap-3 lg:col-span-2">
+        <h3 class="text-xs font-extrabold text-ink">دسترسی سریع فروشگاه</h3>
+        <ul class="flex flex-col gap-2 text-xs font-medium text-muted">
+          <li>
+            <a href="/products" class="transition-colors hover:text-brand-fg">
+              کاتالوگ همه محصولات
+            </a>
+          </li>
+          {categoryLinks.map((cat) => (
+            <li>
+              <a href={cat.href} class="transition-colors hover:text-brand-fg">
+                {cat.text}
+              </a>
+            </li>
+          ))}
+          <li>
+            <a href="/search" class="transition-colors hover:text-brand-fg">
+              جستجوی پیشرفته محصولات
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <!-- ستون حساب کاربری و پیگیری سفارش -->
+      <div class="flex flex-col gap-3 lg:col-span-3">
+        <h3 class="text-xs font-extrabold text-ink">حساب کاربری و سفارش‌ها</h3>
+        <ul class="flex flex-col gap-2 text-xs font-medium text-muted">
+          <li>
+            <a href="/account" class="transition-colors hover:text-brand-fg">
+              داشبورد حساب کاربری
+            </a>
+          </li>
+          <li>
+            <a href="/account/orders" class="transition-colors hover:text-brand-fg">
+              سفارش‌های من و پیگیری تحویل
+            </a>
+          </li>
+          <li>
+            <a href="/account/wallet" class="transition-colors hover:text-brand-fg">
+              کیف پول و افزایش موجودی
+            </a>
+          </li>
+          <li>
+            <a href="/account/transactions" class="transition-colors hover:text-brand-fg">
+              تاریخچه تراکنش‌های مالی
+            </a>
+          </li>
+          <li>
+            <a href="/account/profile" class="transition-colors hover:text-brand-fg">
+              اطلاعات حساب کاربری
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <!-- ستون صفحات و قوانین (تنها تگ nav فوتر طبق قرارداد shell.test.ts) -->
+      <div class="flex flex-col gap-3 lg:col-span-2">
+        <h3 class="text-xs font-extrabold text-ink">راهنما و اطلاعات</h3>
+        {
+          model.footerLinks.length > 0 ? (
+            <nav aria-label="لینک‌های پایین صفحه" class="flex flex-col gap-2 text-xs font-medium text-muted">
+              {model.footerLinks.map((link) => (
+                <a
+                  href={link.href}
+                  title={link.text}
+                  class="transition-colors hover:text-brand-fg"
+                >
+                  {link.text}
+                </a>
+              ))}
+            </nav>
+          ) : (
+            <ul class="flex flex-col gap-2 text-xs font-medium text-muted">
+              <li>
+                <a href="/#faq" class="transition-colors hover:text-brand-fg">
+                  پرسش‌های متداول
+                </a>
+              </li>
+              <li>
+                <a href="/#service-benefits" class="transition-colors hover:text-brand-fg">
+                  مزایا و تضمین خدمات
+                </a>
+              </li>
+            </ul>
+          )
+        }
+      </div>
+    </div>
+
+    <div class="mt-10 flex flex-col items-start justify-between gap-3 border-t border-line pt-6 text-xs text-faint sm:flex-row sm:items-center">
+      <p>
+        &copy; <span dir="ltr" class="font-mono">{year}</span> {model.storeName} — {copyrightText}
+      </p>
+      <div class="flex flex-wrap items-center gap-3 text-[11px] text-muted">
+        <span class="rounded-md bg-brand-soft px-2.5 py-1 font-semibold text-brand-fg">
+          پرداخت امن ریالی و کیف پول
+        </span>
+        <span class="rounded-md bg-surface-elevated px-2.5 py-1 font-semibold text-accent-fg">
+          تحویل تخصصی توسط تیم گرگیفت+
+        </span>
+      </div>
+    </div>
+  </div>
+</footer>

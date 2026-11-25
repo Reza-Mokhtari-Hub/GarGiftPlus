@@ -6,6 +6,7 @@ import { buildPaginationModel, buildSortModel } from '../../src/features/storefr
 import { buildProductCard } from '../../src/features/storefront/productCard';
 import type { CatalogPageModel } from '../../src/features/storefront/models';
 import type { Product } from '../../src/features/products/db';
+import { fa } from '../../src/i18n/fa';
 
 const product = (n: number, overrides: Partial<Product> = {}): Product => ({
   id: n,
@@ -147,7 +148,7 @@ describe('the store-owned catalog', () => {
   it('keeps pagination a labelled landmark with rel hints', async () => {
     const html = await render(Catalog, model());
 
-    expect(html).toContain('aria-label="Pagination"');
+    expect(html).toContain(`aria-label="${fa.navigation.paginationAria}"`);
     expect(html).toContain('rel="next"');
     expect(html).toContain('aria-current="page"');
   });
@@ -158,7 +159,7 @@ describe('the store-owned catalog', () => {
       model({ pagination: buildPaginationModel('/products', 1, 1, 'newest', 'desc') }),
     );
 
-    expect(html).not.toContain('aria-label="Pagination"');
+    expect(html).not.toContain(`aria-label="${fa.navigation.paginationAria}"`);
   });
 
   it('marks the sorted field for assistive technology', async () => {
@@ -195,7 +196,7 @@ describe('an independently authored catalog', () => {
     expect(html).toContain('<table');
     expect(html).toContain('data-product="prod_k7m2qx8vn1"');
     expect(html).toContain('In stock');
-    expect(html).toContain('aria-label="Pagination"');
+    expect(html).toContain(`aria-label="${fa.navigation.paginationAria}"`);
     expect(html).not.toContain('reveal group');
   });
 

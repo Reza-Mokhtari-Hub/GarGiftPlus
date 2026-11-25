@@ -1,26 +1,27 @@
 ---
 import type { StorefrontPaginationModel } from '../models';
+import { fa } from '../../../i18n/fa';
+import { toPersianDigits } from '../../../lib/format';
 
 /**
- * Page links. Owns the navigation landmark, `aria-current="page"`, and the
- * rel=prev/next hints crawlers use to understand a paginated series — all of
- * which are easy to drop when restyling, and invisible when they go missing.
+ * Page links. Owns navigation landmark, `aria-current="page"`, and rel=prev/next.
  */
 interface Props {
   model: StorefrontPaginationModel;
   class?: string;
 }
 
-const { model, class: className = 'mt-14 flex items-center justify-center gap-1' } = Astro.props;
-const linkCls = 'px-3 py-1.5 text-xs uppercase tracking-widest text-muted hover:text-brand';
+const { model, class: className = 'mt-14 flex items-center justify-center gap-1.5' } = Astro.props;
+const linkCls =
+  'rounded-md px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-surface-elevated hover:text-brand-fg';
 ---
 
 {
   model.totalPages > 1 && (
-    <nav class={className} aria-label="Pagination">
+    <nav class={className} aria-label={fa.navigation.paginationAria}>
       {model.prevHref && (
         <a href={model.prevHref} class={linkCls} rel="prev">
-          Prev
+          {fa.common.previous}
         </a>
       )}
       {model.items.map((item) =>
@@ -30,17 +31,20 @@ const linkCls = 'px-3 py-1.5 text-xs uppercase tracking-widest text-muted hover:
           <a
             href={item.href}
             aria-current={item.current ? 'page' : undefined}
-            class={`${linkCls} ${item.current ? 'font-medium text-brand' : ''}`}
+            class={`${linkCls} tabular-nums ${
+              item.current ? 'bg-brand text-on-brand hover:bg-brand-hover hover:text-on-brand' : ''
+            }`}
           >
-            {item.page}
+            {toPersianDigits(item.page)}
           </a>
         ),
       )}
       {model.nextHref && (
         <a href={model.nextHref} class={linkCls} rel="next">
-          Next
+          {fa.common.next}
         </a>
       )}
     </nav>
   )
 }
+

@@ -1,7 +1,10 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../layouts/AdminLayout.astro';
-import { getConfig } from '../../config';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import { getConfig, toMinorUnits } from '../../config';
+import { guardAdminApi } from '../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../features/audit/db';
 import { zonesRequireWeight, type ShippingConfig } from '../../features/shipping/calculator';
 import { countProductsMissingWeight, sampleProductsMissingWeight } from '../../features/shipping/sellability';
 import { formatWeightValue, type WeightUnit } from '../../features/shipping/weight';
@@ -28,8 +31,6 @@ const currency = config.currency;
 const unit: WeightUnit = settings?.weightUnit ?? 'g';
 const parsed = settings?.shippingConfig ?? { status: 'absent' as const };
 
-// The invalid document's raw value never leaves the server; the form carries only
-// a fingerprint of it, which is what the guarded replacement compares against.
 const invalidFingerprint =
   parsed.status === 'invalid' ? await fingerprintRawConfig(parsed.raw) : null;
 
@@ -52,13 +53,6 @@ function blankZone(token: string) {
   };
 }
 
-/**
- * First render on build-time configuration is a MIGRATION UI, not a blank slate.
- * It is built from the raw build-time values (not the fail-closed effective result)
- * so a merchant whose storefront is currently showing no shipping can still see and
- * repair the values that caused it, and it is validated before they touch anything
- * so the first POST is never their first hint that inherited config is invalid.
- */
 function initialModel(): ShippingFormModel {
   if (parsed.status === 'valid') {
     return documentToForm(parsed.config, currency, unit, formatWeightValue);
@@ -70,13 +64,18 @@ let model: ShippingFormModel = initialModel();
 let prepopulated = false;
 
 if (Astro.request.method === 'POST') {
+  const guard = await guardAdminApi(env.DB, {
+    locals: Astro.locals,
+    cookies: Astro.cookies,
+    request: Astro.request,
+  }, 'settings.manage');
+  if (!guard.ok) return guard.response;
+
   const form = await Astro.request.formData();
   const action = String(form.get('_action') ?? 'save');
   const parsedForm = parseShippingForm(form, { currency, unit });
   model = parsedForm.model;
 
-  // Structural row actions re-render without touching D1, so the editor works with
-  // JavaScript disabled and a half-finished document is never persisted.
   if (action === 'add_zone') {
     model.zones = [...model.zones, blankZone(`z${model.zones.length + 1}_${Date.now()}`)].slice(
       0,
@@ -146,8 +145,6 @@ if (Astro.request.method === 'POST') {
   } else {
     errors = parsedForm.errors;
 
-    // A weight-only zone plus products without weights would quietly stop those
-    // sales. Refuse the save instead of reporting it after the fact.
     if (errors.length === 0 && zonesRequireWeight({ ...parsedForm.document } as ShippingConfig)) {
       const missing = await countProductsMissingWeight(env.DB);
       if (missing > 0) {
@@ -155,11 +152,7 @@ if (Astro.request.method === 'POST') {
         errors = [
           {
             field: 'document',
-            message:
-              `${missing} product${missing === 1 ? '' : 's'} (${names.join(', ')}${
-                missing > names.length ? ', …' : ''
-              }) have no shipping weight and could not be purchased. ` +
-              'Set weights or keep a flat rate in every zone.',
+            message: `${missing} محصول (${names.join('، ')}) فاقد وزن ارسال هستند و امکان ثبت تعرفه وزنی وجود ندارد.`,
           },
         ];
       }
@@ -171,12 +164,21 @@ if (Astro.request.method === 'POST') {
           ? await replaceInvalidShippingConfig(env.DB, String(form.get('fingerprint') ?? ''), parsedForm.document)
           : await saveRuntimeShippingConfig(env.DB, parsedForm.revision, parsedForm.document);
 
-      if (result.ok) return Astro.redirect('/admin/shipping?saved=1', 303);
+      if (result.ok) {
+        await recordAdminAuditLog(env.DB, {
+          action: 'shipping.updated',
+          module: 'settings',
+          targetType: 'shipping',
+          targetId: 'shipping_config',
+          actor: guard.actor.id,
+        });
+        return Astro.redirect('/admin/shipping?saved=1', 303);
+      }
       if (result.reason === 'conflict') {
         conflict = true;
-        notice = 'Shipping changed in another tab. Reload and review those changes before saving yours.';
+        notice = 'تنظیمات ارسال در تب دیگری تغییر کرده است. صفحه را بازخوانی کرده و دوباره ذخیره کنید.';
       } else if (result.reason === 'too_large') {
-        notice = 'That configuration is too large to store. Remove some zones or countries.';
+        notice = 'حجم پیکربندی ارسال بیش از حد مجاز است. برخی مناطق یا تعرفه‌ها را کم کنید.';
       } else {
         errors = result.errors ?? [];
       }
@@ -184,8 +186,6 @@ if (Astro.request.method === 'POST') {
     saved = false;
   }
 } else if (parsed.status !== 'valid') {
-  // Pre-populate errors on the inherited configuration so the merchant sees what
-  // needs fixing before they submit anything.
   const preview = parseModelForPreview(model);
   errors = preview;
   prepopulated = preview.length > 0;
@@ -200,7 +200,7 @@ function parseModelForPreview(m: ShippingFormModel): ShippingValidationError[] {
     zones: m.zones.map((z) => ({
       name: z.name,
       countries: z.countries,
-      freeOverCents: z.freeOverValue === '' ? null : Math.round(Number(z.freeOverValue) * 100),
+      freeOverCents: z.freeOverValue === '' ? null : toMinorUnits(Number(z.freeOverValue), currency),
       rates: z.rates.map((r) => ({
         label: r.label,
         pricing:
@@ -209,10 +209,10 @@ function parseModelForPreview(m: ShippingFormModel): ShippingValidationError[] {
                 type: 'weight' as const,
                 bands: r.bands.map((b) => ({
                   upToGrams: b.noMax ? null : Number(b.upToValue),
-                  amountCents: Math.round(Number(b.amountValue) * 100),
+                  amountCents: toMinorUnits(Number(b.amountValue), currency),
                 })),
               }
-            : { type: 'flat' as const, amountCents: Math.round(Number(r.amountValue) * 100) },
+            : { type: 'flat' as const, amountCents: toMinorUnits(Number(r.amountValue), currency) },
       })),
     })),
   });
@@ -220,195 +220,184 @@ function parseModelForPreview(m: ShippingFormModel): ShippingValidationError[] {
 
 const documentErrors = errorsFor(errors).filter((e) => e.field === 'document' || e.field === 'packageWeight');
 const isFirstSave = parsed.status !== 'valid';
-const label = (path: string) => `text-xs uppercase tracking-widest text-gray-500 ${path}`;
 ---
 
-<AdminLayout title="Shipping" active="shipping">
-  <div class="mb-8 flex flex-wrap items-end justify-between gap-4">
-    <div>
-      <h1 class="font-serif text-3xl tracking-tight">Shipping</h1>
-      <p class="mt-2 text-sm text-gray-500">
-        Zones, rates, and free-shipping thresholds. Amounts are in {currency.toUpperCase()};
-        weights are entered in <strong>{unit}</strong> and stored in grams — change the unit in{' '}
-        <a href="/admin/settings" class="underline hover:text-brand">Settings</a>.
-      </p>
-    </div>
-    <a href="/cart" class="text-xs uppercase tracking-widest text-gray-500 hover:text-brand">
-      View cart checkout &rarr;
+<AdminLayout
+  title="تنظیمات ارسال و تعرفه‌ها"
+  active="shipping"
+  requiredPermission="settings.manage"
+  breadcrumbs={[{ label: 'سیستم و پیکربندی' }, { label: 'تنظیمات ارسال' }]}
+>
+  <AdminPageHeader
+    title="مدیریت روش‌های ارسال و تعرفه‌ها"
+    subtitle={`پیکربندی مناطق ارسال، تعرفه‌های ثابت یا وزنی (بر حسب ${currency.toUpperCase()}) و آستانه ارسال رایگان`}
+  >
+    <a slot="actions" href="/admin/settings" class="gg-admin-btn-secondary text-xs">
+      بازگشت به تنظیمات ←
     </a>
-  </div>
+  </AdminPageHeader>
 
   {saved && (
-    <p class="mb-6 rounded-md border border-green-300 bg-green-50 px-4 py-3 text-sm text-green-800">
-      Shipping saved.
-    </p>
+    <div class="gg-status-success mb-6 rounded-xl px-4 py-3 text-sm">
+      پیکربندی ارسال و تعرفه‌ها با موفقیت ذخیره شد.
+    </div>
   )}
   {notice && (
-    <p class={`mb-6 rounded-md border px-4 py-3 text-sm ${conflict ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-red-300 bg-red-50 text-red-800'}`}>
+    <div class={`mb-6 rounded-xl px-4 py-3 text-sm ${conflict ? 'gg-status-warning' : 'gg-status-error'}`}>
       {notice}
-    </p>
+    </div>
   )}
   {parsed.status === 'invalid' && (
-    <div class="mb-6 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">
-      <strong class="font-semibold">The saved shipping configuration could not be read:</strong>{' '}
-      {parsed.error}
-      <p class="mt-2">
-        Checkout is blocked for physical orders until this is replaced. Review the values below
-        and use <strong>Replace invalid configuration</strong> to overwrite it.
-      </p>
+    <div class="gg-status-error mb-6 rounded-xl px-4 py-3 text-sm">
+      <strong>پیکربندی ذخیره‌شده ارسال قابل خواندن نیست:</strong> {parsed.error}
     </div>
   )}
   {prepopulated && (
-    <div class="mb-6 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      This store still uses the shipping configuration from <code class="text-xs">store.config.ts</code>,
-      which allows things the editor does not. The problems are marked below — fix them, then save
-      to take ownership in Admin.
+    <div class="gg-status-warning mb-6 rounded-xl px-4 py-3 text-sm">
+      این فروشگاه هنوز از تنظیمات پیش‌فرض فایل پیکربندی استفاده می‌کند؛ موارد مشخص‌شده را بررسی و ذخیره کنید.
     </div>
   )}
   {isFirstSave && !prepopulated && (
-    <p class="mb-6 rounded-md border border-line bg-white/60 px-4 py-3 text-sm text-gray-600">
-      Shipping currently comes from <code class="text-xs">store.config.ts</code>. Saving here moves
-      ownership to Admin — from then on this page is the source of truth.
-    </p>
+    <div class="gg-admin-card mb-6 px-4 py-3 text-xs text-muted">
+      برای سفارش‌های دیجیتال نیازی به فعال‌سازی ارسال فیزیکی نیست؛ این بخش صرفاً برای محصولات فیزیکی یا تحویل زمان‌دار استفاده می‌شود.
+    </div>
   )}
 
-  <form method="POST" class="space-y-8">
+  <form method="POST" class="space-y-6">
     <input type="hidden" name="revision" value={model.revision} />
     {invalidFingerprint && <input type="hidden" name="fingerprint" value={invalidFingerprint} />}
     <input type="hidden" name="zone_order" value={model.zones.map((z) => z.token).join(',')} />
 
-    <section class="rounded-md border border-line bg-white/60 p-4">
-      <label class="flex items-center gap-3 text-sm">
-        <input type="checkbox" name="enabled" value="1" checked={model.enabled} class="size-4" />
-        <span><strong class="font-semibold">Offer shipping</strong> — collect an address and charge for delivery.</span>
+    <section class="gg-admin-card p-5">
+      <label class="flex items-center gap-3 text-sm font-semibold text-ink">
+        <input type="checkbox" name="enabled" value="1" checked={model.enabled} class="h-4 w-4 rounded border-line text-brand" />
+        <span>فعال‌سازی محاسبه ارسال در تسویه‌حساب (فقط برای کالاهای نیازمند آدرس/ارسال)</span>
       </label>
       <div class="mt-4 flex flex-wrap items-end gap-3">
         <label class="block">
-          <span class={label('')}>Packaging weight ({unit})</span>
+          <span class="mb-1 block text-xs font-semibold text-muted">وزن بسته‌بندی ({unit})</span>
           <input
             type="text"
             name="package_weight"
             value={model.packageWeightValue}
             inputmode="decimal"
-            class="mt-1 w-32 rounded border border-line px-2 py-1 text-sm"
+            dir="ltr"
+            class="gg-admin-input ltr-inline w-32 py-1.5 font-mono text-xs"
           />
         </label>
-        <p class="text-xs text-gray-500">
-          Box, mailer, padding and label. Added once per order, on top of item weights.
-        </p>
+        <p class="text-xs text-muted">یک‌بار برای هر سفارش به وزن کل اقلام اضافه می‌شود.</p>
       </div>
       {documentErrors.map((e) => (
-        <p class="mt-3 text-sm text-red-700">{e.message}</p>
+        <p class="mt-3 text-xs text-coral">{e.message}</p>
       ))}
     </section>
 
     {model.zones.map((zone, zoneIndex) => (
-      <section class="rounded-md border border-line bg-white/60 p-4">
+      <section class="gg-admin-card p-5">
         <input type="hidden" name={`zone[${zone.token}][rate_order]`} value={zone.rates.map((r) => r.token).join(',')} />
         <div class="flex flex-wrap items-end justify-between gap-3">
           <label class="block flex-1">
-            <span class={label('')}>Zone name</span>
+            <span class="mb-1 block text-xs font-semibold text-muted">نام منطقه ارسال</span>
             <input
               type="text"
               name={`zone[${zone.token}][name]`}
               value={zone.name}
               maxlength={SHIPPING_LIMITS.zoneName}
-              class="mt-1 w-full rounded border border-line px-2 py-1 text-sm"
+              class="gg-admin-input py-1.5 text-sm"
             />
           </label>
-          <div class="flex gap-2 text-xs uppercase tracking-widest">
-            <button name="_action" value={`move_zone:${zone.token}:up`} class="text-gray-500 hover:text-brand" disabled={zoneIndex === 0}>Up</button>
-            <button name="_action" value={`move_zone:${zone.token}:down`} class="text-gray-500 hover:text-brand" disabled={zoneIndex === model.zones.length - 1}>Down</button>
-            <button name="_action" value={`remove_zone:${zone.token}`} class="text-red-600 hover:text-red-800">Remove zone</button>
+          <div class="flex gap-2 text-xs">
+            <button name="_action" value={`move_zone:${zone.token}:up`} class="gg-admin-btn-secondary py-1 text-xs" disabled={zoneIndex === 0}>بالا</button>
+            <button name="_action" value={`move_zone:${zone.token}:down`} class="gg-admin-btn-secondary py-1 text-xs" disabled={zoneIndex === model.zones.length - 1}>پایین</button>
+            <button name="_action" value={`remove_zone:${zone.token}`} class="gg-admin-btn-danger py-1 text-xs">حذف منطقه</button>
           </div>
         </div>
         {errorsFor(errors, zoneIndex).map((e) => (
-          <p class="mt-2 text-sm text-red-700">{e.message}</p>
+          <p class="mt-2 text-xs text-coral">{e.message}</p>
         ))}
 
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="block">
-            <span class={label('')}>Destinations</span>
+            <span class="mb-1 block text-xs font-semibold text-muted">کشورها / مقصدها</span>
             <select
               name={`zone[${zone.token}][countries][]`}
               multiple
-              size="6"
-              class="mt-1 w-full rounded border border-line px-2 py-1 text-sm"
+              size="5"
+              class="gg-admin-input text-xs"
             >
-              <option value="*" selected={zone.countries.includes('*')}>Rest of world</option>
+              <option value="*" selected={zone.countries.includes('*')}>سایر نقاط / سراسری (*)</option>
               {countries.map((c) => (
                 <option value={c.code} selected={zone.countries.includes(c.code)}>{c.name}</option>
               ))}
             </select>
-            {/* Legacy codes that are not real countries would vanish from a select,
-                hiding the very value the merchant has to fix — keep them visible. */}
             {zone.countries.filter((c) => c !== '*' && !countries.some((k) => k.code === c)).map((c) => (
-              <span class="mt-1 inline-block rounded bg-red-100 px-2 py-0.5 text-xs text-red-800">
-                Unknown code: {c}
+              <span class="gg-status-error mt-1 inline-block rounded px-2 py-0.5 text-xs">
+                کد نامشخص: {c}
                 <input type="hidden" name={`zone[${zone.token}][countries][]`} value={c} />
               </span>
             ))}
           </label>
           <label class="block">
-            <span class={label('')}>Free shipping over ({currency.toUpperCase()})</span>
+            <span class="mb-1 block text-xs font-semibold text-muted">آستانه ارسال رایگان ({currency.toUpperCase()})</span>
             <input
               type="text"
               name={`zone[${zone.token}][free_over]`}
               value={zone.freeOverValue}
               inputmode="decimal"
-              class="mt-1 w-full rounded border border-line px-2 py-1 text-sm"
+              dir="ltr"
+              class="gg-admin-input ltr-inline py-1.5 font-mono text-sm"
             />
-            <span class="mt-1 block text-xs text-gray-500">Blank disables it.</span>
+            <span class="mt-1 block text-[11px] text-faint">در صورت خالی بودن غیرفعال است.</span>
           </label>
         </div>
 
-        <div class="mt-5 space-y-4">
+        <div class="mt-5 space-y-3">
           {zone.rates.map((rate, rateIndex) => (
-            <div class="rounded border border-line bg-paper p-3">
+            <div class="rounded-xl border border-line bg-surface-2 p-4">
               <div class="flex flex-wrap items-end gap-3">
                 <label class="block">
-                  <span class={label('')}>Rate label</span>
+                  <span class="mb-1 block text-xs font-semibold text-muted">عنوان تعرفه</span>
                   <input
                     type="text"
                     name={`zone[${zone.token}][rate][${rate.token}][label]`}
                     value={rate.label}
                     maxlength={SHIPPING_LIMITS.rateLabel}
-                    class="mt-1 w-40 rounded border border-line px-2 py-1 text-sm"
+                    class="gg-admin-input w-44 py-1.5 text-xs"
                   />
                 </label>
                 <label class="block">
-                  <span class={label('')}>Pricing</span>
-                  <select
-                    name={`zone[${zone.token}][rate][${rate.token}][mode]`}
-                    class="mt-1 rounded border border-line px-2 py-1 text-sm"
-                  >
-                    <option value="flat" selected={rate.mode === 'flat'}>Flat price</option>
-                    <option value="weight" selected={rate.mode === 'weight'}>By order weight</option>
-                    <option value="pickup" selected={rate.mode === 'pickup'}>Local pickup</option>
+                  <span class="mb-1 block text-xs font-semibold text-muted">نحوه محاسبه</span>
+                  <select name={`zone[${zone.token}][rate][${rate.token}][mode]`} class="gg-admin-input py-1.5 text-xs">
+                    <option value="flat" selected={rate.mode === 'flat'}>نرخ ثابت</option>
+                    <option value="weight" selected={rate.mode === 'weight'}>بر اساس وزن</option>
+                    <option value="pickup" selected={rate.mode === 'pickup'}>تحویل حضوری</option>
                   </select>
                 </label>
                 {rate.mode !== 'weight' && (
                   <label class="block">
-                    <span class={label('')}>{rate.mode === 'pickup' ? 'Fee (0 = free)' : 'Price'}</span>
+                    <span class="mb-1 block text-xs font-semibold text-muted">
+                      {rate.mode === 'pickup' ? 'هزینه (۰ = رایگان)' : 'مبلغ'}
+                    </span>
                     <input
                       type="text"
                       name={`zone[${zone.token}][rate][${rate.token}][amount]`}
                       value={rate.amountValue}
                       inputmode="decimal"
-                      class="mt-1 w-28 rounded border border-line px-2 py-1 text-sm"
+                      dir="ltr"
+                      class="gg-admin-input ltr-inline w-32 py-1.5 font-mono text-xs"
                     />
                   </label>
                 )}
                 <button
                   name="_action"
                   value={`remove_rate:${zone.token}:${rate.token}`}
-                  class="ml-auto text-xs uppercase tracking-widest text-red-600 hover:text-red-800"
+                  class="gg-admin-btn-danger ms-auto py-1.5 text-xs"
                 >
-                  Remove rate
+                  حذف تعرفه
                 </button>
               </div>
               {errorsFor(errors, zoneIndex, rateIndex).map((e) => (
-                <p class="mt-2 text-sm text-red-700">{e.message}</p>
+                <p class="mt-2 text-xs text-coral">{e.message}</p>
               ))}
 
               {rate.mode === 'weight' && (
@@ -418,60 +407,62 @@ const label = (path: string) => `text-xs uppercase tracking-widest text-gray-500
                     name={`zone[${zone.token}][rate][${rate.token}][band_order]`}
                     value={rate.bands.map((b) => b.token).join(',')}
                   />
-                  <p class={label('mb-2 block')}>Weight bands</p>
+                  <p class="mb-2 text-xs font-semibold text-muted">بازه‌های وزنی</p>
                   {rate.bands.map((band, bandIndex) => (
                     <div class="mb-2 flex flex-wrap items-end gap-3">
                       <label class="block">
-                        <span class="text-xs text-gray-500">Up to ({unit})</span>
+                        <span class="text-xs text-muted">تا سقف ({unit})</span>
                         <input
                           type="text"
                           name={`zone[${zone.token}][rate][${rate.token}][band][${band.token}][up_to]`}
                           value={band.upToValue}
                           disabled={band.noMax}
                           inputmode="decimal"
-                          class="mt-1 w-28 rounded border border-line px-2 py-1 text-sm disabled:bg-gray-100"
+                          dir="ltr"
+                          class="gg-admin-input ltr-inline mt-1 w-28 py-1 font-mono text-xs disabled:opacity-50"
                         />
                       </label>
                       {bandIndex === rate.bands.length - 1 && (
-                        <label class="flex items-center gap-2 pb-1 text-xs text-gray-600">
+                        <label class="flex items-center gap-2 pb-1 text-xs text-muted">
                           <input
                             type="checkbox"
                             name={`zone[${zone.token}][rate][${rate.token}][band][${band.token}][no_max]`}
                             value="1"
                             checked={band.noMax}
-                            class="size-4"
+                            class="h-4 w-4 rounded border-line text-brand"
                           />
-                          No maximum
+                          بدون سقف
                         </label>
                       )}
                       <label class="block">
-                        <span class="text-xs text-gray-500">Price</span>
+                        <span class="text-xs text-muted">هزینه</span>
                         <input
                           type="text"
                           name={`zone[${zone.token}][rate][${rate.token}][band][${band.token}][amount]`}
                           value={band.amountValue}
                           inputmode="decimal"
-                          class="mt-1 w-28 rounded border border-line px-2 py-1 text-sm"
+                          dir="ltr"
+                          class="gg-admin-input ltr-inline mt-1 w-28 py-1 font-mono text-xs"
                         />
                       </label>
                       <button
                         name="_action"
                         value={`remove_band:${zone.token}:${rate.token}:${band.token}`}
-                        class="pb-1 text-xs uppercase tracking-widest text-red-600 hover:text-red-800"
+                        class="pb-1 text-xs font-semibold text-coral hover:underline"
                       >
-                        Remove
+                        حذف
                       </button>
                       {errorsFor(errors, zoneIndex, rateIndex, bandIndex).map((e) => (
-                        <p class="w-full text-sm text-red-700">{e.message}</p>
+                        <p class="w-full text-xs text-coral">{e.message}</p>
                       ))}
                     </div>
                   ))}
                   <button
                     name="_action"
                     value={`add_band:${zone.token}:${rate.token}`}
-                    class="text-xs uppercase tracking-widest text-gray-500 hover:text-brand"
+                    class="text-xs font-semibold text-brand-fg hover:underline"
                   >
-                    + Add band
+                    + افزودن بازه وزنی
                   </button>
                 </div>
               )}
@@ -480,9 +471,9 @@ const label = (path: string) => `text-xs uppercase tracking-widest text-gray-500
           <button
             name="_action"
             value={`add_rate:${zone.token}`}
-            class="text-xs uppercase tracking-widest text-gray-500 hover:text-brand"
+            class="text-xs font-semibold text-brand-fg hover:underline"
           >
-            + Add rate
+            + افزودن تعرفه ارسال
           </button>
         </div>
       </section>
@@ -492,21 +483,13 @@ const label = (path: string) => `text-xs uppercase tracking-widest text-gray-500
       <button
         name="_action"
         value={parsed.status === 'invalid' ? 'replace' : 'save'}
-        class="rounded bg-brand px-5 py-2 text-sm font-medium text-white transition hover:opacity-90"
+        class="gg-admin-btn-primary text-xs"
       >
-        {parsed.status === 'invalid' ? 'Replace invalid configuration' : 'Save shipping'}
+        {parsed.status === 'invalid' ? 'جایگزینی پیکربندی خراب و ذخیره' : 'ذخیره تنظیمات ارسال'}
       </button>
-      <button
-        name="_action"
-        value="add_zone"
-        class="text-xs uppercase tracking-widest text-gray-500 hover:text-brand"
-      >
-        + Add zone
+      <button name="_action" value="add_zone" class="gg-admin-btn-secondary text-xs">
+        + افزودن منطقه ارسال جدید
       </button>
-      <p class="text-xs text-gray-500">
-        Stripe shows the rates for the country chosen in the cart; the final address is confirmed
-        on its hosted page. Other rails collect the address before payment.
-      </p>
     </div>
   </form>
 </AdminLayout>

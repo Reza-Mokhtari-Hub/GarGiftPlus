@@ -13,11 +13,24 @@ import { stripeDestination } from '../features/shipping/destination';
 import { readCart, resolveCart } from '../features/cart/cart';
 import { enabledMethods } from '../features/payments';
 import ProductImage from '../features/products/ProductImage.astro';
+import { listProductCheckoutFields } from '../features/products/customFieldsDb';
+import {
+  validateCustomerInputs,
+  type NormalizedCustomerInput,
+} from '../features/products/customFields';
+import {
+  getCartLineInputForProduct,
+  getCartSession,
+  getOrCreateCartSession,
+  saveCartLineInputs,
+} from '../features/cart/inputsDb';
+import { getVerifiedCustomer } from '../features/auth/customer';
+import { getOrCreateWalletByCustomerId } from '../features/wallet/db';
+import { fa } from '../i18n/fa';
 
 // Express checkout — a single payment-method-picker step (first listed = the
-// store's default). Two sources: "Buy now" (a single product_id [+ variant/extras])
-// or the whole cart (no product_id → reads the cart cookie). Skips the full cart
-// page; the chosen method posts to /api/checkout, carrying the same source.
+// store's default). Accepts POST for Buy now so customer custom fields are
+// NEVER sent or leaked in URL query parameters.
 const isPost = Astro.request.method === 'POST';
 const form = isPost ? await Astro.request.formData() : null;
 const fld = (n: string) => (form?.get(n) ?? Astro.url.searchParams.get(n) ?? '').toString().trim();
@@ -27,24 +40,21 @@ interface DisplayLine {
   imageKey: string | null;
   unitPriceCents: number;
   qty: number;
+  currency?: string;
+  customerInputs?: NormalizedCustomerInput[];
 }
 
-// Buy-now identifiers are prefixed public IDs (prod_/var_/xtra_); numeric row
-// IDs are never accepted.
 const productPublicId = parsePublicId(fld('product_id'), 'product');
 const isBuyNow = productPublicId !== null;
 
 let lines: DisplayLine[] = [];
-// Parallel model for the shipping question only ("does anything here ship?") —
-// the display lines deliberately drop the product/variant rows.
 let weightLines: Parameters<typeof shipmentWeightFor>[0] = [];
-// Fields each method form re-sends to /api/checkout to reproduce this exact order.
 let carry: { name: string; value: string }[] = [];
 let backHref = '/';
 
 if (isBuyNow && productPublicId) {
   const product = await getProductByPublicId(env.DB, productPublicId);
-  if (!product || !product.active) return Astro.redirect('/', 303);
+  if (!product || !product.active || !product.public_id) return Astro.redirect('/', 303);
   backHref = `/products/${product.slug}`;
 
   const variantPublicId = parsePublicId(fld('variant_id'), 'variant');
@@ -59,16 +69,57 @@ if (isBuyNow && productPublicId) {
       : null;
   if (variants.length > 0 && !variant) {
     return Astro.redirect(
-      `/products/${product.slug}?error=${encodeURIComponent(`Please choose a ${product.variant_label || 'option'}.`)}`,
+      `/products/${product.slug}?error=${encodeURIComponent(`لطفاً ${product.variant_label || 'گزینه'} را انتخاب کنید.`)}`,
       303,
     );
   }
   const extras = extraPublicIds.length
     ? await getExtrasByPublicIds(env.DB, product.id, extraPublicIds)
     : [];
-  if ((variant ? variant.stock : product.stock) <= 0) {
-    return Astro.redirect(`/products/${product.slug}?error=Sold+out`, 303);
+
+  // Only physical shipping products check stock; digital products never block on stock <= 0.
+  if (product.requires_shipping === 1 && (variant ? variant.stock : product.stock) <= 0) {
+    return Astro.redirect(`/products/${product.slug}?error=${encodeURIComponent(fa.product.unavailable)}`, 303);
   }
+
+  // Validate custom checkout fields on Buy Now and persist in D1 (never URL query params).
+  const checkoutFields = await listProductCheckoutFields(env.DB, product.id);
+  let customerInputs: NormalizedCustomerInput[] = [];
+  let cartInputId: string | null = null;
+  const cartSession = getCartSession(Astro.cookies);
+  const passedInputId = parsePublicId(fld('cart_input_id'), 'cartInput');
+
+  if (passedInputId && cartSession) {
+    const stored = await getCartLineInputForProduct(env.DB, cartSession, passedInputId, product.public_id);
+    if (stored) {
+      const check = validateCustomerInputs(
+        checkoutFields,
+        Object.fromEntries(stored.map((item) => [item.key, item.value])),
+      );
+      if (!check.ok) {
+        return Astro.redirect(`/products/${product.slug}?error=${encodeURIComponent(check.error)}`, 303);
+      }
+      customerInputs = check.values;
+      cartInputId = passedInputId;
+    }
+  } else if (checkoutFields.some((f) => f.is_active === 1)) {
+    if (!isPost) {
+      return Astro.redirect(
+        `/products/${product.slug}?error=${encodeURIComponent('لطفاً ابتدا فرم اطلاعات مورد نیاز محصول را تکمیل کنید.')}`,
+        303,
+      );
+    }
+    const check = validateCustomerInputs(checkoutFields, form!);
+    if (!check.ok) {
+      return Astro.redirect(`/products/${product.slug}?error=${encodeURIComponent(check.error)}`, 303);
+    }
+    customerInputs = check.values;
+    if (customerInputs.length > 0) {
+      const sid = getOrCreateCartSession(Astro.cookies, Astro.url.protocol === 'https:');
+      cartInputId = await saveCartLineInputs(env.DB, sid, product.public_id, customerInputs);
+    }
+  }
+
   lines = [
     {
       name:
@@ -78,6 +129,8 @@ if (isBuyNow && productPublicId) {
       imageKey: product.image_key,
       unitPriceCents: lineUnitPriceCents(product.price_cents, variant, extras),
       qty: 1,
+      currency: product.currency,
+      ...(customerInputs.length > 0 ? { customerInputs } : {}),
     },
   ];
   weightLines = [{ product, variant, qty: 1 }];
@@ -86,21 +139,18 @@ if (isBuyNow && productPublicId) {
   for (const e of extras) {
     if (e.public_id) carry.push({ name: 'extra', value: e.public_id });
   }
+  if (cartInputId) carry.push({ name: 'cart_input_id', value: cartInputId });
 } else {
-  const { lines: cartLines } = await resolveCart(env.DB, readCart(Astro.cookies));
+  const { lines: cartLines } = await resolveCart(
+    env.DB,
+    readCart(Astro.cookies),
+    getCartSession(Astro.cookies),
+  );
   if (cartLines.length === 0) return Astro.redirect('/cart', 303);
-  // Stock can drop between adding to the cart and checking out. Bounce to the cart
-  // rather than rendering a total the shopper can't actually buy: this page has no
-  // quantity or remove controls, and /cart already flags the offending line
-  // ("Only N available"). reserveInventory is still the real guarantee — it catches
-  // the race after this check — but that fires only once they've entered an address
-  // and picked shipping, which is a late, frustrating place to be told.
-  const short = cartLines.find((l) => l.qty > l.availableStock);
+  const short = cartLines.find((l) => l.product.requires_shipping === 1 && l.qty > l.availableStock);
   if (short) {
     return Astro.redirect(
-      `/cart?error=${encodeURIComponent(
-        'Some items are no longer available in the quantity you selected. Please review your cart.',
-      )}`,
+      `/cart?error=${encodeURIComponent(fa.cart.unavailableItem)}`,
       303,
     );
   }
@@ -113,14 +163,24 @@ if (isBuyNow && productPublicId) {
     imageKey: l.product.image_key,
     unitPriceCents: l.unitPriceCents,
     qty: l.qty,
+    currency: l.product.currency,
+    ...(l.customerInputs && l.customerInputs.length > 0 ? { customerInputs: l.customerInputs } : {}),
   }));
   weightLines = cartLines.map((l) => ({ product: l.product, variant: l.variant, qty: l.qty }));
   carry = [{ name: 'source', value: 'cart' }];
 }
 
 const totalCents = lines.reduce((s, l) => s + l.unitPriceCents * l.qty, 0);
+const lineCurrency = lines[0]?.currency;
 
-// Only the actually-usable rails, default first. None → no checkout (cart-style).
+const customer = await getVerifiedCustomer(Astro.cookies);
+const wallet = customer ? await getOrCreateWalletByCustomerId(env.DB, customer.id) : null;
+const walletHint =
+  customer && wallet
+    ? `موجودی فعلی: ${formatPrice(wallet.balance, wallet.currency)}${wallet.balance < totalCents ? ' (نیازمند شارژ)' : ''}`
+    : fa.checkout.walletMethodHint;
+
+// Only the actually-usable rails, default first.
 const methods = Astro.locals.settings ? enabledMethods(Astro.locals.settings) : [];
 if (methods.length === 0) return Astro.redirect(backHref, 303);
 
@@ -132,49 +192,63 @@ const destination = stripeDestination(
   Astro.request.headers.get('cf-ipcountry'),
 );
 
-const heading = isBuyNow ? 'Buy now' : 'Checkout';
+const heading = isBuyNow ? fa.checkout.buyNowHeading : fa.checkout.checkoutHeading;
 const METHOD: Record<string, { label: string; hint: string }> = {
-  stripe: { label: 'Pay with card', hint: 'Visa, Mastercard, Apple Pay & more' },
-  lightning: { label: 'Pay with Lightning ⚡', hint: 'Instant — from any Lightning wallet' },
-  opennode: { label: 'Pay with Bitcoin', hint: 'On-chain or Lightning (OpenNode)' },
-  demo: { label: 'Demo checkout', hint: 'Simulated — places a real test order, no charge' },
+  wallet: { label: fa.checkout.walletMethodLabel, hint: walletHint },
+  bank_transfer: { label: fa.checkout.bankTransferMethodLabel, hint: fa.checkout.bankTransferMethodHint },
+  zarinpal: { label: fa.checkout.zarinpalMethodLabel, hint: fa.checkout.zarinpalMethodHint },
+  zibal: { label: fa.checkout.zibalMethodLabel, hint: fa.checkout.zibalMethodHint },
+  stripe: { label: fa.checkout.stripeMethodLabel, hint: fa.checkout.stripeMethodHint },
+  lightning: { label: fa.checkout.lightningMethodLabel, hint: fa.checkout.lightningMethodHint },
+  opennode: { label: fa.checkout.opennodeMethodLabel, hint: fa.checkout.opennodeMethodHint },
+  demo: { label: fa.checkout.demoMethodLabel, hint: fa.checkout.demoMethodHint },
 };
 ---
 
-<Layout title="Checkout" description="Express checkout.">
+<Layout title={fa.checkout.title} description={fa.checkout.expressLabel}>
   <div class="mx-auto max-w-md">
-    <p class="text-xs uppercase tracking-[0.25em] text-muted">Express checkout</p>
-    <h1 class="mt-2 mb-6 font-serif text-3xl tracking-tight sm:text-4xl">{heading}</h1>
+    <p class="text-xs font-medium text-brand">{fa.checkout.expressLabel}</p>
+    <h1 class="gg-h1 mt-2 mb-6 text-ink">{heading}</h1>
 
     <ul class="divide-y divide-line border-y border-line">
       {
         lines.map((l) => (
-          <li class="flex items-center gap-4 py-4">
+          <li class="flex items-start gap-4 py-4">
             <ProductImage
               imageKey={l.imageKey}
               alt=""
               usage="thumbnail"
               fade
-              class="h-16 w-16 shrink-0 rounded object-cover"
+              class="h-16 w-16 shrink-0 rounded-xl object-cover"
             />
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-medium">{l.name}</p>
-              <p class="text-xs text-muted">Qty {l.qty}</p>
+              <p class="truncate text-sm font-semibold text-ink">{l.name}</p>
+              <p class="mt-0.5 text-xs text-muted">{fa.cart.quantity}: {l.qty}</p>
+              {l.customerInputs && l.customerInputs.length > 0 && (
+                <dl class="mt-2 space-y-1 rounded-lg border border-line bg-surface/60 px-2.5 py-2 text-xs">
+                  {l.customerInputs.map((ci) => (
+                    <div class="flex flex-wrap items-baseline justify-between gap-2">
+                      <dt class="text-muted">{ci.label}:</dt>
+                      <dd class={ci.type === 'email' || ci.type === 'number' ? 'ltr-inline font-medium text-ink' : 'font-medium text-ink'}>
+                        {ci.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
             </div>
-            <span class="tabular-nums">{formatPrice(l.unitPriceCents * l.qty)}</span>
+            <span class="tabular-nums font-semibold text-ink">{formatPrice(l.unitPriceCents * l.qty, l.currency)}</span>
           </li>
         ))
       }
     </ul>
 
     <div class="mt-4 flex items-center justify-between">
-      <span class="text-xs uppercase tracking-widest text-muted">Total</span>
-      <span class="text-lg tabular-nums">{formatPrice(totalCents)}</span>
+      <span class="text-xs font-medium text-muted">{fa.checkout.total}</span>
+      <span class="text-lg font-bold tabular-nums text-ink">{formatPrice(totalCents, lineCurrency)}</span>
     </div>
 
-    {/* One button per enabled method (first = the store's default → primary). Each
-        re-sends the same source to /api/checkout with its method. */}
-    <div class="mt-6 space-y-2">
+    <div class="mt-6 space-y-2.5">
       {
         methods.map((m, i) => (
           <form method="POST" action="/api/checkout">
@@ -182,16 +256,12 @@ const METHOD: Record<string, { label: string; hint: string }> = {
               <input type="hidden" name={c.name} value={c.value} />
             ))}
             <input type="hidden" name="method" value={m} />
-            {/* Stripe prices its static rate list from this choice; the other
-                rails collect the address on /checkout. A single remaining country
-                still submits, or the server would fall back to the raw first
-                zone — possibly the very country the Stripe filter removed. */}
             {m === 'stripe' && destination.showSelect && (
-              <label class="mb-2 flex items-center justify-between gap-2 text-xs uppercase tracking-widest text-muted">
-                Ship to
+              <label class="mb-2 flex items-center justify-between gap-2 text-xs text-muted">
+                مقصد ارسال
                 <select
                   name="country"
-                  class="rounded-md border border-line px-2 py-1.5 text-sm normal-case tracking-normal text-ink"
+                  class="rounded-lg border border-line bg-surface px-2.5 py-1.5 text-sm text-ink"
                 >
                   {destination.countries.map((c) => (
                     <option value={c} selected={c === destination.defaultCountry}>
@@ -206,20 +276,20 @@ const METHOD: Record<string, { label: string; hint: string }> = {
             )}
             <button
               type="submit"
-              class={`flex w-full items-center justify-between gap-3 rounded-lg px-5 py-3 text-left transition ${
+              class={`flex w-full items-center justify-between gap-3 rounded-xl px-5 py-3.5 text-start transition ${
                 i === 0
                   ? 'bg-brand text-on-brand hover:bg-brand-hover'
-                  : 'border border-line text-muted hover:border-brand'
+                  : 'border border-line text-ink hover:border-brand'
               }`}
             >
               <span>
-                <span class="block text-sm font-medium">{METHOD[m]?.label ?? m}</span>
-                <span class={`block text-xs ${i === 0 ? 'text-on-brand/70' : 'text-muted'}`}>
+                <span class="block text-sm font-semibold">{METHOD[m]?.label ?? m}</span>
+                <span class={`block text-xs ${i === 0 ? 'text-on-brand/80' : 'text-muted'}`}>
                   {METHOD[m]?.hint ?? ''}
                 </span>
               </span>
               <span aria-hidden="true" class={i === 0 ? 'text-on-brand/80' : 'text-faint'}>
-                &rarr;
+                &larr;
               </span>
             </button>
           </form>
@@ -229,9 +299,9 @@ const METHOD: Record<string, { label: string; hint: string }> = {
 
     <a
       href={backHref}
-      class="mt-6 inline-block text-xs uppercase tracking-widest text-faint hover:text-brand"
+      class="mt-6 inline-block text-xs font-medium text-faint hover:text-brand"
     >
-      &larr; Back
+      &rarr; {fa.common.back}
     </a>
   </div>
 </Layout>

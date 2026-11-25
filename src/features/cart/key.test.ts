@@ -64,6 +64,24 @@ describe('parseCartKey', () => {
     expect(parseCartKey(`${P}#${XA},junk`)).toBeNull();
     expect(parseCartKey(`${P}#${XA},7`)).toBeNull();
   });
+
+  it('splits lines with distinct cinp_ input tokens and rejects invalid @ suffixes', () => {
+    const inpA = 'cinp_0123456789';
+    const inpB = 'cinp_abcdefghjm';
+    const k1 = cartKey(P, V, [XA], inpA);
+    const k2 = cartKey(P, V, [XA], inpB);
+    expect(k1).not.toBe(k2);
+    expect(k1).toBe(`${P}:${V}#${XA}@${inpA}`);
+    expect(parseCartKey(k1)).toEqual({
+      productPublicId: P,
+      variantPublicId: V,
+      extraPublicIds: [XA],
+      inputPublicId: inpA,
+    });
+    expect(parseCartKey(`${P}@`)).toBeNull();
+    expect(parseCartKey(`${P}@bad_123`)).toBeNull();
+    expect(parseCartKey(`${P}@${inpA}@${inpB}`)).toBeNull();
+  });
 });
 
 describe('lineUnitPriceCents', () => {

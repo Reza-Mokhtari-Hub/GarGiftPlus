@@ -1,0 +1,251 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { listBankAccounts } from '../../features/payments/bankAccountsDb';
+import { formatCardNumber } from '../../features/payments/bankTransfer';
+import { toPersianDigits } from '../../lib/format';
+
+const accounts = await listBankAccounts(env.DB, false);
+const msg = Astro.url.searchParams.get('msg');
+const error = Astro.url.searchParams.get('error');
+const activeCount = accounts.filter((a) => a.is_active === 1).length;
+---
+
+<AdminLayout
+  title="حساب‌های بانکی کارت‌به‌کارت"
+  active="bankAccounts"
+  requiredPermission="bank_accounts.manage"
+  breadcrumbs={[{ label: 'مشتریان و مالی' }, { label: 'حساب‌های بانکی' }]}
+>
+  <AdminPageHeader
+    title="مدیریت حساب‌های بانکی مقصد (کارت‌به‌کارت)"
+    subtitle="حساب‌های فعال در صفحه پرداخت کارت‌به‌کارت و شارژ کیف پول به مشتریان نمایش داده می‌شوند."
+    badge={`${toPersianDigits(activeCount)} فعال از ${toPersianDigits(accounts.length)}`}
+  >
+    <a slot="actions" href="/admin/receipts" class="gg-admin-btn-secondary text-xs">
+      بررسی فیش‌های واریزی ←
+    </a>
+  </AdminPageHeader>
+
+  {error && <div class="gg-status-error mb-6 rounded-xl px-4 py-3 text-sm">{error}</div>}
+
+  {
+    msg && (
+      <div class="gg-status-success mb-6 rounded-xl px-4 py-3 text-sm">
+        {msg === 'created' && 'حساب بانکی جدید با موفقیت ثبت شد.'}
+        {msg === 'updated' && 'اطلاعات حساب بانکی به‌روزرسانی شد.'}
+        {msg === 'toggled' && 'وضعیت نمایش حساب بانکی تغییر کرد.'}
+        {msg === 'deleted' && 'حساب بانکی حذف شد.'}
+      </div>
+    )
+  }
+
+  {/* فرم ثبت حساب جدید */}
+  <section class="gg-admin-card mb-8 p-5">
+    <h2 class="text-base font-bold text-ink">افزودن حساب بانکی مقصد جدید</h2>
+    <form method="POST" action="/api/admin/bank-accounts" class="mt-4 space-y-4">
+      <input type="hidden" name="_action" value="create" />
+
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div>
+          <label for="new-bank-name" class="mb-1 block text-xs font-semibold text-muted">
+            نام بانک *
+          </label>
+          <input
+            id="new-bank-name"
+            name="bank_name"
+            type="text"
+            required
+            placeholder="مثال: بانک سامان / ملت"
+            class="gg-admin-input py-2 text-sm"
+          />
+        </div>
+
+        <div>
+          <label for="new-holder-name" class="mb-1 block text-xs font-semibold text-muted">
+            نام صاحب حساب *
+          </label>
+          <input
+            id="new-holder-name"
+            name="holder_name"
+            type="text"
+            required
+            placeholder="مثال: رضا مختاری (گارگیفت+)"
+            class="gg-admin-input py-2 text-sm"
+          />
+        </div>
+
+        <div>
+          <label for="new-card-number" class="mb-1 block text-xs font-semibold text-muted">
+            شماره کارت ۱۶ رقمی *
+          </label>
+          <input
+            id="new-card-number"
+            name="card_number"
+            type="text"
+            dir="ltr"
+            required
+            placeholder="6219861012345678"
+            class="gg-admin-input ltr-inline py-2 font-mono text-sm"
+          />
+        </div>
+
+        <div>
+          <label for="new-iban" class="mb-1 block text-xs font-semibold text-muted">
+            شماره شبا (IR - اختیاری)
+          </label>
+          <input
+            id="new-iban"
+            name="iban"
+            type="text"
+            dir="ltr"
+            placeholder="IR120560000000001234567890"
+            class="gg-admin-input ltr-inline py-2 font-mono text-sm"
+          />
+        </div>
+
+        <div>
+          <label for="new-account-no" class="mb-1 block text-xs font-semibold text-muted">
+            شماره حساب (اختیاری)
+          </label>
+          <input
+            id="new-account-no"
+            name="account_number"
+            type="text"
+            dir="ltr"
+            placeholder="812-345-6789012-1"
+            class="gg-admin-input ltr-inline py-2 font-mono text-sm"
+          />
+        </div>
+
+        <div>
+          <label for="new-sort-order" class="mb-1 block text-xs font-semibold text-muted">
+            ترتیب نمایش
+          </label>
+          <input
+            id="new-sort-order"
+            name="sort_order"
+            type="number"
+            value="0"
+            class="gg-admin-input ltr-inline py-2 font-mono text-sm"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label for="new-instructions" class="mb-1 block text-xs font-semibold text-muted">
+          راهنمای واریز برای مشتری (اختیاری)
+        </label>
+        <input
+          id="new-instructions"
+          name="instructions"
+          type="text"
+          placeholder="مثال: لطفاً مبلغ دقیق سفارش را کارت‌به‌کارت کرده و تصویر فیش را ارسال نمایید."
+          class="gg-admin-input py-2 text-sm"
+        />
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <label class="inline-flex items-center gap-2 text-xs font-semibold text-ink">
+          <input
+            type="checkbox"
+            name="is_active"
+            value="1"
+            checked
+            class="h-4 w-4 rounded border-line text-brand"
+          />
+          فعال و قابل نمایش به مشتریان
+        </label>
+
+        <button type="submit" class="gg-admin-btn-primary text-xs">
+          + ثبت حساب بانکی جدید
+        </button>
+      </div>
+    </form>
+  </section>
+
+  {/* فهرست حساب‌ها */}
+  <section class="space-y-4">
+    <h2 class="text-base font-bold text-ink">فهرست حساب‌های بانکی ثبت‌شده</h2>
+    {
+      accounts.length === 0 ? (
+        <AdminEmptyState
+          title="هنوز حساب بانکی مقصدی ثبت نشده است"
+          description="با افزودن اولین حساب فعال، روش پرداخت «کارت‌به‌کارت» در فروشگاه فعال می‌شود."
+        />
+      ) : (
+        <div class="grid gap-4">
+          {accounts.map((acc) => (
+            <div class="gg-admin-card p-5">
+              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3">
+                <div class="flex items-center gap-2.5">
+                  <span class="text-base font-bold text-ink">{acc.bank_name}</span>
+                  <span class="text-xs text-muted">({acc.account_holder})</span>
+                  <span
+                    class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                      acc.is_active === 1 ? 'gg-status-success' : 'bg-surface-2 text-muted'
+                    }`}
+                  >
+                    {acc.is_active === 1 ? 'فعال' : 'غیرفعال'}
+                  </span>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <form method="POST" action="/api/admin/bank-accounts">
+                    <input type="hidden" name="_action" value="toggle" />
+                    <input type="hidden" name="public_id" value={acc.public_id} />
+                    <input
+                      type="hidden"
+                      name="is_active"
+                      value={acc.is_active === 1 ? '0' : '1'}
+                    />
+                    <button type="submit" class="gg-admin-btn-secondary py-1.5 text-xs">
+                      {acc.is_active === 1 ? 'غیرفعال‌سازی' : 'فعال‌سازی'}
+                    </button>
+                  </form>
+
+                  <form
+                    method="POST"
+                    action="/api/admin/bank-accounts"
+                    data-confirm-message={`آیا از حذف حساب «${acc.bank_name}» مطمئن هستید؟`}
+                  >
+                    <input type="hidden" name="_action" value="delete" />
+                    <input type="hidden" name="public_id" value={acc.public_id} />
+                    <button type="submit" class="gg-admin-btn-danger py-1.5 text-xs">
+                      حذف
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              <div class="mt-3 grid gap-3 text-xs sm:grid-cols-3">
+                <div>
+                  <span class="text-muted">شماره کارت:</span>
+                  <span class="ms-1 ltr-inline font-mono font-bold text-ink">
+                    {formatCardNumber(acc.card_number)}
+                  </span>
+                </div>
+                <div>
+                  <span class="text-muted">شبا:</span>
+                  <span class="ms-1 ltr-inline font-mono text-ink">{acc.iban || '—'}</span>
+                </div>
+                <div>
+                  <span class="text-muted">شماره حساب:</span>
+                  <span class="ms-1 ltr-inline font-mono text-ink">
+                    {acc.account_number || '—'}
+                  </span>
+                </div>
+              </div>
+
+              {acc.instructions && (
+                <p class="mt-2 text-xs text-muted">توضیحات: {acc.instructions}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )
+    }
+  </section>
+</AdminLayout>

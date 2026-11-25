@@ -7,6 +7,7 @@ import {
   markNotificationFailed as markFailed,
   listUndeliveredKinds,
   isGuestLinkReissueKind,
+  isFulfillmentNotificationKind,
   reissueGeneration,
   type NotificationKind,
 } from './outboxStore';
@@ -17,6 +18,10 @@ import { getSetting, setSetting, getStoreSettings, type StoreSettings } from '..
 import { getOrder, listOrderItemsWithImages } from '../orders/db';
 import { getEmailProvider } from './index';
 import { orderConfirmationEmail, orderNotificationEmail, orderShippedEmail } from './orderConfirmation';
+import {
+  buildFulfillmentNotificationEmail,
+  parseFulfillmentNotificationKind,
+} from './fulfillmentNotification';
 import { guestLinkReissueEmail } from './guestLinkReissue';
 import { guestOrderUrl, getGuestAccess, sweepAbandonedGuestAccess } from '../orders/guestAccess.ts';
 import { shouldSendCustomerOrderEmail } from './orderPolicy';
@@ -90,7 +95,9 @@ export async function deliverOrderNotifications(
   const undelivered = await listUndeliveredKinds(db, orderId);
   const kinds = undelivered.filter(
     (k): k is NotificationKind =>
-      (NOTIFICATION_KINDS as readonly string[]).includes(k) || isGuestLinkReissueKind(k),
+      (NOTIFICATION_KINDS as readonly string[]).includes(k) ||
+      isGuestLinkReissueKind(k) ||
+      isFulfillmentNotificationKind(k),
   );
 
   for (const kind of kinds) {
@@ -157,6 +164,37 @@ export async function deliverOrderNotifications(
           continue;
         }
         const msg = orderShippedEmail(order, storeName, await guestOrderUrl(db, order.public_id, origin));
+        await emailer.send({ ...msg, idempotencyKey: `${kind}/${order.public_id ?? orderId}` });
+        await markSent(db, orderId, kind, attempts);
+        continue;
+      }
+
+      if (isFulfillmentNotificationKind(kind)) {
+        const parsedFulfillment = parseFulfillmentNotificationKind(kind);
+        const applicable =
+          parsedFulfillment !== null &&
+          Boolean(order.email) &&
+          shouldSendCustomerOrderEmail(order.payment_method) &&
+          order.status === 'paid' &&
+          order.refunded_cents < order.amount_total_cents;
+        if (!applicable || !parsedFulfillment) {
+          await markSkipped(db, orderId, kind, attempts);
+          continue;
+        }
+        items ??= await listOrderItemsWithImages(db, orderId);
+        const matchedItem = parsedFulfillment.itemPublicId
+          ? items.find((it) => it.public_id === parsedFulfillment.itemPublicId)
+          : null;
+        const guestUrl = await guestOrderUrl(db, order.public_id, origin);
+        const secureOrderUrl =
+          guestUrl ?? (order.public_id ? `${origin}/account/orders/${order.public_id}` : null);
+        const msg = buildFulfillmentNotificationEmail({
+          order,
+          storeName,
+          eventType: parsedFulfillment.eventType,
+          secureOrderUrl,
+          itemName: matchedItem?.name ?? null,
+        });
         await emailer.send({ ...msg, idempotencyKey: `${kind}/${order.public_id ?? orderId}` });
         await markSent(db, orderId, kind, attempts);
         continue;

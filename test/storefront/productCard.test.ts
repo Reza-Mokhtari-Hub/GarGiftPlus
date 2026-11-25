@@ -102,6 +102,28 @@ describe('buildProductCard', () => {
     expect(lcp.src).toContain('width=768');
     expect(lcp.priority).toBe(true);
   });
+
+  it('decouples digital product availability from stock and computes discount percentage', () => {
+    const digitalZeroStock = cardFor(
+      product({
+        requires_shipping: 0,
+        stock: 0,
+        active: 1,
+        price_cents: 800,
+        compare_price_cents: 1000,
+        brand: 'Apple',
+        region: 'USA',
+      }),
+    );
+    expect(digitalZeroStock.inStock).toBe(true);
+    expect(digitalZeroStock.discountPercent).toBe(20);
+    expect(digitalZeroStock.formattedComparePrice).toBe('$10.00');
+    expect(digitalZeroStock.brand).toBe('Apple');
+    expect(digitalZeroStock.region).toBe('USA');
+
+    const digitalInactive = cardFor(product({ requires_shipping: 0, stock: 50, active: 0 }));
+    expect(digitalInactive.inStock).toBe(false);
+  });
 });
 
 describe('the store-owned product card', () => {

@@ -1,15 +1,15 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../../layouts/AdminLayout.astro';
-import { formatPrice, formatDate, getConfig } from '../../../config';
+import AdminPageHeader from '../../../components/admin/AdminPageHeader.astro';
+import { formatPrice, getConfig } from '../../../config';
 import { getOrderByPublicId, listOrderItemsWithImages, listOrderInventoryExceptions } from '../../../features/orders/db';
 import { orderReference } from '../../../features/orders/number';
 import { CARRIERS, carrierName, trackingUrl } from '../../../features/orders/tracking';
 import { getSecret } from '../../../features/secrets/store';
 import { getEmailProvider } from '../../../features/email';
-import { getStoreSettings } from '../../../features/settings/db';
-import { getSetting } from '../../../features/settings/db';
-import { formatWeightValue } from '../../../features/shipping/weight';
+import { getStoreSettings, getSetting } from '../../../features/settings/db';
+import { formatWeightValue, formatWeight } from '../../../features/shipping/weight';
 import {
   distanceUnitFor,
   getShipmentRates,
@@ -23,11 +23,24 @@ import {
 } from '../../../features/shipping/labelStore';
 import { shouldSendCustomerOrderEmail } from '../../../features/email/orderPolicy';
 import RefundPanel from '../../../features/refunds/RefundPanel.astro';
-import { formatWeight } from '../../../features/shipping/weight';
 import { parseOrderOrLegacyPublicId } from '../../../features/ids/publicId';
+import { parseStoredCustomerInputs } from '../../../features/products/customFields';
+import { fa } from '../../../i18n/fa';
+import { resolveAdminActor } from '../../../features/fulfillment/actor';
+import { hasAdminPermission } from '../../../features/fulfillment/permissions';
+import {
+  listDeliveriesForOrder,
+  listDeliveryAttachmentsForOrder,
+  listDeliveryNotificationEvents,
+  listDeliveryVersionsForOrder,
+  listOrderStatusHistory,
+  recordAdminViewedSensitiveDelivery,
+} from '../../../features/fulfillment/db';
+import { listOrderFulfillmentAuditLogs } from '../../../features/audit/db';
+import { getLatestPaymentTxForTarget } from '../../../features/payments/transactionsDb';
+import AdminOrderFulfillmentWorkspace from '../../../features/fulfillment/AdminOrderFulfillmentWorkspace.astro';
+import { formatJalaliDateTime, toPersianDigits } from '../../../lib/format';
 
-// The route param is the order public ID — ord_ or a preserved legacy shape
-// (hex32/UUID). Numeric row ids are not accepted.
 const publicId = parseOrderOrLegacyPublicId(Astro.params.id, 'order');
 const order = publicId ? await getOrderByPublicId(env.DB, publicId) : null;
 
@@ -35,14 +48,46 @@ if (!order) {
   return new Response('Not found', { status: 404 });
 }
 
-// The token portion of ord_ IDs; legacy orders keep their calculated number.
+const adminActor = await resolveAdminActor(env.DB, Astro);
+const canRefund = hasAdminPermission(adminActor, 'orders.refund');
+const canFulfill = hasAdminPermission(adminActor, 'orders.fulfill');
+
+const [
+  deliveries,
+  deliveryVersions,
+  deliveryAttachments,
+  orderStatusHistory,
+  notificationEvents,
+  latestPaymentTx,
+] = await Promise.all([
+  listDeliveriesForOrder(env.DB, order.id),
+  listDeliveryVersionsForOrder(env.DB, order.id),
+  listDeliveryAttachmentsForOrder(env.DB, order.id),
+  listOrderStatusHistory(env.DB, order.id),
+  listDeliveryNotificationEvents(env.DB, order.id),
+  order.public_id ? getLatestPaymentTxForTarget(env.DB, 'order', order.public_id) : Promise.resolve(null),
+]);
+
+if (deliveries.length > 0) {
+  await recordAdminViewedSensitiveDelivery(env.DB, adminActor, order);
+}
+const orderAuditLogs = await listOrderFulfillmentAuditLogs(
+  env.DB,
+  order.id,
+  order.public_id,
+  15,
+);
+
 const num = orderReference(order.public_id, order.id, getConfig().orderNumber);
-// Human label for the rail the order was paid on (NULL = legacy/unknown).
 const PAYMENT_LABELS: Record<string, string> = {
-  stripe: 'Card (Stripe)',
-  lightning: 'Lightning',
-  opennode: 'Bitcoin (OpenNode)',
-  demo: 'Demo (no charge)',
+  wallet: 'کیف پول GarGift+ (Wallet)',
+  bank_transfer: 'کارت‌به‌کارت و واریز بانکی',
+  zarinpal: 'درگاه پرداخت زرین‌پال',
+  zibal: 'درگاه پرداخت زیبال',
+  stripe: 'کارت بین‌المللی (Stripe)',
+  lightning: 'لابتنینگ (Lightning)',
+  opennode: 'بیت‌کوین (OpenNode)',
+  demo: 'تستی (Demo)',
 };
 const paymentLabel = order.payment_method
   ? (PAYMENT_LABELS[order.payment_method] ?? order.payment_method)
@@ -53,17 +98,7 @@ const inventoryExceptions = await listOrderInventoryExceptions(env.DB, order.id)
 const fulfilled = order.fulfillment_status === 'fulfilled';
 const weightUnit = Astro.locals.settings?.weightUnit ?? 'g';
 
-// ── Shipping label (Shippo) ──────────────────────────────────────────────────
-// Gated on the token (stores without Shippo see nothing) and on the order being
-// a paid, unfulfilled DELIVERY order — pickup orders have no parcel to send.
-// All label state lives in this order's shipping_labels row; the page never
-// reads a shipment id from the URL, so another order's quote cannot be spliced
-// in. Rates render on a plain GET, so the flow needs no JS.
 const shippoToken = await getSecret(env.DB, 'shippo_api_key');
-// canLabel gates QUOTING AND BUYING only. The label record itself is loaded
-// unconditionally: a purchased label whose order refused fulfillment (refund
-// mid-purchase, forced manual fulfil) is money already spent, and it must stay
-// visible on fulfilled/refunded orders — even if the Shippo token was removed.
 const labelRecord = await getLabelRecord(env.DB, order.id);
 const labelAttempts = await listLabelAttempts(env.DB, order.id);
 const canLabel =
@@ -71,9 +106,6 @@ const canLabel =
   !!order.ship_address &&
   !fulfilled &&
   order.status === 'paid' &&
-  // Exactly 'shipping': pickup orders have no parcel, and 'unknown' (a Stripe
-  // settlement that lost the rate lookup) must be reconciled, not guessed at.
-  // 0036 backfilled legacy physical orders, so NULL here really means unknown.
   order.delivery_method === 'shipping';
 let labelRates: LabelRate[] = [];
 let labelRatesError: string | null = null;
@@ -82,13 +114,7 @@ if (canLabel && labelRecord?.status === 'quoted' && shippoToken) {
   if (rates.ok) labelRates = rates.value;
   else labelRatesError = rates.error;
 }
-// A purchasing row inside its lease has a live request behind it: show progress,
-// allow nothing. Past the lease it is a crash mid-flight — same reconciliation
-// as an ambiguous outcome: human checks the dashboard, then discards.
 const labelInFlight = labelRecord?.status === 'purchasing' && !isPurchaseStale(labelRecord);
-// Paid for but not what the order shows: the order refused fulfillment (refund
-// mid-purchase) or was fulfilled another way. Rendered persistently — this must
-// survive the transient redirect notice.
 const labelUnreconciled =
   labelRecord?.status === 'purchased' &&
   (order.tracking_number !== labelRecord.tracking_number || order.label_url !== labelRecord.label_url);
@@ -112,15 +138,11 @@ const parcelWeightValue =
 const trackUrl = trackingUrl(order.tracking_carrier, order.tracking_number);
 const error = Astro.url.searchParams.get('error');
 const noticeMsg = Astro.url.searchParams.get('notice');
-// Reissue is offered only where it can work: a settled ord_ order with an
-// email on a rail that sends customer email. The token itself is never shown.
 const canReissue =
   !!order.email &&
   !!order.public_id?.startsWith('ord_') &&
   shouldSendCustomerOrderEmail(order.payment_method);
 const itemsTotalCents = items.reduce((sum, it) => sum + it.price_cents * it.quantity, 0);
-// Older orders (placed before line-item capture) may have no items; flag any
-// mismatch between the recorded total and items + shipping − discount.
 const mismatch =
   items.length > 0 &&
   itemsTotalCents + order.shipping_cents - order.discount_cents + order.tax_cents !==
@@ -137,59 +159,80 @@ const ship = order.ship_address
       country: string | null;
     })
   : null;
-// Domestic-only for now: international labels need a customs declaration this
-// flow doesn't collect. Warn on the page only when the saved origin makes the
-// mismatch knowable; the POST enforces it regardless.
 const labelInternational =
   !!shipFrom.country && !!ship?.country && shipFrom.country.toUpperCase() !== ship.country.toUpperCase();
-// Whether fulfillment will actually email the customer — demo orders never do,
-// there may be no address on file, and email itself may be unconfigured (no
-// provider key). The UI must not promise a send that would be skipped.
 const willEmailCustomer =
   !!order.email &&
   order.payment_method !== 'demo' &&
   !!(await getEmailProvider(Astro.locals.settings ?? (await getStoreSettings(env.DB))));
+
+const ORDER_STATUS_FA: Record<string, string> = {
+  paid: 'پرداخت‌شده',
+  pending: 'در انتظار پرداخت',
+  refunded: 'مستردشده',
+};
 ---
 
-<AdminLayout title={`Order #${num}`} active="orders">
-  <a
-    href="/admin/orders"
-    class="text-xs uppercase tracking-widest text-gray-400 hover:text-brand"
+<AdminLayout
+  title={`سفارش #${num}`}
+  active="orders"
+  requiredPermission="orders.view"
+  breadcrumbs={[
+    { label: 'سفارش‌ها', href: '/admin/orders' },
+    { label: `#${num}` },
+  ]}
+>
+  <AdminPageHeader
+    title={`جزئیات سفارش #${num}`}
+    subtitle={`تاریخ ثبت: ${formatJalaliDateTime(order.created_at, { timeZone })} · ${paymentLabel}`}
+    badge={ORDER_STATUS_FA[order.status] ?? order.status}
   >
-    &larr; Back to orders
-  </a>
-  {/* Refund controls all live in the Refunds panel below, so the one button
-      that moves money can't sit next to bookkeeping ones that don't. */}
-  <div class="mt-4 mb-8">
-    <h1 class="font-serif text-3xl tracking-tight">Order #{num}</h1>
-  </div>
+    <div slot="actions" class="flex flex-wrap items-center gap-2">
+      {
+        order.email && (
+          <a href={`/admin/customers/${encodeURIComponent(order.email)}`} class="gg-admin-btn-secondary text-xs">
+            پروفایل مشتری
+          </a>
+        )
+      }
+      <a href="/admin/orders" class="gg-admin-btn-secondary text-xs">
+        ← بازگشت به سفارش‌ها
+      </a>
+    </div>
+  </AdminPageHeader>
 
   {
     error && (
-      <p class="mb-6 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+      <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-sm font-medium">
         {error}
-      </p>
+      </div>
     )
   }
   {
     noticeMsg && !error && (
-      <p class="mb-6 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+      <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-sm font-medium">
         {noticeMsg}
-      </p>
+      </div>
     )
   }
+
   {
     inventoryExceptions.some((entry) => !entry.resolved_at) && (
-      <section class="mb-8 rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-900">
-        <h2 class="font-semibold">Inventory reconciliation required</h2>
-        <p class="mt-1">Payment arrived after the stock hold ended. The order remains paid, but these quantities could not be deducted automatically.</p>
-        <div class="mt-4 space-y-3">
+      <section class="gg-status-error mb-6 rounded-2xl border p-5 text-sm">
+        <h2 class="font-bold">تطبیق کسری موجودی مورد نیاز است</h2>
+        <p class="mt-1 text-xs">
+          پرداخت پس از پایان مهلت رزرو سبد خرید انجام شده و بخشی از موجودی به‌صورت خودکار کسر نشده است.
+        </p>
+        <div class="mt-3 space-y-2">
           {inventoryExceptions.filter((entry) => !entry.resolved_at).map((entry) => (
-            <form method="post" action={`/api/admin/orders/${publicId}`} class="flex flex-wrap items-center justify-between gap-3 rounded border border-red-200 bg-white/60 p-3">
-              <span><strong>{items.find((item) => item.product_id === entry.product_id && item.variant_id === entry.variant_id)?.name ?? 'Order item'}</strong>: ordered {entry.requested_qty}, only {entry.consumed_qty} available at settlement ({entry.shortfall_qty} oversold).</span>
+            <form method="post" action={`/api/admin/orders/${publicId}`} class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-3 text-xs text-ink">
+              <span>
+                <strong>{items.find((item) => item.product_id === entry.product_id && item.variant_id === entry.variant_id)?.name ?? 'آیتم سفارش'}</strong>:
+                درخواست {toPersianDigits(entry.requested_qty)} · موجود {toPersianDigits(entry.consumed_qty)} ({toPersianDigits(entry.shortfall_qty)} کسری)
+              </span>
               <input type="hidden" name="_action" value="resolve_inventory_exception" />
               <input type="hidden" name="exception_id" value={entry.public_id} />
-              <button class="rounded border border-red-400 px-3 py-1.5 font-medium hover:bg-red-100">Mark reconciled</button>
+              <button class="gg-admin-btn-secondary py-1 text-xs">تایید تطبیق</button>
             </form>
           ))}
         </div>
@@ -197,103 +240,134 @@ const willEmailCustomer =
     )
   }
 
-  <dl class="mb-8 grid grid-cols-2 gap-x-8 gap-y-3 text-sm sm:max-w-lg">
-    <div>
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Status</dt>
-      <dd class="font-medium">{order.status}</dd>
-    </div>
-    <div>
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Placed</dt>
-      <dd>{formatDate(order.created_at, undefined, timeZone)}</dd>
-    </div>
-    <div>
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Email</dt>
-      <dd>{order.email ?? '—'}</dd>
-    </div>
-    <div>
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Shipping</dt>
-      <dd>
-        {formatPrice(order.shipping_cents, order.currency)}
-        {/* The snapshot taken when this order was paid. Never recomputed from the
-            catalog: a later weight or rate edit must not rewrite what was charged. */}
-        {order.shipping_label && <span class="text-gray-500"> · {order.shipping_label}</span>}
-        {order.shipping_weight_grams != null && (
-          <span class="text-gray-500">
-            {' '}· {formatWeight(order.shipping_weight_grams, weightUnit)}
-          </span>
-        )}
-      </dd>
-    </div>
-    {
-      order.discount_cents > 0 && (
+  {/* خلاصه مالی و اطلاعات خریدار */}
+  <div class="mb-6 grid gap-6 lg:grid-cols-12">
+    <section class="gg-admin-card p-5 lg:col-span-7">
+      <h2 class="mb-4 text-sm font-bold text-ink">مشخصات سفارش و پرداخت</h2>
+      <dl class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
         <div>
-          <dt class="text-xs uppercase tracking-widest text-gray-400">Discount</dt>
-          <dd>&minus;{formatPrice(order.discount_cents, order.currency)}</dd>
+          <dt class="text-[11px] font-medium text-faint">وضعیت پرداخت</dt>
+          <dd class="mt-1 font-bold text-ink">{ORDER_STATUS_FA[order.status] ?? order.status}</dd>
         </div>
-      )
-    }
-    {
-      order.tax_cents > 0 && (
         <div>
-          <dt class="text-xs uppercase tracking-widest text-gray-400">Tax</dt>
-          <dd>{formatPrice(order.tax_cents, order.currency)}</dd>
+          <dt class="text-[11px] font-medium text-faint">تاریخ ثبت</dt>
+          <dd class="mt-1 text-xs font-medium text-ink">{formatJalaliDateTime(order.created_at, { timeZone })}</dd>
         </div>
-      )
-    }
-    <div>
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Total</dt>
-      <dd class="font-medium">{formatPrice(order.amount_total_cents, order.currency)}</dd>
-    </div>
-    {
-      ship && (
-        <div class="col-span-2">
-          <dt class="text-xs uppercase tracking-widest text-gray-400">Ship to</dt>
-          <dd class="whitespace-pre-line">
-            {[
-              ship.name,
-              ship.line1,
-              ship.line2,
-              [ship.city, ship.state, ship.postal].filter(Boolean).join(', '),
-              ship.country,
-            ]
-              .filter(Boolean)
-              .join('\n')}
+        <div>
+          <dt class="text-[11px] font-medium text-faint">مبلغ نهایی</dt>
+          <dd class="mt-1 font-extrabold text-brand-fg">{formatPrice(order.amount_total_cents, order.currency)}</dd>
+        </div>
+        <div>
+          <dt class="text-[11px] font-medium text-faint">ایمیل خریدار</dt>
+          <dd class="mt-1 truncate text-xs">
+            {order.email ? (
+              <a href={`/admin/customers/${encodeURIComponent(order.email)}`} class="ltr-inline font-mono text-brand-fg hover:underline">
+                {order.email}
+              </a>
+            ) : '—'}
           </dd>
         </div>
-      )
-    }
-    <div>
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Payment method</dt>
-      <dd>{paymentLabel}</dd>
-    </div>
-    <div class="col-span-2">
-      <dt class="text-xs uppercase tracking-widest text-gray-400">Payment reference</dt>
-      <dd class="font-mono text-xs break-all">{order.provider_session_id ?? '—'}</dd>
-    </div>
-  </dl>
+        <div>
+          <dt class="text-[11px] font-medium text-faint">روش پرداخت</dt>
+          <dd class="mt-1 text-xs font-medium text-ink">{paymentLabel}</dd>
+        </div>
+        <div>
+          <dt class="text-[11px] font-medium text-faint">هزینه ارسال</dt>
+          <dd class="mt-1 text-xs text-ink">
+            {formatPrice(order.shipping_cents, order.currency)}
+            {order.shipping_label && <span class="text-muted"> · {order.shipping_label}</span>}
+            {order.shipping_weight_grams != null && (
+              <span class="text-muted"> · {formatWeight(order.shipping_weight_grams, weightUnit)}</span>
+            )}
+          </dd>
+        </div>
+        {order.discount_cents > 0 && (
+          <div>
+            <dt class="text-[11px] font-medium text-faint">تخفیف</dt>
+            <dd class="mt-1 text-xs font-semibold text-accent">{formatPrice(order.discount_cents, order.currency)}</dd>
+          </div>
+        )}
+        {order.tax_cents > 0 && (
+          <div>
+            <dt class="text-[11px] font-medium text-faint">مالیات</dt>
+            <dd class="mt-1 text-xs text-ink">{formatPrice(order.tax_cents, order.currency)}</dd>
+          </div>
+        )}
+        <div class="col-span-2 sm:col-span-3">
+          <dt class="text-[11px] font-medium text-faint">شناسه مرجع پرداخت (Payment Ref)</dt>
+          <dd class="ltr-inline mt-1 break-all font-mono text-xs text-muted">{order.provider_session_id ?? '—'}</dd>
+        </div>
+        {ship && (
+          <div class="col-span-2 sm:col-span-3">
+            <dt class="text-[11px] font-medium text-faint">نشانی ثبت‌شده</dt>
+            <dd class="mt-1 whitespace-pre-line text-xs text-ink">
+              {[ship.name, ship.line1, ship.line2, [ship.city, ship.state, ship.postal].filter(Boolean).join('، '), ship.country]
+                .filter(Boolean)
+                .join('\n')}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </section>
 
-  <RefundPanel order={order} timeZone={timeZone} />
+    {/* یادداشت داخلی مدیر */}
+    <section class="gg-admin-card flex flex-col justify-between p-5 lg:col-span-5">
+      <div>
+        <h2 class="text-sm font-bold text-ink">یادداشت داخلی مدیران</h2>
+        <p class="mt-1 text-xs text-muted">
+          این یادداشت فقط در پنل مدیریت نمایش داده می‌شود و به مشتری ارسال نمی‌گردد.
+        </p>
+        <form method="POST" action={`/api/admin/orders/${order.public_id}`} class="mt-3 space-y-3">
+          <input type="hidden" name="_action" value="update_internal_notes" />
+          <textarea
+            name="internal_notes"
+            rows="4"
+            maxlength="2000"
+            disabled={!canFulfill}
+            placeholder="توضیحات پشتیبانی، وضعیت پیگیری یا نکات ویژه این سفارش..."
+            class="gg-admin-input text-xs"
+          >{order.internal_notes ?? ''}</textarea>
+          {
+            canFulfill && (
+              <button type="submit" class="gg-admin-btn-primary text-xs">
+                ذخیره یادداشت داخلی
+              </button>
+            )
+          }
+        </form>
+      </div>
+    </section>
+  </div>
 
-  <div class="mb-8 rounded-lg border border-line p-5">
-    <h2 class="mb-3 text-xs uppercase tracking-widest text-gray-400">Fulfillment</h2>
+  {canRefund && <RefundPanel order={order} timeZone={timeZone} />}
+
+  <AdminOrderFulfillmentWorkspace
+    order={order}
+    items={items}
+    deliveries={deliveries}
+    versions={deliveryVersions}
+    attachments={deliveryAttachments}
+    statusHistory={orderStatusHistory}
+    notificationEvents={notificationEvents}
+    auditLogs={orderAuditLogs}
+    actor={adminActor}
+    timeZone={timeZone}
+    latestPaymentTx={latestPaymentTx}
+  />
+
+  {/* بخش وضعیت کلی تحویل و ارسال */}
+  <div class="gg-admin-card mb-6 p-5">
+    <h2 class="mb-3 text-sm font-bold text-ink">وضعیت نهایی ارسال / تحویل سفارش</h2>
     {
       labelUnreconciled && labelRecord && (
-        <div class="mb-4 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-          <p class="mb-2 font-medium">A purchased label is not reflected on this order</p>
-          <p class="mb-2">
-            {labelRecord.provider} {labelRecord.service}
-            {labelRecord.amount_cents != null && <> · {formatPrice(labelRecord.amount_cents)}</>}
-            {' '}· tracking <span class="tabular-nums">{labelRecord.tracking_number}</span>
-            {' '}· Shippo transaction <code class="text-xs">{labelRecord.transaction_id}</code>
-          </p>
-          <p class="mb-2">
-            The order changed state (refunded or fulfilled another way) while this label was being
-            bought, so its tracking was not applied. The charge is real — void the label in Shippo
-            if it won’t be used.
+        <div class="gg-status-warning mb-4 rounded-xl border p-4 text-xs">
+          <p class="mb-1 font-bold">برچسب پستی خریداری‌شده روی این سفارش اعمال نشده است</p>
+          <p>
+            {labelRecord.provider} {labelRecord.service} · کد رهگیری <span class="ltr-inline font-mono">{labelRecord.tracking_number}</span>
           </p>
           {labelRecord.label_url && (
-            <a href={labelRecord.label_url} target="_blank" rel="noopener" class="font-medium underline">
-              Label PDF
+            <a href={labelRecord.label_url} target="_blank" rel="noopener" class="mt-1 inline-block font-semibold underline">
+              دریافت PDF برچسب
             </a>
           )}
         </div>
@@ -301,396 +375,277 @@ const willEmailCustomer =
     }
     {
       !canLabel && labelUncertain && labelRecord && (
-        <div class="mb-4 space-y-3 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-          <p>
-            A label purchase for this order did not complete cleanly
-            {labelRecord.error && <> ({labelRecord.error})</>} — it <strong>may</strong> have been
-            charged (Shippo order reference <code class="text-xs">{order.public_id}</code>).
-          </p>
+        <div class="gg-status-warning mb-4 space-y-3 rounded-xl border p-4 text-xs">
+          <p>تراکنش صدور برچسب Shippo در وضعیت نامشخص است ({labelRecord.error ?? 'Timeout'}).</p>
           <form method="POST" action={`/api/admin/orders/${order.public_id}`}>
             <input type="hidden" name="_action" value="label_reconcile" />
-            <button type="submit" class="rounded-md bg-brand px-4 py-2 text-xs font-medium uppercase tracking-wider text-white hover:bg-brand-hover">
-              Reconcile with Shippo
-            </button>
+            <button type="submit" class="gg-admin-btn-primary text-xs">استعلام و تطبیق از Shippo</button>
           </form>
-          <details class="text-xs text-amber-900/80">
-            <summary class="cursor-pointer">The request never reached Shippo? (risk-bearing override)</summary>
-            <p class="mt-2">
-              Force-discarding abandons the single-purchase guarantee for this order: if the
-              lost request did reach Shippo and completes later, that label will exist only
-              in your Shippo dashboard and will not be recorded here. Reconcile first when
-              in doubt.
-            </p>
-            <form method="POST" action={`/api/admin/orders/${order.public_id}`} class="mt-2">
-              <input type="hidden" name="_action" value="label_force_discard" />
-              <button type="submit" class="rounded-md border border-amber-400 px-3 py-1.5 font-medium uppercase tracking-wider hover:bg-amber-100">
-                I accept the risk — force discard
-              </button>
-            </form>
-          </details>
         </div>
       )
     }
     {
       fulfilled ? (
-        <div class="space-y-2 text-sm">
-          <p>
-            <span class="font-medium text-green-700">Fulfilled</span>
-            {order.fulfilled_at && <span class="text-gray-400"> · {formatDate(order.fulfilled_at, undefined, timeZone)}</span>}
+        <div class="space-y-3 text-sm">
+          <p class="flex items-center gap-2">
+            <span class="gg-status-success rounded-md px-2.5 py-0.5 text-xs font-bold">تکمیل و تحویل‌شده</span>
+            {order.fulfilled_at && <span class="text-xs text-muted">{formatJalaliDateTime(order.fulfilled_at, { timeZone })}</span>}
           </p>
           {order.tracking_number && (
-            <p>
+            <p class="text-xs text-muted">
               {carrierName(order.tracking_carrier)} ·{' '}
               {trackUrl ? (
-                <a href={trackUrl} target="_blank" rel="noopener" class="text-accent hover:underline">
+                <a href={trackUrl} target="_blank" rel="noopener" class="ltr-inline font-mono text-brand-fg hover:underline">
                   {order.tracking_number}
                 </a>
               ) : (
-                order.tracking_number
+                <span class="ltr-inline font-mono">{order.tracking_number}</span>
               )}
             </p>
           )}
-          {order.label_url && (
-            <p>
-              <a href={order.label_url} target="_blank" rel="noopener" class="text-accent hover:underline">
-                Shipping label (PDF)
-              </a>
-            </p>
+          {canFulfill && (
+            <form method="POST" action={`/api/admin/orders/${order.public_id}`}>
+              <input type="hidden" name="_action" value="unfulfill" />
+              <button type="submit" class="text-xs font-semibold text-coral hover:underline">
+                بازگرداندن به وضعیت در انتظار تحویل
+              </button>
+            </form>
           )}
-          <form method="POST" action={`/api/admin/orders/${order.public_id}`}>
-            <input type="hidden" name="_action" value="unfulfill" />
-            <button type="submit" class="text-xs uppercase tracking-widest text-gray-400 hover:text-red-600">
-              Mark unfulfilled
-            </button>
-          </form>
         </div>
       ) : (
-        <div class="space-y-6">
-          {canLabel && (
-            <div class="rounded-md border border-line bg-white/60 p-4 text-sm">
-              <p class="mb-3 text-xs uppercase tracking-widest text-gray-400">Buy shipping label</p>
+        <div class="space-y-5">
+          {canLabel && canFulfill && (
+            <div class="rounded-xl border border-line bg-paper/60 p-4 text-xs">
+              <p class="mb-3 font-bold text-ink">صدور برچسب پستی (Shippo)</p>
               {labelInFlight ? (
-                <p class="rounded-md border border-line bg-paper px-3 py-2 text-gray-600">
-                  A label purchase is in progress for this order. Refresh in a moment — if it
-                  doesn’t complete within a couple of minutes it can be reconciled here.
-                </p>
+                <p class="text-muted">خرید برچسب در حال انجام است. چند لحظه دیگر صفحه را تازه‌سازی کنید.</p>
               ) : labelUncertain ? (
                 <div class="space-y-3">
-                  <p class="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-amber-900">
-                    A label purchase for this order did not complete cleanly
-                    {labelRecord?.error && <> ({labelRecord.error})</>} — it <strong>may</strong> have
-                    been charged. Reconciling asks Shippo directly: a found label is recorded here
-                    and the order fulfilled; a confirmed no-purchase reopens rate fetching.
-                  </p>
+                  <p class="text-amber">نتیجه صدور برچسب نامشخص است؛ استعلام مجدد انجام دهید.</p>
                   <form method="POST" action={`/api/admin/orders/${order.public_id}`}>
                     <input type="hidden" name="_action" value="label_reconcile" />
-                    <button type="submit" class="rounded-md bg-brand px-4 py-2 text-xs font-medium uppercase tracking-wider text-white hover:bg-brand-hover">
-                      Reconcile with Shippo
-                    </button>
+                    <button type="submit" class="gg-admin-btn-primary text-xs">استعلام از Shippo</button>
                   </form>
-                  <details class="text-xs text-amber-900/80">
-                    <summary class="cursor-pointer">The request never reached Shippo? (risk-bearing override)</summary>
-                    <p class="mt-2">
-                      Force-discarding abandons the single-purchase guarantee for this order: if the
-                      lost request did reach Shippo and completes later, that label will exist only
-                      in your Shippo dashboard and will not be recorded here. Reconcile first when
-                      in doubt.
-                    </p>
-                    <form method="POST" action={`/api/admin/orders/${order.public_id}`} class="mt-2">
-                      <input type="hidden" name="_action" value="label_force_discard" />
-                      <button type="submit" class="rounded-md border border-amber-400 px-3 py-1.5 font-medium uppercase tracking-wider hover:bg-amber-100">
-                        I accept the risk — force discard
-                      </button>
-                    </form>
-                  </details>
                 </div>
-              ) : labelRecord?.status === 'purchased' ? (
-                <p>
-                  Label purchased ({labelRecord.provider} {labelRecord.service}).{' '}
-                  {labelRecord.label_url && (
-                    <a href={labelRecord.label_url} target="_blank" rel="noopener" class="text-accent hover:underline">
-                      Label PDF
-                    </a>
-                  )}
-                </p>
               ) : labelInternational && labelRates.length === 0 ? (
-                <p class="text-gray-600">
-                  This order ships to {ship?.country} but your saved ship-from address is in{' '}
-                  {shipFrom.country} — international labels aren’t supported yet (they need a
-                  customs declaration). Buy the label in your Shippo dashboard, then record the
-                  tracking number below.
-                </p>
-              ) : (
-                <Fragment>
-              {labelRecord?.status === 'failed' && labelRecord.error && (
-                <p class="mb-3 text-red-700">{labelRecord.error}</p>
-              )}
-              {labelRatesError && <p class="mb-3 text-red-700">{labelRatesError}</p>}
-              {labelRates.length > 0 ? (
+                <p class="text-muted">ارسال بین‌المللی مستقیم پشتیبانی نمی‌شود؛ کد رهگیری را به‌صورت دستی ثبت کنید.</p>
+              ) : labelRates.length > 0 ? (
                 <form method="POST" action={`/api/admin/orders/${order.public_id}`} class="space-y-2">
                   <input type="hidden" name="_action" value="buy_label" />
                   {labelRates.map((r, i) => (
-                    <label class="flex items-center gap-3">
-                      <input type="radio" name="rate" value={r.rateId} checked={i === 0} class="size-4" />
-                      <span class="flex-1">
-                        {r.provider} {r.service}
-                        {r.estimatedDays != null && (
-                          <span class="text-gray-500"> · ~{r.estimatedDays}d</span>
-                        )}
-                      </span>
-                      <span class="tabular-nums">{formatPrice(r.amountCents, r.currency)}</span>
+                    <label class="flex items-center gap-3 rounded-lg border border-line bg-surface p-2.5">
+                      <input type="radio" name="rate" value={r.rateId} checked={i === 0} class="size-4 accent-brand" />
+                      <span class="flex-1">{r.provider} {r.service}</span>
+                      <span class="font-bold">{formatPrice(r.amountCents, r.currency)}</span>
                     </label>
                   ))}
-                  <div class="flex items-center gap-4 pt-2">
-                    <button
-                      type="submit"
-                      class="rounded-md bg-brand px-5 py-2 font-medium text-white hover:bg-brand-hover"
-                    >
-                      Buy label
-                    </button>
-                    <button
-                      type="submit"
-                      form="label-discard"
-                      class="text-xs uppercase tracking-widest text-gray-400 hover:text-brand"
-                    >
-                      Start over
-                    </button>
+                  <div class="flex items-center gap-3 pt-2">
+                    <button type="submit" class="gg-admin-btn-primary text-xs">خرید برچسب</button>
+                    <button type="submit" form="label-discard" class="gg-admin-btn-secondary text-xs">شروع مجدد</button>
                   </div>
-                  <p class="text-xs text-gray-500">
-                    Buying charges your Shippo account, records the tracking number, and marks the
-                    order fulfilled.{' '}
-                    {willEmailCustomer
-                      ? 'The customer is emailed the tracking details.'
-                      : 'No customer email will be sent (demo order or no email on file).'}
-                  </p>
-                </form>
-                <form method="POST" action={`/api/admin/orders/${order.public_id}`} id="label-discard">
-                  <input type="hidden" name="_action" value="label_discard" />
                 </form>
               ) : (
                 <form method="POST" action={`/api/admin/orders/${order.public_id}`} class="space-y-3">
                   <input type="hidden" name="_action" value="label_rates" />
                   <div class="grid gap-3 sm:grid-cols-3">
-                    <label class="block sm:col-span-3">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Ship from — name</span>
-                      <input name="from_name" value={shipFrom.name ?? ''} required class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block sm:col-span-3">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Street</span>
-                      <input name="from_street1" value={shipFrom.street1 ?? ''} required class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">City</span>
-                      <input name="from_city" value={shipFrom.city ?? ''} required class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">State</span>
-                      <input name="from_state" value={shipFrom.state ?? ''} class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Postal code</span>
-                      <input name="from_zip" value={shipFrom.zip ?? ''} required class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Country</span>
-                      <input name="from_country" value={shipFrom.country ?? 'US'} required maxlength="2" class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2 uppercase" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Length ({dimUnit})</span>
-                      <input name="parcel_length" value={parcelDefault.length ?? ''} required inputmode="decimal" class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Width ({dimUnit})</span>
-                      <input name="parcel_width" value={parcelDefault.width ?? ''} required inputmode="decimal" class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Height ({dimUnit})</span>
-                      <input name="parcel_height" value={parcelDefault.height ?? ''} required inputmode="decimal" class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
-                    <label class="block">
-                      <span class="block text-xs uppercase tracking-widest text-gray-400">Packed weight ({weightUnit})</span>
-                      <input name="parcel_weight" value={parcelWeightValue} required inputmode="decimal" class="mt-1 w-full rounded-md border border-line bg-paper px-3 py-2" />
-                    </label>
+                    <input name="from_name" value={shipFrom.name ?? ''} required placeholder="نام فرستنده" class="gg-admin-input text-xs sm:col-span-3" />
+                    <input name="from_street1" value={shipFrom.street1 ?? ''} required placeholder="آدرس فرستنده" class="gg-admin-input text-xs sm:col-span-3" />
+                    <input name="from_city" value={shipFrom.city ?? ''} required placeholder="شهر" class="gg-admin-input text-xs" />
+                    <input name="from_state" value={shipFrom.state ?? ''} placeholder="استان/ایالت" class="gg-admin-input text-xs" />
+                    <input name="from_zip" value={shipFrom.zip ?? ''} required placeholder="کد پستی" class="gg-admin-input text-xs" />
+                    <input name="from_country" value={shipFrom.country ?? 'US'} required maxlength="2" placeholder="کد کشور" class="gg-admin-input text-xs uppercase" />
+                    <input name="parcel_length" value={parcelDefault.length ?? ''} required inputmode="decimal" placeholder={`طول (${dimUnit})`} class="gg-admin-input text-xs" />
+                    <input name="parcel_width" value={parcelDefault.width ?? ''} required inputmode="decimal" placeholder={`عرض (${dimUnit})`} class="gg-admin-input text-xs" />
+                    <input name="parcel_height" value={parcelDefault.height ?? ''} required inputmode="decimal" placeholder={`ارتفاع (${dimUnit})`} class="gg-admin-input text-xs" />
+                    <input name="parcel_weight" value={parcelWeightValue} required inputmode="decimal" placeholder={`وزن (${weightUnit})`} class="gg-admin-input text-xs" />
                   </div>
-                  <button
-                    type="submit"
-                    class="rounded-md bg-brand px-5 py-2 font-medium text-white hover:bg-brand-hover"
-                  >
-                    Get rates
-                  </button>
-                  <p class="text-xs text-gray-500">
-                    Address and box size are remembered for the next label. Weight is prefilled
-                    from the order’s recorded shipment weight when there is one.
-                  </p>
+                  <button type="submit" class="gg-admin-btn-primary text-xs">دریافت تعرفه پستی</button>
                 </form>
               )}
-                </Fragment>
-              )}
+              <form method="POST" action={`/api/admin/orders/${order.public_id}`} id="label-discard">
+                <input type="hidden" name="_action" value="label_discard" />
+              </form>
             </div>
           )}
-        <form
-          method="POST"
-          action={`/api/admin/orders/${order.public_id}`}
-          class="flex flex-wrap items-end gap-3 text-sm"
-        >
-          <input type="hidden" name="_action" value="fulfill" />
-          <label class="block">
-            <span class="block text-xs uppercase tracking-widest text-gray-400">Carrier</span>
-            <select name="carrier" class="mt-1 rounded-md border border-line bg-paper px-3 py-2">
-              {CARRIERS.map((c) => (
-                <option value={c.code}>{c.name}</option>
-              ))}
-            </select>
-          </label>
-          <label class="block">
-            <span class="block text-xs uppercase tracking-widest text-gray-400">Tracking #</span>
-            <input
-              name="tracking_number"
-              type="text"
-              class="mt-1 rounded-md border border-line bg-paper px-3 py-2"
-            />
-          </label>
-          <button
-            type="submit"
-            class="rounded-md bg-brand px-5 py-2 font-medium text-white hover:bg-brand-hover"
-          >
-            Mark as fulfilled
-          </button>
-        </form>
+
+          {canFulfill && (
+            <form method="POST" action={`/api/admin/orders/${order.public_id}`} class="flex flex-wrap items-end gap-3 text-sm">
+              <input type="hidden" name="_action" value="fulfill" />
+              <div>
+                <label class="mb-1 block text-xs font-semibold text-ink">روش / سرویس ارسال</label>
+                <select name="carrier" class="gg-admin-input py-2 text-xs">
+                  {CARRIERS.map((c) => (
+                    <option value={c.code}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-xs font-semibold text-ink">کد رهگیری / مرجع تحویل</label>
+                <input name="tracking_number" type="text" class="gg-admin-input ltr-inline py-2 font-mono text-xs" />
+              </div>
+              <button type="submit" class="gg-admin-btn-primary py-2 text-xs">
+                ثبت نهایی به‌عنوان تحویل‌شده
+              </button>
+            </form>
+          )}
         </div>
       )
     }
+
     {
       labelAttempts.length > 0 && (
-        <details class="mt-5 border-t border-line pt-4">
-          <summary class="cursor-pointer text-xs uppercase tracking-widest text-gray-500">
-            Label history ({labelAttempts.length})
+        <details class="mt-4 border-t border-line pt-3 text-xs">
+          <summary class="cursor-pointer font-semibold text-muted">
+            تاریخچه تلاش‌های صدور برچسب ({toPersianDigits(labelAttempts.length)})
           </summary>
-          <ol class="mt-3 space-y-3">
+          <ul class="mt-2 space-y-2">
             {labelAttempts.map((attempt) => (
-              <li class="rounded-md bg-paper px-3 py-2 text-xs text-gray-600">
-                <div class="flex flex-wrap items-baseline justify-between gap-2">
-                  <span class="font-medium text-gray-800">
-                    {attempt.outcome === 'force_discarded'
-                      ? 'Force-discarded'
-                      : attempt.outcome.charAt(0).toUpperCase() + attempt.outcome.slice(1)}
-                  </span>
-                  <time datetime={`${attempt.settled_at.replace(' ', 'T')}Z`}>
-                    {formatDate(attempt.settled_at, undefined, timeZone)}
-                  </time>
-                </div>
-                {(attempt.provider || attempt.service || attempt.amount_cents != null) && (
-                  <p class="mt-1">
-                    {[attempt.provider, attempt.service].filter(Boolean).join(' ')}
-                    {attempt.amount_cents != null && <> · {formatPrice(attempt.amount_cents)}</>}
-                  </p>
-                )}
-                {attempt.tracking_number && <p class="mt-1">Tracking {attempt.tracking_number}</p>}
-                {attempt.transaction_id && (
-                  <p class="mt-1">
-                    Transaction <code>{attempt.transaction_id}</code>
-                  </p>
-                )}
-                {attempt.error && <p class="mt-1">{attempt.error}</p>}
-                {attempt.label_url && (
-                  <p class="mt-1">
-                    <a
-                      href={attempt.label_url}
-                      target="_blank"
-                      rel="noopener"
-                      class="text-accent hover:underline"
-                    >
-                      Label PDF
-                    </a>
-                  </p>
-                )}
+              <li class="rounded-xl border border-line bg-paper/60 px-3 py-2 text-muted">
+                {attempt.outcome} · {formatJalaliDateTime(attempt.settled_at, { timeZone })}
+                {attempt.tracking_number && ` · کد رهگیری: ${attempt.tracking_number}`}
               </li>
             ))}
-          </ol>
+          </ul>
         </details>
       )
     }
   </div>
 
   {
-    canReissue && (
-      <div class="mb-8 rounded-lg border border-line p-5">
-        <h2 class="mb-3 text-xs uppercase tracking-widest text-gray-400">Customer link</h2>
-        {/* Support remedy for a forwarded or leaked guest link: rotates the
-            stored access token and emails the customer the replacement. The
-            token is never shown here — the email is the only delivery path. */}
+    canReissue && canFulfill && (
+      <div class="gg-admin-card mb-6 p-5">
+        <h2 class="text-sm font-bold text-ink">ارسال لینک دسترسی جدید به خریدار</h2>
+        <p class="mt-1 text-xs text-muted">
+          در صورتی که لینک قبلی سفارش لو رفته یا برای مشتری ایمیل نشده باشد، با صدور لینک جدید تمام لینک‌های قبلی بلافاصله باطل می‌شوند.
+        </p>
         <form
           method="POST"
           action={`/api/admin/orders/${order.public_id}`}
-          onsubmit={`return confirm('Email ${order.email} a fresh order link? Every previously shared link for this order stops working immediately.')`}
+          data-confirm-message={`لینک دسترسی جدید به ایمیل ${order.email} ارسال شود؟ لینک‌های قبلی این سفارش بلافاصله از کار می‌افتند.`}
+          class="mt-3"
         >
           <input type="hidden" name="_action" value="reissue_link" />
-          <button
-            type="submit"
-            class="rounded-md border border-line px-4 py-2 text-xs font-medium uppercase tracking-wider text-gray-700 hover:border-brand hover:text-brand"
-          >
-            Email a new order link
+          <button type="submit" class="gg-admin-btn-secondary text-xs">
+            صدور و ایمیل لینک جدید به مشتری
           </button>
-          <p class="mt-2 text-xs text-gray-500">
-            Use this if the customer reports a forwarded or leaked link. The old links stop
-            working the moment the new one is issued.
-          </p>
         </form>
       </div>
     )
   }
 
-  <h2 class="mb-3 text-xs uppercase tracking-widest text-gray-400">Items</h2>
-  <div class="sm:overflow-x-auto">
-    <table class="admin-table w-full text-left text-sm sm:min-w-[34rem]">
-    <thead>
-      <tr class="border-b border-line text-xs uppercase tracking-widest text-gray-400">
-        <th class="py-3 pr-4 font-normal">Product</th>
-        <th class="py-3 pr-4 font-normal">Unit price</th>
-        <th class="py-3 pr-4 font-normal">Qty</th>
-        <th class="py-3 text-right font-normal">Line total</th>
-      </tr>
-    </thead>
-    <tbody>
-      {
-        items.map((it) => (
-          <tr class="border-b border-line">
-            <td class="py-3 pr-4">
-              {it.product_public_id ? (
-                <a href={`/admin/products/${it.product_public_id}/edit`} class="text-accent hover:underline">
-                  {it.name}
-                </a>
-              ) : (
-                it.name
-              )}
-            </td>
-            <td data-label="Unit price" class="py-3 pr-4 tabular-nums">{formatPrice(it.price_cents, order.currency)}</td>
-            <td data-label="Qty" class="py-3 pr-4 tabular-nums">{it.quantity}</td>
-            <td data-label="Line total" class="py-3 text-right tabular-nums">
-              {formatPrice(it.price_cents * it.quantity, order.currency)}
-            </td>
-          </tr>
-        ))
-      }
-      {
-        items.length === 0 && (
-          <tr>
-            <td colspan="4" class="py-8 text-center text-gray-400">
-              No line items recorded for this order.
-            </td>
-          </tr>
-        )
-      }
-    </tbody>
-    </table>
-  </div>
-
   {
-    mismatch && (
-      <p class="mt-3 text-sm text-amber-700">
-        Note: line items total {formatPrice(itemsTotalCents, order.currency)} differs from the
-        order total — verify against the payment provider.
-      </p>
+    order.email && order.status !== 'refunded' && canRefund && (
+      <div class="gg-admin-card mb-6 p-5">
+        <h2 class="text-sm font-bold text-ink">بازگشت وجه به کیف پول مشتری</h2>
+        <p class="mt-1 text-xs text-muted">
+          استرداد مستقیم مبلغ سفارش به کیف پول حساب کاربری <strong class="ltr-inline font-mono text-ink">{order.email}</strong> همراه با ثبت در دفتر کل کیف پول و گزارش حسابرسی:
+        </p>
+        <form
+          method="POST"
+          action={`/api/admin/orders/${order.public_id}`}
+          class="mt-3 flex flex-wrap items-end gap-3"
+        >
+          <input type="hidden" name="_action" value="refund_to_wallet" />
+          <div>
+            <label class="mb-1 block text-xs font-semibold text-ink">
+              مبلغ بازگشتی ({order.currency.toLowerCase() === 'irt' ? 'تومان' : order.currency.toLowerCase() === 'irr' ? 'ریال' : order.currency.toUpperCase()})
+            </label>
+            <input
+              type="number"
+              name="wallet_amount"
+              value={order.amount_total_cents - order.refunded_cents}
+              min="1"
+              max={order.amount_total_cents - order.refunded_cents}
+              required
+              class="gg-admin-input ltr-inline w-40 font-mono text-xs"
+            />
+          </div>
+          <div class="min-w-56 flex-1">
+            <label class="mb-1 block text-xs font-semibold text-ink">علت بازگشت وجه</label>
+            <input
+              type="text"
+              name="reason"
+              required
+              placeholder="مثال: عدم امکان تحویل سرویس در ریجن انتخاب‌شده"
+              class="gg-admin-input text-xs"
+            />
+          </div>
+          <button type="submit" class="gg-admin-btn-primary text-xs">
+            واریز استرداد به کیف پول مشتری
+          </button>
+        </form>
+      </div>
     )
   }
+
+  {/* جدول اقلام سفارش */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-sm font-bold text-ink">اقلام ثبت‌شده در سفارش</h2>
+    <div class="overflow-x-auto">
+      <table class="gg-admin-table">
+        <thead>
+          <tr>
+            <th>محصول / سرویس</th>
+            <th>قیمت واحد</th>
+            <th>تعداد</th>
+            <th class="text-end">جمع ردیف</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            items.map((it) => {
+              const customerInputs = parseStoredCustomerInputs(it.customer_inputs_json);
+              return (
+                <tr>
+                  <td>
+                    {it.product_public_id ? (
+                      <a href={`/admin/products/${it.product_public_id}/edit`} class="font-semibold text-brand-fg hover:underline">
+                        {it.name}
+                      </a>
+                    ) : (
+                      <span class="font-semibold text-ink">{it.name}</span>
+                    )}
+                    {customerInputs.length > 0 && (
+                      <dl class="mt-2 space-y-1 rounded-xl border border-line bg-paper/70 px-3 py-2 text-xs">
+                        <dt class="text-[11px] font-bold text-muted">{fa.orders.customerInputsLabel}</dt>
+                        {customerInputs.map((ci) => (
+                          <div class="flex flex-wrap items-baseline justify-between gap-3">
+                            <dt class="text-muted">{ci.label}:</dt>
+                            <dd class={ci.type === 'email' || ci.type === 'number' ? 'ltr-inline font-mono font-semibold text-ink' : 'font-semibold text-ink'}>
+                              {ci.value}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    )}
+                  </td>
+                  <td class="text-muted">{formatPrice(it.price_cents, order.currency)}</td>
+                  <td class="font-semibold text-ink">{toPersianDigits(it.quantity)}</td>
+                  <td class="text-end font-bold text-ink">
+                    {formatPrice(it.price_cents * it.quantity, order.currency)}
+                  </td>
+                </tr>
+              );
+            })
+          }
+          {
+            items.length === 0 && (
+              <tr>
+                <td colspan="4" class="py-8 text-center text-xs text-muted">
+                  ردیفی برای این سفارش ثبت نشده است.
+                </td>
+              </tr>
+            )
+          }
+        </tbody>
+      </table>
+    </div>
+    {
+      mismatch && (
+        <p class="gg-status-warning mt-4 rounded-xl border px-3 py-2 text-xs font-medium">
+          توجه: مجموع اقلام ({formatPrice(itemsTotalCents, order.currency)}) با مبلغ نهایی سفارش تطابق کامل ندارد — درگاه پرداخت را بررسی کنید.
+        </p>
+      )
+    }
+  </section>
 </AdminLayout>

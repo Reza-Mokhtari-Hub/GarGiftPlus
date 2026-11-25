@@ -1,0 +1,111 @@
+---
+/**
+ * پنجره تایید دسترس‌پذیر (جایگزین کامل window.confirm/alert در سراسر پنل مدیریت).
+ * هر فرم یا دکمه‌ای که ویژگی `data-confirm-message` داشته باشد به صورت خودکار
+ * پیش از اجرا از طریق این مودال تایید گرفته می‌شود.
+ */
+---
+
+<dialog
+  id="admin-confirm-dialog"
+  aria-labelledby="admin-confirm-title"
+  aria-describedby="admin-confirm-desc"
+  class="m-auto w-[min(92vw,26rem)] rounded-2xl border border-line bg-surface p-0 text-ink shadow-2xl backdrop:bg-black/55 backdrop:backdrop-blur-xs"
+>
+  <div class="space-y-4 p-6">
+    <div class="flex items-start gap-3">
+      <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/12 text-rose-600 dark:text-rose-300">
+        <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+        </svg>
+      </div>
+      <div class="min-w-0 space-y-1">
+        <h2 id="admin-confirm-title" class="text-base font-bold text-ink">تایید عملیات</h2>
+        <p id="admin-confirm-desc" class="text-sm leading-6 text-muted">
+          آیا از انجام این عملیات مطمئن هستید؟
+        </p>
+      </div>
+    </div>
+
+    <div class="flex items-center justify-end gap-2.5 border-t border-line pt-4">
+      <button
+        type="button"
+        id="admin-confirm-cancel"
+        class="gg-admin-btn-secondary"
+      >
+        انصراف
+      </button>
+      <button
+        type="button"
+        id="admin-confirm-accept"
+        class="gg-admin-btn-primary bg-rose-600 hover:bg-rose-700"
+      >
+        تایید و ادامه
+      </button>
+    </div>
+  </div>
+</dialog>
+
+<script is:inline>
+  (() => {
+    const dialog = document.getElementById('admin-confirm-dialog');
+    if (!(dialog instanceof HTMLDialogElement)) return;
+    const descEl = document.getElementById('admin-confirm-desc');
+    const titleEl = document.getElementById('admin-confirm-title');
+    const cancelBtn = document.getElementById('admin-confirm-cancel');
+    const acceptBtn = document.getElementById('admin-confirm-accept');
+
+    let pendingSubmit = null;
+
+    const closeModal = () => {
+      pendingSubmit = null;
+      if (dialog.open) dialog.close();
+    };
+
+    cancelBtn?.addEventListener('click', closeModal);
+    dialog.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      closeModal();
+    });
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog) closeModal();
+    });
+
+    acceptBtn?.addEventListener('click', () => {
+      const target = pendingSubmit;
+      closeModal();
+      if (!target) return;
+      target.form.setAttribute('data-confirm-bypass', '1');
+      if (target.submitter && typeof target.form.requestSubmit === 'function') {
+        target.form.requestSubmit(target.submitter);
+      } else {
+        target.form.submit();
+      }
+    });
+
+    document.addEventListener('submit', (e) => {
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      if (form.getAttribute('data-confirm-bypass') === '1') {
+        form.removeAttribute('data-confirm-bypass');
+        return;
+      }
+      const submitter = e.submitter instanceof HTMLElement ? e.submitter : null;
+      const msg =
+        submitter?.getAttribute('data-confirm-message') ||
+        form.getAttribute('data-confirm-message');
+      if (!msg) return;
+
+      e.preventDefault();
+      const customTitle =
+        submitter?.getAttribute('data-confirm-title') ||
+        form.getAttribute('data-confirm-title') ||
+        'تایید عملیات';
+      if (titleEl) titleEl.textContent = customTitle;
+      if (descEl) descEl.textContent = msg;
+      pendingSubmit = { form, submitter };
+      dialog.showModal();
+      acceptBtn?.focus();
+    });
+  })();
+</script>

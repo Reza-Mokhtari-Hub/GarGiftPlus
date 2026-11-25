@@ -1,115 +1,125 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../../components/admin/AdminEmptyState.astro';
+import { getConfig } from '../../../config';
 import { listPages } from '../../../features/pages/db';
 import { menuReferencesFor } from '../../../features/navigation/admin';
+import { formatJalaliDate, toPersianDigits } from '../../../lib/format';
 
 const pages = await listPages(env.DB);
-// Deleting a page that a menu links to silently shrinks the storefront nav.
-// One bounded query for the whole list, so say so before it happens.
 const menuRefs = await menuReferencesFor(
   env.DB,
   'page',
   pages.map((p) => p.id),
 );
-const dateFmt = new Intl.DateTimeFormat('en-US', { dateStyle: 'medium' });
-const formatDate = (iso: string) => dateFmt.format(new Date(`${iso.replace(' ', 'T')}Z`));
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
 ---
 
-<AdminLayout title="Pages" active="pages">
-  <div class="mb-8 flex items-center justify-between">
-    <h1 class="font-serif text-3xl tracking-tight">Pages</h1>
-    <a
-      href="/admin/pages/new"
-      class="rounded-md bg-brand px-4 py-2 text-xs font-medium uppercase tracking-wider text-white hover:bg-brand-hover"
-    >
-      New page
+<AdminLayout
+  title="صفحات محتوایی"
+  active="pages"
+  requiredPermission="content.manage"
+  breadcrumbs={[{ label: 'محتوا و فروشگاه' }, { label: 'صفحات محتوایی' }]}
+>
+  <AdminPageHeader
+    title="مدیریت صفحات محتوایی"
+    subtitle="ایجاد و ویرایش صفحات قوانین، درباره ما، راهنمای خرید و حریم خصوصی با ویرایشگر Markdown"
+    badge={`${toPersianDigits(pages.length)} صفحه`}
+  >
+    <a slot="actions" href="/admin/pages/new" class="gg-admin-btn-primary text-xs">
+      + ایجاد صفحه جدید
     </a>
-  </div>
+  </AdminPageHeader>
 
-  {
-    pages.length === 0 ? (
-      <p class="py-12 text-center text-sm text-gray-500">
-        No pages yet. Create one for About, Shipping, Returns, or Privacy, then add it to your
-        {' '}
-        <a href="/admin/navigation" class="underline hover:text-brand">
-          navigation
-        </a>{' '}
-        so shoppers can find it.
-      </p>
-    ) : (
-      <div class="sm:overflow-x-auto">
-        <table class="admin-table w-full text-left text-sm sm:min-w-[40rem]">
-          <thead>
-            <tr class="border-b border-line text-xs uppercase tracking-widest text-gray-400">
-              <th class="py-3 pr-4 font-normal">Title</th>
-              <th class="py-3 pr-4 font-normal">URL</th>
-              <th class="py-3 pr-4 font-normal">Status</th>
-              <th class="py-3 pr-4 font-normal">Updated</th>
-              <th class="py-3 text-right font-normal">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pages.map((page) => (
-              <tr class="border-b border-line">
-                <td class="py-3 pr-4">
-                  <a href={`/admin/pages/${page.public_id}/edit`} class="font-medium hover:text-brand">
-                    {page.title}
-                  </a>
-                </td>
-                <td data-label="URL" class="py-3 pr-4 text-gray-500">/pages/{page.slug}</td>
-                <td data-label="Status" class="py-3 pr-4">
-                  {page.published ? (
-                    <span class="text-gray-600">Published</span>
-                  ) : (
-                    <span class="text-gray-400">Draft</span>
-                  )}
-                </td>
-                <td data-label="Updated" class="py-3 pr-4 text-gray-500">
-                  {formatDate(page.updated_at)}
-                </td>
-                <td class="py-3 text-right">
-                  <span class="inline-flex items-center gap-3">
-                    {page.published !== 0 && (
-                      <a
-                        href={`/pages/${page.slug}`}
-                        target="_blank"
-                        rel="noopener"
-                        class="text-xs uppercase tracking-widest text-gray-500 hover:text-brand"
-                      >
-                        View
-                      </a>
-                    )}
+  <section class="gg-admin-card overflow-hidden p-5">
+    {
+      pages.length === 0 ? (
+        <AdminEmptyState
+          title="هنوز صفحه محتوایی ایجاد نشده است"
+          description="صفحاتی مانند قوانین خرید، سوالات متداول یا درباره گارگیفت+ را ایجاد کرده و به منو اضافه کنید."
+          actionLabel="ایجاد اولین صفحه"
+          actionHref="/admin/pages/new"
+        />
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>عنوان صفحه</th>
+                <th>نشانی (URL)</th>
+                <th>وضعیت</th>
+                <th>آخرین ویرایش</th>
+                <th class="text-end">عملیات</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pages.map((page) => (
+                <tr>
+                  <td>
                     <a
                       href={`/admin/pages/${page.public_id}/edit`}
-                      class="text-xs uppercase tracking-widest text-gray-500 hover:text-brand"
+                      class="font-semibold text-ink hover:text-brand-fg hover:underline"
                     >
-                      Edit
+                      {page.title}
                     </a>
-                    <form
-                      method="POST"
-                      action={`/api/admin/pages/${page.public_id}`}
-                      onsubmit={`return confirm('${
-                        menuRefs.has(page.id)
-                          ? 'This page is linked from your navigation. Deleting it hides that link on the storefront. Continue?'
-                          : 'Delete this page?'
-                      }')`}
+                  </td>
+                  <td>
+                    <span class="ltr-inline font-mono text-xs text-muted">/pages/{page.slug}</span>
+                  </td>
+                  <td>
+                    <span
+                      class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                        page.published ? 'gg-status-success' : 'bg-surface-2 text-muted'
+                      }`}
                     >
-                      <input type="hidden" name="_action" value="delete" />
-                      <button
-                        type="submit"
-                        class="text-xs uppercase tracking-widest text-red-600 hover:text-red-700"
+                      {page.published ? 'منتشرشده' : 'پیش‌نویس'}
+                    </span>
+                  </td>
+                  <td class="text-xs text-muted">
+                    {formatJalaliDate(page.updated_at, { timeZone })}
+                  </td>
+                  <td class="text-end">
+                    <div class="inline-flex items-center gap-2">
+                      {page.published !== 0 && (
+                        <a
+                          href={`/pages/${page.slug}`}
+                          target="_blank"
+                          rel="noopener"
+                          class="gg-admin-btn-secondary py-1 text-xs"
+                        >
+                          مشاهده
+                        </a>
+                      )}
+                      <a
+                        href={`/admin/pages/${page.public_id}/edit`}
+                        class="gg-admin-btn-secondary py-1 text-xs"
                       >
-                        Delete
-                      </button>
-                    </form>
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )
-  }
+                        ویرایش
+                      </a>
+                      <form
+                        method="POST"
+                        action={`/api/admin/pages/${page.public_id}`}
+                        data-confirm-message={
+                          menuRefs.has(page.id)
+                            ? `صفحه «${page.title}» در منوی ناوبری فروشگاه لینک شده است. با حذف آن لینک منو مخفی می‌شود؛ ادامه می‌دهید؟`
+                            : `آیا از حذف صفحه «${page.title}» اطمینان دارید؟`
+                        }
+                      >
+                        <input type="hidden" name="_action" value="delete" />
+                        <button type="submit" class="gg-admin-btn-danger py-1 text-xs">
+                          حذف
+                        </button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
 </AdminLayout>

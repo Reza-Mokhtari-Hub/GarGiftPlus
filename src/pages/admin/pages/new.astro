@@ -1,54 +1,69 @@
 ---
 import AdminLayout from '../../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../../components/admin/AdminPageHeader.astro';
 
 const error = Astro.url.searchParams.get('error');
 ---
 
-<AdminLayout title="New page" active="pages">
-  <a href="/admin/pages" class="text-sm text-gray-500 hover:text-brand">&larr; Back to pages</a>
-  <h1 class="mt-4 mb-6 font-serif text-3xl tracking-tight">New page</h1>
+<AdminLayout
+  title="ایجاد صفحه جدید"
+  active="pages"
+  requiredPermission="content.manage"
+  breadcrumbs={[
+    { label: 'محتوا و فروشگاه' },
+    { label: 'صفحات محتوایی', href: '/admin/pages' },
+    { label: 'صفحه جدید' },
+  ]}
+>
+  <AdminPageHeader
+    title="ایجاد صفحه محتوایی جدید"
+    subtitle="پس از ساخت پیش‌نویس، وارد ویرایشگر کامل Markdown و پیش‌نمایش زنده خواهید شد."
+  >
+    <a slot="actions" href="/admin/pages" class="gg-admin-btn-secondary text-xs">
+      بازگشت به صفحات ←
+    </a>
+  </AdminPageHeader>
 
-  {
-    error && (
-      <p class="mb-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-        {error}
-      </p>
-    )
-  }
+  {error && <div class="gg-status-error mb-6 rounded-xl px-4 py-3 text-sm">{error}</div>}
 
-  {/* Step one of two: this creates an unpublished draft and redirects to the
-      editor. Media can only be attached to a page that already has an id. */}
-  <form method="POST" action="/api/admin/pages" class="max-w-xl">
-    <label class="block text-xs uppercase tracking-widest text-gray-400">
-      Title
+  <form method="POST" action="/api/admin/pages" class="gg-admin-card max-w-xl space-y-4 p-6">
+    <div>
+      <label for="page-title" class="mb-1 block text-xs font-semibold text-muted">
+        عنوان صفحه *
+      </label>
       <input
+        id="page-title"
         type="text"
         name="title"
         required
         maxlength="120"
         autofocus
-        class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
+        placeholder="مثال: قوانین و شرایط استفاده"
+        class="gg-admin-input py-2 text-sm"
       />
-    </label>
+    </div>
 
-    <label class="mt-4 block text-xs uppercase tracking-widest text-gray-400">
-      URL slug <span class="normal-case tracking-normal text-gray-400">(optional)</span>
+    <div>
+      <label for="page-slug" class="mb-1 block text-xs font-semibold text-muted">
+        نامک نشانی (Slug - اختیاری)
+      </label>
       <input
+        id="page-slug"
         type="text"
         name="slug"
-        placeholder="about"
-        class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
+        dir="ltr"
+        placeholder="terms"
+        class="gg-admin-input ltr-inline py-2 font-mono text-sm"
       />
-      <span class="mt-1 block normal-case tracking-normal text-gray-400">
-        Leave blank to build it from the title. The page will live at /pages/&lt;slug&gt;.
-      </span>
-    </label>
+      <p class="mt-1 text-[11px] text-faint">
+        در صورت خالی بودن، به‌صورت خودکار از روی عنوان ساخته می‌شود. آدرس نهایی: <span class="ltr-inline font-mono">/pages/&lt;slug&gt;</span>
+      </p>
+    </div>
 
-    <button
-      type="submit"
-      class="mt-6 rounded-md bg-brand px-4 py-2 text-xs font-medium uppercase tracking-wider text-white hover:bg-brand-hover"
-    >
-      Create draft
-    </button>
+    <div class="pt-2">
+      <button type="submit" class="gg-admin-btn-primary text-xs">
+        ایجاد پیش‌نویس و ورود به ویرایشگر
+      </button>
+    </div>
   </form>
 </AdminLayout>

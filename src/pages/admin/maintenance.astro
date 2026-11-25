@@ -1,0 +1,245 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import { getConfig } from '../../config';
+import { guardAdminApi } from '../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../features/audit/db';
+import { vaultReady } from '../../features/secrets/store';
+import { sweepStaleNotifications } from '../../features/email/outbox';
+import { getOutboxStats } from '../../features/email/adminOutbox';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+let flashMsg = Astro.url.searchParams.get('msg') ?? '';
+let flashErr = Astro.url.searchParams.get('error') ?? '';
+
+if (Astro.request.method === 'POST') {
+  const auth = await guardAdminApi(
+    env.DB,
+    { locals: Astro.locals, cookies: Astro.cookies, request: Astro.request },
+    'maintenance.manage',
+  );
+  if (!auth.ok) {
+    flashErr = 'دسترسی لازم برای اجرای عملیات نگهداری را ندارید.';
+  } else {
+    const form = await Astro.request.formData();
+    const action = String(form.get('_action') ?? '').trim();
+    if (action === 'sweep_outbox') {
+      await sweepStaleNotifications(env.DB, Astro.url.origin);
+      await recordAdminAuditLog(env.DB, {
+        action: 'maintenance_outbox_swept',
+        module: 'maintenance',
+        targetType: 'outbox',
+        targetId: 'sweep',
+        actor: auth.actor.id,
+      });
+      return Astro.redirect(
+        `/admin/maintenance?msg=${encodeURIComponent('بررسی و پردازش ایمیل‌های معوق صف Outbox اجرا شد.')}`,
+        303,
+      );
+    }
+  }
+}
+
+async function countTable(table: string): Promise<number> {
+  try {
+    const row = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first<{ n: number }>();
+    return row?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function inspectBucket(bucket: typeof env.BUCKET | undefined) {
+  if (!bucket) return { available: false, count: 0, totalBytes: 0, truncated: false };
+  try {
+    const listed = await bucket.list({ limit: 250 });
+    const totalBytes = listed.objects.reduce((s, o) => s + (o.size ?? 0), 0);
+    return {
+      available: true,
+      count: listed.objects.length,
+      totalBytes,
+      truncated: listed.truncated,
+    };
+  } catch {
+    return { available: false, count: 0, totalBytes: 0, truncated: false };
+  }
+}
+
+const [
+  migrationsRes,
+  ordersCount,
+  productsCount,
+  customersCount,
+  walletsCount,
+  txCount,
+  receiptsCount,
+  ticketsCount,
+  auditsCount,
+  outboxStats,
+  publicR2,
+  privateR2,
+] = await Promise.all([
+  env.DB.prepare('SELECT id, name, applied_at FROM d1_migrations ORDER BY id DESC LIMIT 20')
+    .all<{ id: number; name: string; applied_at: string }>()
+    .catch(() => ({ results: [] as Array<{ id: number; name: string; applied_at: string }> })),
+  countTable('orders'),
+  countTable('products'),
+  countTable('customers'),
+  countTable('wallets'),
+  countTable('payment_transactions'),
+  countTable('bank_transfer_receipts'),
+  countTable('support_tickets'),
+  countTable('admin_audit_logs'),
+  getOutboxStats(env.DB),
+  inspectBucket(env.BUCKET),
+  inspectBucket(env.FILES),
+]);
+
+const migrations = migrationsRes.results ?? [];
+const latestMigration = migrations[0]?.name ?? 'نامشخص';
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const searchProvider = Astro.locals.settings?.searchProvider ?? getConfig().search.provider;
+
+const formatBytes = (bytes: number) => {
+  if (bytes >= 1024 * 1024) return `${toPersianDigits((bytes / (1024 * 1024)).toFixed(2))} مگابایت`;
+  if (bytes >= 1024) return `${toPersianDigits(Math.round(bytes / 1024))} کیلوبایت`;
+  return `${toPersianDigits(bytes)} بایت`;
+};
+
+const capabilitiesList = [
+  { label: 'پایگاه‌داده D1', ok: Boolean(env.DB), detail: 'متصل و آماده' },
+  { label: 'فضای رسانه عمومی R2 (BUCKET)', ok: publicR2.available, detail: `${toPersianDigits(publicR2.count)} فایل` },
+  { label: 'فضای تحویل خصوصی R2 (FILES)', ok: privateR2.available, detail: `${toPersianDigits(privateR2.count)} فایل محرمانه` },
+  { label: 'کلید امضای نشست (AUTH_SECRET)', ok: Boolean(env.AUTH_SECRET), detail: env.AUTH_SECRET ? 'تنظیم‌شده' : 'پیکربندی‌نشده (فقط DEV)' },
+  { label: 'کلید رمزگذاری Vault (SECRETS_KEK)', ok: vaultReady(), detail: vaultReady() ? 'فعال (AES-GCM)' : 'غیرفعال' },
+  { label: 'سرویس ایمیل Cloudflare (EMAIL)', ok: Boolean(env.EMAIL), detail: env.EMAIL ? 'متصل' : 'از Resend یا تنظیمی استفاده شود' },
+  { label: 'بهینه‌ساز تصویر (IMAGES)', ok: Boolean(env.IMAGES), detail: env.IMAGES ? 'متصل' : 'خاموش' },
+  { label: 'جستجوی معنایی (AI + Vectorize)', ok: Boolean(env.AI && env.VECTORIZE), detail: env.AI && env.VECTORIZE ? 'آماده' : 'روی جستجوی کلیدواژه FTS5' },
+];
+---
+
+<AdminLayout
+  title="نگهداری و وضعیت سیستم"
+  active="maintenance"
+  requiredPermission="maintenance.manage"
+  breadcrumbs={[{ label: 'سیستم و گزارش‌ها' }, { label: 'نگهداری و وضعیت سیستم' }]}
+>
+  <AdminPageHeader
+    title="سلامت سیستم، مهاجرت‌های D1 و نگهداری"
+    subtitle="پایش سلامت سرویس‌های Cloudflare، بررسی صف ایمیل، آمار جداول دیتابیس، R2 و خروجی غیرمحرمانه تنظیمات"
+    badge={`آخرین مهاجرت: ${latestMigration.slice(0, 12)}`}
+  >
+    <a slot="actions" href="/api/admin/maintenance/export" class="gg-admin-btn-primary text-xs">
+      دانلود نسخه پشتیبان تنظیمات (JSON)
+    </a>
+  </AdminPageHeader>
+
+  {flashMsg && <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{flashMsg}</div>}
+  {flashErr && <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{flashErr}</div>}
+
+  <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <AdminKpiCard label="کل سفارش‌های ثبت‌شده" value={toPersianDigits(ordersCount)} hint={`${toPersianDigits(productsCount)} محصول · ${toPersianDigits(customersCount)} مشتری`} tone="violet" />
+    <AdminKpiCard label="رکوردهای مالی و تیکت" value={toPersianDigits(txCount + receiptsCount)} hint={`${toPersianDigits(walletsCount)} کیف پول · ${toPersianDigits(ticketsCount)} تیکت`} tone="turquoise" />
+    <AdminKpiCard label="صف ایمیل (Pending/Dead)" value={toPersianDigits(outboxStats.pending + outboxStats.dead)} hint={`ارسال موفق: ${toPersianDigits(outboxStats.sent)}`} tone={outboxStats.dead > 0 ? 'coral' : 'amber'} />
+    <AdminKpiCard label="فضای ذخیره‌سازی R2" value={formatBytes(publicR2.totalBytes + privateR2.totalBytes)} hint={`${toPersianDigits(publicR2.count)} عمومی · ${toPersianDigits(privateR2.count)} خصوصی`} tone="violet" />
+  </div>
+
+  <div class="mb-6 grid gap-6 lg:grid-cols-12">
+    {/* وضعیت اتصالات و زیرساخت */}
+    <section class="gg-admin-card p-5 lg:col-span-6">
+      <h2 class="mb-4 text-sm font-bold text-ink">وضعیت زیرساخت و بایندینگ‌های Worker</h2>
+      <ul class="divide-y divide-line text-xs">
+        {capabilitiesList.map((item) => (
+          <li class="flex items-center justify-between gap-3 py-2.5">
+            <span class="font-medium text-ink">{item.label}</span>
+            <span class={`rounded-md px-2.5 py-0.5 text-[11px] font-bold ${item.ok ? 'gg-status-success' : 'gg-status-warning'}`}>
+              {item.detail}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    {/* ابزارهای اجرایی نگهداری */}
+    <section class="space-y-6 lg:col-span-6">
+      <div class="gg-admin-card p-5 space-y-3">
+        <h2 class="text-sm font-bold text-ink">عملیات فوری نگهداری و بازیابی</h2>
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-paper p-3.5 text-xs">
+          <div>
+            <p class="font-bold text-ink">پردازش صف معوق ایمیل‌ها (Outbox Sweep)</p>
+            <p class="mt-0.5 text-[11px] text-muted">
+              بررسی رکوردهای در صف یا قفل‌شده قدیمی و ارسال امن و بدون تکرار.
+            </p>
+          </div>
+          <form method="POST">
+            <input type="hidden" name="_action" value="sweep_outbox" />
+            <button type="submit" class="gg-admin-btn-secondary py-1.5 text-xs">
+              اجرای پردازش صف
+            </button>
+          </form>
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-paper p-3.5 text-xs">
+          <div>
+            <p class="font-bold text-ink">وضعیت موتور جستجو: {searchProvider === 'vector' ? 'معنایی (Vector)' : 'کلیدواژه (FTS5)'}</p>
+            <p class="mt-0.5 text-[11px] text-muted">
+              در صورت استفاده از جستجوی معنایی، ایندکس محصولات را از بخش تنظیمات همگام کنید.
+            </p>
+          </div>
+          <a href="/admin/settings?tab=seo#search" class="gg-admin-btn-secondary py-1.5 text-xs">
+            مدیریت جستجو
+          </a>
+        </div>
+
+        <div class="rounded-xl border border-line bg-paper p-3.5 text-xs space-y-2">
+          <p class="font-bold text-ink">دستورالعمل پشتیبان‌گیری کامل D1 و R2</p>
+          <p class="text-[11px] leading-5 text-muted">
+            برای تهیه بکاپ کامل دیتابیس تولیدی از طریق CLI کلادفلر (خارج از محیط وب برای امنیت کامل):
+          </p>
+          <pre class="ltr-inline overflow-x-auto rounded-lg border border-line bg-surface p-2 font-mono text-[11px] text-brand-fg">wrangler d1 export DB --remote --output=backup.sql</pre>
+        </div>
+      </div>
+
+      <div class="gg-admin-card p-5">
+        <h2 class="mb-3 text-sm font-bold text-ink">آمار رکوردهای جداول کلیدی</h2>
+        <div class="grid grid-cols-2 gap-2.5 text-xs sm:grid-cols-4">
+          <div class="rounded-xl border border-line bg-paper p-2.5"><span class="block text-[10px] text-muted">سفارش‌ها</span><strong class="text-ink">{toPersianDigits(ordersCount)}</strong></div>
+          <div class="rounded-xl border border-line bg-paper p-2.5"><span class="block text-[10px] text-muted">محصولات</span><strong class="text-ink">{toPersianDigits(productsCount)}</strong></div>
+          <div class="rounded-xl border border-line bg-paper p-2.5"><span class="block text-[10px] text-muted">مشتریان</span><strong class="text-ink">{toPersianDigits(customersCount)}</strong></div>
+          <div class="rounded-xl border border-line bg-paper p-2.5"><span class="block text-[10px] text-muted">ممیزی‌ها</span><strong class="text-ink">{toPersianDigits(auditsCount)}</strong></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  {/* آخرین مهاجرت‌های اعمال‌شده D1 */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-sm font-bold text-ink">آخرین مهاجرت‌های پایگاه‌داده (d1_migrations)</h2>
+    {migrations.length === 0 ? (
+      <p class="py-4 text-xs text-muted">جدول d1_migrations در این محیط یافت نشد.</p>
+    ) : (
+      <div class="overflow-x-auto">
+        <table class="gg-admin-table">
+          <thead>
+            <tr>
+              <th>شماره</th>
+              <th>نام فایل مهاجرت</th>
+              <th>زمان اعمال</th>
+            </tr>
+          </thead>
+          <tbody>
+            {migrations.map((m) => (
+              <tr>
+                <td class="font-bold text-ink">{toPersianDigits(m.id)}</td>
+                <td><span class="ltr-inline font-mono text-xs text-brand-fg">{m.name}</span></td>
+                <td class="text-xs text-muted">{formatJalaliDateTime(m.applied_at, { timeZone })}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </section>
+</AdminLayout>

@@ -15,15 +15,16 @@ const { method, enabled, label } = Astro.props;
   <input type="hidden" name="disabled" value={enabled ? '1' : '0'} />
   <button
     type="submit"
+    dir="ltr"
     role="switch"
     aria-checked={enabled ? 'true' : 'false'}
-    aria-label={`${enabled ? 'Disable' : 'Enable'} ${label}`}
+    aria-label={`${enabled ? 'غیرفعال‌سازی' : 'فعال‌سازی'} ${label}`}
     class={`relative inline-flex h-6 w-11 items-center rounded-full transition ${
       enabled ? 'bg-brand' : 'bg-faint'
     }`}
   >
     <span
-      class={`inline-block size-5 rounded-full bg-surface shadow transition ${
+      class={`inline-block size-5 rounded-full bg-white shadow transition ${
         enabled ? 'translate-x-5' : 'translate-x-0.5'
       }`}
     />

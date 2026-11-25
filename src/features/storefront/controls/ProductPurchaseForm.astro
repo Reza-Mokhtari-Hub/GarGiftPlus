@@ -1,24 +1,10 @@
 ---
 import type { ProductPurchaseModel } from '../models';
+import { fa } from '../../../i18n/fa';
 
 /**
- * The purchase controls — the one part of the storefront a template must never
- * reimplement.
- *
- * It owns the form actions and methods, the hidden public IDs, the variant and
- * extra field names (`variant_id`, `extra`), the required/disabled states that
- * keep a sold-out option unselectable, and `data-fullpage` on Buy now.
- *
- * `data-fullpage` is the subtle one: the shell's cart script intercepts submits
- * to open the drawer, and this attribute is what tells it to stand back so
- * /express gets a real full-page navigation. Losing it silently routes buy-now
- * through the cart drawer instead.
- *
- * Two shapes, because they are genuinely different contracts. With options,
- * ONE form holds the selectors so both buttons share the chosen variant and
- * add-ons; Buy now overrides method and action so /express is a safe history
- * entry (Back never asks to resubmit). Without options there is nothing to
- * share, so each button is its own minimal form.
+ * Purchase controls — owns form actions, hidden public IDs, variant_id,
+ * extra add-ons, dynamic custom checkout fields, inline error feedback, and POST Buy Now.
  */
 interface Props {
   model: ProductPurchaseModel;
@@ -26,30 +12,31 @@ interface Props {
 
 const { model } = Astro.props;
 const showAny = model.showAddToCart || model.showBuyNow;
+const customFields = model.customFields ?? [];
 ---
 
 {
   showAny &&
     (model.hasOptions ? (
-      <form method="POST" action={model.cartAction} class="mt-8 max-w-sm" data-options-form>
+      <form method="POST" action={model.cartAction} class="mt-8 max-w-lg" data-options-form>
         <input type="hidden" name="_action" value="add" />
         <input type="hidden" name="product_id" value={model.productId} />
 
         {model.variants.length > 0 && (
           <fieldset class="mb-6">
-            <legend class="mb-2 text-xs uppercase tracking-widest text-muted">
-              {model.variantLabel || 'Option'}
+            <legend class="mb-2.5 text-xs font-semibold text-muted">
+              {model.variantLabel || fa.product.selectOption}
             </legend>
             <div class="flex flex-col gap-2">
               {model.variants.map((variant) => (
                 <label
-                  class={`flex items-center justify-between gap-3 rounded-md border px-4 py-2.5 text-sm transition ${
+                  class={`flex items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm transition-colors ${
                     variant.soldOut
-                      ? 'cursor-not-allowed border-line text-faint'
-                      : 'cursor-pointer border-line hover:border-brand'
+                      ? 'cursor-not-allowed border-line bg-surface-secondary text-faint opacity-75'
+                      : 'cursor-pointer border-line bg-surface text-ink hover:border-brand'
                   }`}
                 >
-                  <span class="flex items-center gap-3">
+                  <span class="flex items-start gap-3">
                     <input
                       type="radio"
                       name="variant_id"
@@ -58,15 +45,32 @@ const showAny = model.showAddToCart || model.showBuyNow;
                       disabled={variant.soldOut}
                       checked={variant.defaultSelected}
                       data-price={variant.priceCents}
+                      data-compare={variant.comparePriceCents ?? 0}
                       data-image-id={variant.imageAnchor}
-                      class="accent-brand"
+                      class="mt-1 accent-brand"
                     />
-                    <span>
-                      {variant.label}
-                      {variant.soldOut && ' — sold out'}
+                    <span class="flex flex-col gap-0.5">
+                      <span class="font-medium">
+                        {variant.label}
+                        {variant.soldOut && ` — ${fa.product.unavailable}`}
+                      </span>
+                      {(variant.region || variant.amountLabel || variant.durationLabel) && (
+                        <span class="text-xs text-muted">
+                          {[variant.region, variant.amountLabel, variant.durationLabel]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </span>
+                      )}
                     </span>
                   </span>
-                  <span class="tabular-nums text-muted">{variant.formattedPrice}</span>
+                  <span class="flex flex-col items-end gap-0.5">
+                    <span class="gg-numeric font-semibold text-ink">{variant.formattedPrice}</span>
+                    {variant.formattedComparePrice && (
+                      <span class="gg-numeric text-xs text-faint line-through">
+                        {variant.formattedComparePrice}
+                      </span>
+                    )}
+                  </span>
                 </label>
               ))}
             </div>
@@ -75,10 +79,10 @@ const showAny = model.showAddToCart || model.showBuyNow;
 
         {model.extras.length > 0 && (
           <fieldset class="mb-6">
-            <legend class="mb-2 text-xs uppercase tracking-widest text-muted">Add-ons</legend>
+            <legend class="mb-2.5 text-xs font-semibold text-muted">{fa.product.addons}</legend>
             <div class="flex flex-col gap-2">
               {model.extras.map((extra) => (
-                <label class="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-line px-4 py-2.5 text-sm transition hover:border-brand">
+                <label class="flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-line bg-surface px-4 py-3 text-sm text-ink transition-colors hover:border-brand">
                   <span class="flex items-center gap-3">
                     <input
                       type="checkbox"
@@ -87,48 +91,131 @@ const showAny = model.showAddToCart || model.showBuyNow;
                       data-price={extra.priceDeltaCents}
                       class="accent-brand"
                     />
-                    <span>{extra.label}</span>
+                    <span class="font-medium">{extra.label}</span>
                   </span>
-                  <span class="tabular-nums text-muted">+{extra.formattedPriceDelta}</span>
+                  <span class="gg-numeric font-medium text-muted">+{extra.formattedPriceDelta}</span>
                 </label>
               ))}
             </div>
           </fieldset>
         )}
 
+        {customFields.length > 0 && (
+          <fieldset class="mb-6 rounded-xl border border-line bg-surface p-4">
+            <legend class="px-1.5 text-xs font-semibold text-ink">
+              {fa.product.customFieldsTitle}
+            </legend>
+            <p class="mb-3 rounded-md bg-surface-elevated px-3 py-2 text-xs text-muted">
+              {fa.product.passwordWarning}
+            </p>
+            <div class="flex flex-col gap-4">
+              {customFields.map((field) => {
+                const inputId = `cf-${field.key}`;
+                const inputName = `cf_${field.key}`;
+                return (
+                  <label for={inputId} class="flex flex-col gap-1.5 text-xs font-medium text-ink">
+                    <span>
+                      {field.label}
+                      {field.required && <span class="ms-1 text-danger-fg">*</span>}
+                    </span>
+
+                    {field.type === 'textarea' ? (
+                      <textarea
+                        id={inputId}
+                        name={inputName}
+                        rows={3}
+                        required={field.required}
+                        minlength={field.minLength ?? undefined}
+                        maxlength={field.maxLength ?? undefined}
+                        placeholder={field.placeholder ?? undefined}
+                        class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+                      />
+                    ) : field.type === 'select' ? (
+                      <select
+                        id={inputId}
+                        name={inputName}
+                        required={field.required}
+                        class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+                      >
+                        <option value="" disabled={field.required} selected>
+                          {fa.product.selectPlaceholder}
+                        </option>
+                        {field.options.map((opt) => (
+                          <option value={opt}>{opt}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        id={inputId}
+                        name={inputName}
+                        type={field.type === 'email' ? 'email' : 'text'}
+                        inputmode={field.type === 'number' ? 'decimal' : undefined}
+                        dir={field.type === 'email' || field.type === 'number' ? 'ltr' : undefined}
+                        required={field.required}
+                        minlength={field.minLength ?? undefined}
+                        maxlength={field.maxLength ?? undefined}
+                        placeholder={field.placeholder ?? undefined}
+                        class={`w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink transition-colors focus:border-brand focus:outline-none${
+                          field.type === 'email' || field.type === 'number' ? ' ltr-inline text-start' : ''
+                        }`}
+                      />
+                    )}
+
+                    {field.helpText && (
+                      <span class="text-xs font-normal text-muted">{field.helpText}</span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+        )}
+
+        <p
+          role="alert"
+          data-cart-form-error
+          class={
+            model.error
+              ? 'gg-status-warning mb-4 rounded-lg border px-3.5 py-2.5 text-xs font-medium'
+              : 'gg-status-warning mb-4 hidden rounded-lg border px-3.5 py-2.5 text-xs font-medium'
+          }
+        >
+          {model.error ?? ''}
+        </p>
+
         {model.soldOut ? (
-          <span class="inline-block cursor-not-allowed rounded-md border border-line px-8 py-3 text-sm font-medium uppercase tracking-wider text-faint">
-            Sold out
+          <span class="gg-status-disabled inline-block cursor-not-allowed rounded-lg border px-8 py-3 text-sm font-semibold">
+            {fa.product.unavailable}
           </span>
         ) : (
           <div class="flex flex-wrap gap-3">
             {model.showAddToCart && (
               <button
                 type="submit"
-                class="rounded-md border border-line px-8 py-3 text-sm font-medium uppercase tracking-wider text-muted transition hover:border-brand hover:text-brand"
+                class="rounded-lg border border-line bg-surface px-7 py-3 text-sm font-semibold text-ink transition-colors hover:border-brand hover:text-brand-fg"
               >
-                Add to cart
+                {fa.product.addToCart}
               </button>
             )}
             {model.showBuyNow && (
               <button
                 type="submit"
                 formaction={model.expressAction}
-                formmethod="GET"
+                formmethod="POST"
                 data-fullpage
-                class="rounded-md bg-brand px-8 py-3 text-sm font-medium uppercase tracking-wider text-on-brand transition hover:bg-brand-hover"
+                class="rounded-lg bg-brand px-8 py-3 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-hover"
               >
-                Buy now
+                {fa.product.buyNow}
               </button>
             )}
           </div>
         )}
       </form>
     ) : (
-      <div class="mt-10 flex gap-3">
+      <div class="mt-8 flex flex-wrap gap-3">
         {model.soldOut && (
-          <span class="cursor-not-allowed rounded-md border border-line px-8 py-3 text-sm font-medium uppercase tracking-wider text-faint">
-            Sold out
+          <span class="gg-status-disabled cursor-not-allowed rounded-lg border px-8 py-3 text-sm font-semibold">
+            {fa.product.unavailable}
           </span>
         )}
         {!model.soldOut && model.showAddToCart && (
@@ -137,20 +224,20 @@ const showAny = model.showAddToCart || model.showBuyNow;
             <input type="hidden" name="product_id" value={model.productId} />
             <button
               type="submit"
-              class="rounded-md border border-line px-8 py-3 text-sm font-medium uppercase tracking-wider text-muted transition hover:border-brand hover:text-brand"
+              class="rounded-lg border border-line bg-surface px-7 py-3 text-sm font-semibold text-ink transition-colors hover:border-brand hover:text-brand-fg"
             >
-              Add to cart
+              {fa.product.addToCart}
             </button>
           </form>
         )}
         {!model.soldOut && model.showBuyNow && (
-          <form method="GET" action={model.expressAction}>
+          <form method="POST" action={model.expressAction}>
             <input type="hidden" name="product_id" value={model.productId} />
             <button
               type="submit"
-              class="rounded-md bg-brand px-8 py-3 text-sm font-medium uppercase tracking-wider text-on-brand transition hover:bg-brand-hover"
+              class="rounded-lg bg-brand px-8 py-3 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-hover"
             >
-              Buy now
+              {fa.product.buyNow}
             </button>
           </form>
         )}

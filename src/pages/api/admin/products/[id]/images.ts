@@ -19,6 +19,7 @@ import { getStorage } from '../../../../../features/storage';
 import { parsePublicId } from '../../../../../features/ids/publicId';
 import { CACHE_TAG } from '../../../../../features/cache/tags';
 import { purgeCacheTags } from '../../../../../features/cache/purge';
+import { guardAdminApi } from '../../../../../features/fulfillment/actor';
 
 export const prerender = false;
 
@@ -34,7 +35,10 @@ export const prerender = false;
 //   _action=move     → swap image `image_id` up/down one slot
 //   _action=alt      → set image `image_id`'s alt text
 //   _action=delete   → remove image `image_id` (association only)
-export const POST: APIRoute = async ({ request, params, redirect }) => {
+export const POST: APIRoute = async ({ request, params, redirect, locals, cookies }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'products.manage');
+  if (!guard.ok) return guard.response;
+
   const publicId = parsePublicId(params.id, 'product');
   const product = publicId ? await getProductByPublicId(env.DB, publicId) : null;
   if (!publicId || !product) return new Response('Not found', { status: 404 });
@@ -74,7 +78,7 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
   if (action === 'attach') {
     const mediaPublicId = parsePublicId(form.get('media_id'), 'media');
     const media = mediaPublicId ? await getMediaByPublicId(env.DB, mediaPublicId) : null;
-    if (!media) return back('Choose an image.');
+    if (!media) return back('ابتدا یک تصویر انتخاب کنید.');
     const attached = await attachMediaToProduct(env.DB, id, media.id);
     if (!attached.ok) return back(attached.error);
     await syncPrimaryImage(env.DB, id);
@@ -102,7 +106,7 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
 
   const imagePublicId = parsePublicId(form.get('image_id'), 'productImage');
   const img = imagePublicId ? byPublicId.get(imagePublicId) : undefined;
-  if (!img) return back('Image not found.');
+  if (!img) return back('تصویر مورد نظر یافت نشد.');
   const imageId = img.id;
 
   if (action === 'alt') {
@@ -137,5 +141,5 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     return back();
   }
 
-  return back('Unknown action.');
+  return back('عملیات درخواستی معتبر نیست.');
 };

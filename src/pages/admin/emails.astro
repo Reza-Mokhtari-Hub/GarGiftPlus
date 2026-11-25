@@ -1,0 +1,307 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { getConfig } from '../../config';
+import { getStoreSettings } from '../../features/settings/db';
+import { getSecret } from '../../features/secrets/store';
+import { getOutboxStats, listAdminOutboxLogs } from '../../features/email/adminOutbox';
+import {
+  DEFAULT_EMAIL_TEMPLATES,
+  isEmailTemplateEventKey,
+  listEmailTemplates,
+  renderEmailTemplatePreview,
+} from '../../features/email/templatesDb';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const stateFilter = (Astro.url.searchParams.get('state') ?? '').trim();
+const q = (Astro.url.searchParams.get('q') ?? '').trim();
+const selectedKeyRaw = (Astro.url.searchParams.get('template') ?? '').trim();
+
+const [settings, stats, logs, templates] = await Promise.all([
+  getStoreSettings(env.DB),
+  getOutboxStats(env.DB),
+  listAdminOutboxLogs(env.DB, { state: stateFilter || undefined, q: q || undefined, limit: 80 }),
+  listEmailTemplates(env.DB),
+]);
+
+const providerReady =
+  settings.emailProvider === 'cloudflare'
+    ? Boolean(env.EMAIL)
+    : (await getSecret(env.DB, 'resend_api_key')) !== null;
+
+const storeName = settings.storeName ?? getConfig().storeName;
+const timeZone = settings.timeZone ?? getConfig().timeZone;
+const activeTpl =
+  (isEmailTemplateEventKey(selectedKeyRaw)
+    ? templates.find((t) => t.event_key === selectedKeyRaw)
+    : null) ?? templates[0];
+
+const preview = renderEmailTemplatePreview(activeTpl, {
+  orderRef: 'GG-10428',
+  storeName,
+  amount: '۲٬۵۰۰٬۰۰۰ تومان',
+});
+
+const msg = Astro.url.searchParams.get('msg');
+const err = Astro.url.searchParams.get('error');
+
+const stateBadge: Record<string, { label: string; cls: string }> = {
+  sent: { label: 'ارسال‌شده', cls: 'gg-status-success' },
+  pending: { label: 'در صف ارسال', cls: 'gg-status-warning' },
+  processing: { label: 'در حال پردازش', cls: 'gg-status-info' },
+  skipped: { label: 'ردشده / غیرضروری', cls: 'bg-surface-elevated text-muted border border-line' },
+  dead: { label: 'ناموفق (نیازمند بررسی)', cls: 'gg-status-error' },
+};
+---
+
+<AdminLayout
+  title="ایمیل‌ها و قالب‌های اعلان"
+  active="emails"
+  requiredPermission="emails.manage"
+  breadcrumbs={[{ label: 'محتوا، ارتباطات و ظاهر' }, { label: 'ایمیل‌ها و قالب‌ها' }]}
+>
+  <AdminPageHeader
+    title="مدیریت ایمیل‌ها، قالب‌های پیام و صف ارسال (Outbox)"
+    subtitle="پایش وضعیت ارسال ایمیل سفارش‌ها، ارسال مجدد پیام‌های ناموفق و ویرایش قالب‌های فارسی اعلان"
+  >
+    <a slot="actions" href="/admin/settings?tab=email#email" class="gg-admin-btn-secondary text-xs">
+      پیکربندی سرویس‌دهنده ایمیل
+    </a>
+  </AdminPageHeader>
+
+  {msg && <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{msg}</div>}
+  {err && <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{err}</div>}
+
+  {/* شاخص‌های صف ارسال */}
+  <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <AdminKpiCard label="ارسال موفق" value={toPersianDigits(stats.sent)} tone="turquoise" href="/admin/emails?state=sent" />
+    <AdminKpiCard label="در صف ارسال" value={toPersianDigits(stats.pending)} tone="amber" href="/admin/emails?state=pending" />
+    <AdminKpiCard label="ناموفق / متوقف (Dead)" value={toPersianDigits(stats.dead)} tone="coral" href="/admin/emails?state=dead" />
+    <AdminKpiCard label="سرویس‌دهنده فعال" value={settings.emailProvider === 'cloudflare' ? 'Cloudflare' : 'Resend'} hint={settings.emailEnabled && providerReady ? 'آماده ارسال' : 'غیرفعال یا بدون کلید'} tone="violet" />
+  </div>
+
+  {/* تست ارسال ایمیل */}
+  <section class="gg-admin-card mb-6 p-5">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h2 class="text-sm font-bold text-ink">ارسال ایمیل آزمایشی</h2>
+        <p class="mt-0.5 text-xs text-muted">
+          وضعیت فعلی: {settings.emailEnabled ? 'فعال' : 'غیرفعال'} • کلید/اتصال:{' '}
+          {providerReady ? 'تنظیم‌شده' : 'پیکربندی‌نشده'} • فرستنده:{' '}
+          <span class="ltr-inline font-mono">{settings.emailFrom || getConfig().email.from}</span>
+        </p>
+      </div>
+      <form method="POST" action="/api/admin/email/test" class="flex flex-wrap items-center gap-2">
+        <input type="hidden" name="_redirect" value="/admin/emails" />
+        <input
+          type="email"
+          name="test_to"
+          required
+          placeholder="admin@example.com"
+          class="gg-admin-input ltr-inline w-60 py-1.5 font-mono text-xs"
+        />
+        <button
+          type="submit"
+          disabled={!settings.emailEnabled || !providerReady}
+          class="gg-admin-btn-primary py-1.5 text-xs disabled:opacity-50"
+        >
+          ارسال تست ایمیل
+        </button>
+      </form>
+    </div>
+  </section>
+
+  {/* ویرایش قالب‌های ایمیل و پیش‌نمایش امن */}
+  <section class="mb-6 grid gap-6 lg:grid-cols-12">
+    <div class="gg-admin-card p-5 lg:col-span-7">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-sm font-bold text-ink">قالب‌های متنی اعلان ایمیلی</h2>
+        <div class="flex flex-wrap gap-1.5">
+          {templates.map((tpl) => {
+            const isSel = tpl.event_key === activeTpl.event_key;
+            return (
+              <a
+                href={`/admin/emails?template=${encodeURIComponent(tpl.event_key)}`}
+                class={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                  isSel ? 'bg-brand text-on-brand' : 'border border-line bg-paper text-muted hover:text-ink'
+                }`}
+              >
+                {DEFAULT_EMAIL_TEMPLATES[tpl.event_key].title}
+              </a>
+            );
+          })}
+        </div>
+      </div>
+
+      <form method="POST" action="/api/admin/email/templates" class="space-y-3">
+        <input type="hidden" name="event_key" value={activeTpl.event_key} />
+
+        <div>
+          <label for="tpl-subject" class="mb-1 block text-xs font-medium text-muted">موضوع ایمیل (Subject)</label>
+          <input id="tpl-subject" type="text" name="subject" value={activeTpl.subject} required class="gg-admin-input text-xs" />
+        </div>
+
+        <div>
+          <label for="tpl-heading" class="mb-1 block text-xs font-medium text-muted">تیتر اصلی داخل ایمیل</label>
+          <input id="tpl-heading" type="text" name="heading" value={activeTpl.heading} required class="gg-admin-input text-xs" />
+        </div>
+
+        <div>
+          <label for="tpl-intro" class="mb-1 block text-xs font-medium text-muted">متن پیام</label>
+          <textarea id="tpl-intro" name="intro" rows="4" required class="gg-admin-input text-xs">{activeTpl.intro}</textarea>
+          <p class="mt-1 text-[11px] text-faint">
+            متغیرهای مجاز: <code class="ltr-inline font-mono">{'{orderRef}'}</code>،{' '}
+            <code class="ltr-inline font-mono">{'{storeName}'}</code>،{' '}
+            <code class="ltr-inline font-mono">{'{amount}'}</code> — کدهای محرمانه هرگز در متن ایمیل قرار نمی‌گیرند.
+          </p>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label for="tpl-cta" class="mb-1 block text-xs font-medium text-muted">برچسب دکمه</label>
+            <input id="tpl-cta" type="text" name="cta_label" value={activeTpl.cta_label} class="gg-admin-input text-xs" />
+          </div>
+          <div class="flex items-end pb-1">
+            <label class="flex items-center gap-2 text-xs text-ink">
+              <input type="checkbox" name="is_active" value="1" checked={activeTpl.is_active === 1} class="accent-brand" />
+              <span>این قالب فعال باشد</span>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label for="tpl-footer" class="mb-1 block text-xs font-medium text-muted">یادداشت پایین ایمیل</label>
+          <input id="tpl-footer" type="text" name="footer_note" value={activeTpl.footer_note} class="gg-admin-input text-xs" />
+        </div>
+
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2">
+          <button type="submit" name="_action" value="save" class="gg-admin-btn-primary text-xs">
+            ذخیره تغییرات قالب
+          </button>
+          <button
+            type="submit"
+            name="_action"
+            value="reset"
+            data-confirm-message="متن این قالب به حالت پیش‌فرض سیستم برگردانده شود؟"
+            class="gg-admin-btn-secondary text-xs"
+          >
+            بازنشانی به پیش‌فرض
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div class="gg-admin-card p-5 lg:col-span-5">
+      <h2 class="mb-3 text-sm font-bold text-ink">پیش‌نمایش ایمن متن ایمیل</h2>
+      <div class="rounded-xl border border-line bg-paper p-5 space-y-3 text-xs">
+        <div class="border-b border-line pb-2 text-[11px] text-muted">
+          <span class="font-bold text-ink">موضوع:</span> {preview.subject}
+        </div>
+        <h3 class="text-base font-extrabold text-ink">{preview.heading}</h3>
+        <p class="leading-6 text-muted whitespace-pre-wrap">{preview.intro}</p>
+        <div class="pt-1">
+          <span class="inline-flex rounded-lg bg-brand px-4 py-2 text-xs font-bold text-on-brand">
+            {preview.ctaLabel}
+          </span>
+        </div>
+        {preview.footerNote && (
+          <p class="border-t border-line pt-3 text-[11px] text-faint">{preview.footerNote}</p>
+        )}
+      </div>
+    </div>
+  </section>
+
+  {/* جدول Outbox */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <h2 class="text-sm font-bold text-ink">گزارش صف ارسال ایمیل‌های سفارش (Outbox)</h2>
+      <form method="GET" action="/admin/emails" class="flex flex-wrap items-center gap-2">
+        <input type="search" name="q" value={q} placeholder="کد سفارش، ایمیل یا نوع پیام..." class="gg-admin-input w-52 py-1.5 text-xs" />
+        <select name="state" class="gg-admin-input w-40 py-1.5 text-xs">
+          <option value="">همه وضعیت‌ها</option>
+          <option value="sent" selected={stateFilter === 'sent'}>ارسال‌شده</option>
+          <option value="pending" selected={stateFilter === 'pending'}>در صف ارسال</option>
+          <option value="processing" selected={stateFilter === 'processing'}>در حال پردازش</option>
+          <option value="dead" selected={stateFilter === 'dead'}>ناموفق (Dead)</option>
+          <option value="skipped" selected={stateFilter === 'skipped'}>ردشده</option>
+        </select>
+        <button type="submit" class="gg-admin-btn-secondary py-1.5 text-xs">فیلتر</button>
+      </form>
+    </div>
+
+    {logs.length === 0 ? (
+      <AdminEmptyState title="رکوردی در صف ارسال یافت نشد" description="پس از ثبت سفارش یا تغییر فیلترها، وضعیت ارسال ایمیل‌ها اینجا دیده می‌شود." />
+    ) : (
+      <div class="overflow-x-auto">
+        <table class="gg-admin-table">
+          <thead>
+            <tr>
+              <th>سفارش</th>
+              <th>گیرنده</th>
+              <th>نوع پیام</th>
+              <th>وضعیت</th>
+              <th>تلاش</th>
+              <th>زمان / خطا</th>
+              <th class="text-end">عملیات</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.map((row) => {
+              const badge = stateBadge[row.state] ?? { label: row.state, cls: 'bg-surface-elevated text-muted' };
+              const canRetry =
+                Boolean(row.order_public_id) &&
+                (row.state === 'dead' || row.state === 'pending' || row.state === 'skipped');
+              return (
+                <tr>
+                  <td>
+                    {row.order_public_id ? (
+                      <a href={`/admin/orders/${encodeURIComponent(row.order_public_id)}`} class="ltr-inline font-mono text-xs font-semibold text-brand-fg hover:underline">
+                        {row.order_public_id}
+                      </a>
+                    ) : (
+                      <span class="text-faint">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span class="ltr-inline font-mono text-xs text-muted">{row.customer_email || '—'}</span>
+                  </td>
+                  <td>
+                    <span class="ltr-inline font-mono text-[11px] text-ink">{row.kind}</span>
+                  </td>
+                  <td>
+                    <span class={`rounded-md px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.label}</span>
+                  </td>
+                  <td class="text-xs text-ink">{toPersianDigits(row.attempts)}</td>
+                  <td class="max-w-xs text-[11px]">
+                    <div class="text-muted">{formatJalaliDateTime(row.sent_at || row.created_at, { timeZone })}</div>
+                    {row.last_error && <p class="mt-0.5 truncate text-coral">{row.last_error}</p>}
+                  </td>
+                  <td class="text-end">
+                    {canRetry ? (
+                      <form method="POST" action="/api/admin/email/retry" class="inline">
+                        <input type="hidden" name="order_public_id" value={row.order_public_id ?? ''} />
+                        <input type="hidden" name="kind" value={row.kind} />
+                        <button
+                          type="submit"
+                          data-confirm-message="این پیام مجدداً به صف ارسال بازگردانده و ارسال شود؟"
+                          class="gg-admin-btn-secondary py-1 text-[11px]"
+                        >
+                          ارسال مجدد
+                        </button>
+                      </form>
+                    ) : (
+                      <span class="text-[11px] text-faint">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </section>
+</AdminLayout>

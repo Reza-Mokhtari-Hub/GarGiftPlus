@@ -133,7 +133,7 @@ describe('the purchase form', () => {
 
     expect(options).toContain('data-fullpage');
     expect(options).toContain('formaction="/express"');
-    expect(options).toContain('formmethod="GET"');
+    expect(options).toContain('formmethod="POST"');
   });
 
   it('makes a sold-out variant unselectable but still visible', async () => {
@@ -202,6 +202,48 @@ describe('the purchase form', () => {
 
     expect(html).not.toMatch(/data-stock=/);
     expect(html).not.toMatch(/\b\d+ (left|remaining|in stock)\b/i);
+  });
+
+  it('renders custom checkout fields inside the POST form with cf_ names and inline error container', async () => {
+    const html = await render(ProductPurchaseForm, {
+      model: purchase({
+        hasOptions: true,
+        customFields: [
+          {
+            id: 'pfld_1111111111',
+            key: 'player_id',
+            label: 'آیدی بازیکن',
+            type: 'text',
+            placeholder: 'مثال: 5123456789',
+            helpText: 'آیدی عددی داخل بازی را وارد کنید.',
+            options: [],
+            required: true,
+            minLength: 5,
+            maxLength: 20,
+          },
+          {
+            id: 'pfld_2222222222',
+            key: 'server_region',
+            label: 'سرور',
+            type: 'select',
+            placeholder: null,
+            helpText: null,
+            options: ['Global', 'Europe'],
+            required: true,
+            minLength: null,
+            maxLength: null,
+          },
+        ],
+      }),
+    });
+
+    expect(html).toContain('action="/api/cart"');
+    expect(html).toContain('formmethod="POST"');
+    expect(html).toContain('name="cf_player_id"');
+    expect(html).toContain('name="cf_server_region"');
+    expect(html).toContain('Global');
+    expect(html).toContain('data-cart-form-error');
+    expect(html).not.toContain('type="password"');
   });
 });
 

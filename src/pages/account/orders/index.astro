@@ -1,0 +1,276 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import Layout from '../../../layouts/Layout.astro';
+import AccountShell from '../../../features/account/AccountShell.astro';
+import { getConfig } from '../../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../../features/auth/customer';
+import {
+  countOrdersByEmail,
+  listOrdersByEmail,
+  listOrderItems,
+  type OrderItem,
+} from '../../../features/orders/db';
+import { orderReference } from '../../../features/orders/number';
+import { getOrCreateWalletByCustomerId } from '../../../features/wallet/db';
+import { listPaymentTransactionsByCustomer } from '../../../features/payments/transactionsDb';
+import { PAYMENT_TX_STATUS_LABELS } from '../../../features/payments/transactions';
+import { formatMoney } from '../../../money';
+import { formatJalaliDateTime, toPersianDigits } from '../../../lib/format';
+import { paginate, queryHref } from '../../../pagination';
+import Pagination from '../../../components/Pagination.astro';
+import { catalogPath } from '../../../features/settings/home';
+import type { NormalizedCustomerInput } from '../../../features/products/customFields';
+import {
+  FULFILLMENT_STATE_LABELS,
+  toOrderFulfillmentState,
+} from '../../../features/fulfillment/status';
+
+if (!(await accountsEnabled())) return Astro.redirect('/', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
+
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+
+const PAGE_SIZE = 15;
+const totalOrders = await countOrdersByEmail(env.DB, customer.email);
+const { page, offset, totalPages } = paginate(
+  Astro.url.searchParams,
+  totalOrders,
+  PAGE_SIZE,
+);
+const orders = await listOrdersByEmail(env.DB, customer.email, PAGE_SIZE, offset);
+const itemsByOrder = new Map<number, OrderItem[]>();
+for (const o of orders) {
+  itemsByOrder.set(o.id, await listOrderItems(env.DB, o.id));
+}
+
+// همچنین سفارش‌های در انتظار تایید فیش یا در جریان پرداخت را نمایش می‌دهیم
+const paymentTxs = await listPaymentTransactionsByCustomer(
+  env.DB,
+  customer.id,
+  customer.email,
+  20,
+);
+const settledOrderPublicIds = new Set(orders.map((o) => o.public_id).filter(Boolean));
+const pendingOrderTxs = paymentTxs.filter(
+  (tx) =>
+    tx.target_type === 'order' &&
+    tx.status !== 'VERIFIED' &&
+    !settledOrderPublicIds.has(tx.target_public_id),
+);
+
+const hrefFor = (p: number) => queryHref('/account/orders', { page: p > 1 ? p : undefined });
+const orderCfg = getConfig().orderNumber;
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const shopHref = catalogPath(Astro.locals.settings?.homePage);
+
+const paymentMethodLabels: Record<string, string> = {
+  wallet: 'کیف پول گارگیفت+',
+  bank_transfer: 'کارت‌به‌کارت / واریز بانکی',
+  zarinpal: 'درگاه زرین‌پال',
+  zibal: 'درگاه زیبال',
+  demo: 'پرداخت آزمایشی',
+  stripe: 'کارت بانکی',
+  lightning: 'بیت‌کوین لایتنینگ',
+};
+
+function parseCustomerInputs(json: string | null): NormalizedCustomerInput[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+---
+
+<Layout title="سفارش‌های من">
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="orders"
+    title="سفارش‌های من"
+  >
+    {/* سفارش‌های در جریان پرداخت / بررسی فیش کارت‌به‌کارت */}
+    {pendingOrderTxs.length > 0 && (
+      <section class="mb-6 rounded-xl border border-warning/40 bg-surface p-5">
+        <h2 class="text-sm font-bold text-ink">سفارش‌های در انتظار پرداخت یا بررسی فیش</h2>
+        <p class="mt-0.5 text-xs text-muted">
+          این سفارش‌ها پس از تایید نهایی پرداخت یا تایید فیش بانکی توسط مدیریت وارد صف تحویل می‌شوند.
+        </p>
+
+        <div class="mt-4 divide-y divide-line">
+          {pendingOrderTxs.map((tx) => {
+            let payLink = `/account/orders/${tx.target_public_id}`;
+            if (tx.payload_json) {
+              try {
+                const p = JSON.parse(tx.payload_json) as { accessToken?: string };
+                if (p.accessToken) payLink = `/pay/${p.accessToken}`;
+              } catch {}
+            }
+            return (
+              <div class="flex flex-wrap items-center justify-between gap-4 py-3.5 text-xs">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="font-bold text-ink">شناسه سفارش: {tx.target_public_id}</span>
+                    <span class="rounded-md bg-warning/15 px-2 py-0.5 text-[11px] font-semibold text-warning">
+                      {PAYMENT_TX_STATUS_LABELS[tx.status]}
+                    </span>
+                  </div>
+                  <div class="text-muted">
+                    روش پرداخت: {paymentMethodLabels[tx.method] ?? tx.method} • ثبت در{' '}
+                    {formatJalaliDateTime(tx.created_at, { timeZone })}
+                  </div>
+                  {tx.failure_reason && (
+                    <p class="text-danger font-semibold">علت رد / خطا: {tx.failure_reason}</p>
+                  )}
+                </div>
+
+                <div class="flex items-center gap-3">
+                  <span class="gg-numeric text-sm font-extrabold text-ink">
+                    {formatMoney(tx.amount, tx.currency)}
+                  </span>
+                  <a
+                    href={payLink}
+                    class="rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-on-brand hover:bg-brand-hover"
+                  >
+                    مشاهده و پیگیری پرداخت
+                  </a>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    )}
+
+    {/* فهرست سفارش‌های تسویه‌شده */}
+    <section class="rounded-xl border border-line bg-surface p-5 sm:p-6">
+      <div class="mb-4 flex items-center justify-between">
+        <h2 class="text-base font-bold text-ink">تاریخچه سفارش‌های ثبت‌شده</h2>
+        <span class="gg-numeric text-xs text-muted">{toPersianDigits(totalOrders)} سفارش</span>
+      </div>
+
+      {orders.length === 0 ? (
+        <div class="rounded-xl border border-line bg-paper p-8 text-center text-sm text-muted">
+          <p>هنوز سفارش تکمیل‌شده‌ای در حساب شما ثبت نشده است.</p>
+          <a
+            href={shopHref}
+            class="mt-4 inline-flex rounded-lg bg-brand px-5 py-2.5 text-xs font-bold text-on-brand hover:bg-brand-hover"
+          >
+            مشاهده محصولات فروشگاه
+          </a>
+        </div>
+      ) : (
+        <div class="space-y-4">
+          {orders.map((o) => {
+            const items = itemsByOrder.get(o.id) ?? [];
+            const ref = orderReference(o.public_id, o.id, orderCfg);
+            return (
+              <article class="rounded-xl border border-line bg-paper p-4 sm:p-5 transition-colors hover:border-brand/40">
+                <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3">
+                  <div class="flex flex-wrap items-center gap-2.5">
+                    <a
+                      href={`/account/orders/${o.public_id}`}
+                      class="text-sm font-extrabold text-ink hover:text-brand-fg"
+                    >
+                      سفارش #{ref}
+                    </a>
+                    <span class="text-xs text-faint">
+                      {formatJalaliDateTime(o.created_at, { timeZone })}
+                    </span>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="rounded-md border border-line bg-surface px-2.5 py-1 text-[11px] font-medium text-muted">
+                      {paymentMethodLabels[o.payment_method ?? ''] ?? o.payment_method ?? 'آنلاین'}
+                    </span>
+                    <span
+                      class:list={[
+                        'rounded-md px-2.5 py-1 text-[11px] font-bold',
+                        o.refunded_cents > 0
+                          ? 'bg-danger/15 text-danger'
+                          : 'bg-success/15 text-success',
+                      ]}
+                    >
+                      {o.refunded_cents >= o.amount_total_cents
+                        ? 'مستردشده'
+                        : o.refunded_cents > 0
+                          ? 'استرداد جزئی'
+                          : 'پرداخت تاییدشده'}
+                    </span>
+                    <span
+                      class:list={[
+                        'rounded-md px-2.5 py-1 text-[11px] font-bold',
+                        o.fulfillment_status === 'fulfilled'
+                          ? 'bg-success/15 text-success'
+                          : o.fulfillment_status === 'partially_fulfilled'
+                            ? 'bg-brand/15 text-brand-fg'
+                            : o.fulfillment_status === 'ready_for_delivery'
+                              ? 'bg-accent/15 text-accent-fg'
+                              : o.fulfillment_status === 'processing'
+                                ? 'bg-info/15 text-info'
+                                : o.fulfillment_status === 'cancelled'
+                                  ? 'bg-danger/15 text-danger'
+                                  : 'bg-warning/15 text-warning',
+                      ]}
+                    >
+                      {FULFILLMENT_STATE_LABELS[toOrderFulfillmentState(o.fulfillment_status)]}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="mt-3 space-y-2.5">
+                  {items.map((item) => {
+                    const inputs = parseCustomerInputs(item.customer_inputs_json);
+                    return (
+                      <div class="flex flex-col justify-between gap-2 rounded-lg bg-surface px-3.5 py-2.5 text-xs sm:flex-row sm:items-center">
+                        <div>
+                          <div class="font-bold text-ink">
+                            {item.name}{' '}
+                            <span class="gg-numeric text-muted">× {toPersianDigits(item.quantity)}</span>
+                          </div>
+                          {inputs.length > 0 && (
+                            <div class="mt-1 flex flex-wrap gap-2 text-[11px] text-muted">
+                              {inputs.map((inp) => (
+                                <span class="rounded bg-paper px-2 py-0.5 border border-line">
+                                  {inp.label}: <strong class="text-ink">{inp.value}</strong>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div class="gg-numeric font-semibold text-ink">
+                          {formatMoney(item.price_cents * item.quantity, o.currency)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div class="mt-4 flex flex-wrap items-center justify-between gap-3 pt-2 text-xs">
+                  <div class="gg-numeric text-sm font-extrabold text-ink">
+                    مبلغ کل: {formatMoney(o.amount_total_cents, o.currency)}
+                  </div>
+                  <a
+                    href={`/account/orders/${o.public_id}`}
+                    class="inline-flex items-center gap-1.5 rounded-lg bg-brand/10 px-3.5 py-2 font-bold text-brand-fg transition-colors hover:bg-brand hover:text-on-brand"
+                  >
+                    <span>جزئیات کامل سفارش</span>
+                    <span aria-hidden="true">&larr;</span>
+                  </a>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      <div class="mt-6">
+        <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+      </div>
+    </section>
+  </AccountShell>
+</Layout>

@@ -11,9 +11,9 @@ interface Props {
 const { pending, declined = null } = Astro.props;
 
 const OUTCOMES: Record<string, string> = {
-  approve: 'Approve payment',
-  decline: 'Decline — card declined',
-  insufficient: 'Decline — insufficient funds',
+  approve: 'تایید و تکمیل پرداخت',
+  decline: 'رد پرداخت — تراکنش ناموفق',
+  insufficient: 'رد پرداخت — موجودی ناکافی',
 };
 const { storeName } = getConfig();
 const total = formatPrice(pending.amount_total_cents, pending.currency);
@@ -32,103 +32,101 @@ try {
 ---
 
 <div class="mx-auto max-w-md">
-  <div class="mb-6 rounded-lg border-2 border-amber-400 bg-amber-50 px-4 py-4 text-center text-amber-900">
-    <p class="text-base font-bold uppercase tracking-wide">⚠️ Demo checkout — not a real payment</p>
-    <p class="mt-1 text-sm">
-      No card is charged. Submitting places a real order tagged
-      <code class="rounded bg-amber-100 px-1">demo</code> so you can see the full flow.
+  <div class="mb-6 rounded-xl border border-amber-400/50 bg-amber-50 px-4 py-4 text-center text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+    <p class="text-sm font-bold">پرداخت آزمایشی (دمو) — بدون کسر وجه واقعی</p>
+    <p class="mt-1 text-xs leading-6">
+      هیچ مبلغ واقعی از کارت یا حساب شما کسر نمی‌شود. با تایید این فرم یک سفارش آزمایشی با برچسب
+      <code class="ltr-inline rounded bg-amber-100 px-1 dark:bg-amber-900/60">demo</code>
+      ثبت می‌شود.
     </p>
   </div>
 
-  <h1 class="mb-1 font-serif text-3xl tracking-tight sm:text-4xl">Checkout</h1>
+  <h1 class="gg-h2 mb-1 text-ink">تسویه حساب آزمایشی</h1>
   <p class="mb-6 text-sm text-muted">{storeName}</p>
 
   {/* Order summary */}
-  <div class="mb-6 rounded-lg border border-line bg-surface p-4">
+  <div class="mb-6 rounded-xl border border-line bg-surface p-4">
     <ul class="divide-y divide-line text-sm">
       {items.map((it) => (
         <li class="flex items-center justify-between gap-3 py-2">
-          <span class="min-w-0 truncate">
+          <span class="min-w-0 truncate text-ink">
             {it.n} <span class="text-faint">× {it.q}</span>
           </span>
-          <span class="shrink-0 tabular-nums">{formatPrice(it.p * it.q, pending.currency)}</span>
+          <span class="shrink-0 tabular-nums text-ink">{formatPrice(it.p * it.q, pending.currency)}</span>
         </li>
       ))}
     </ul>
     {shipping && (
       <div class="flex items-center justify-between border-t border-line pt-2 text-sm text-muted">
-        <span>Shipping</span>
+        <span>هزینه ارسال</span>
         <span class="tabular-nums">{shipping}</span>
       </div>
     )}
-    <div class="mt-2 flex items-center justify-between border-t border-line pt-2 text-base font-medium">
-      <span>Total</span>
+    <div class="mt-2 flex items-center justify-between border-t border-line pt-2 text-base font-semibold text-ink">
+      <span>جمع کل</span>
       <span class="tabular-nums">{total}</span>
     </div>
   </div>
 
   {declined && (
-    <p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+    <p class="mb-4 rounded-xl border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral">
       {declined}
     </p>
   )}
 
   <form method="POST" class="space-y-4">
-    {/* Demo skips the address step (checkout.astro auto-submits a sample
-        address), so this is the shopper's only chance to set an email —
-        prefilled with the sample, editable for anyone who wants the receipt
-        for real. Settlement prefers the submitted value
-        (resolveRequiredOrderEmail). */}
     <div>
       <label class="mb-1 block text-xs font-medium text-muted" for="email">
-        Email for the order confirmation
+        ایمیل دریافت تاییدیه و تحویل سفارش
       </label>
       <input
         id="email"
         name="email"
         type="email"
+        dir="ltr"
         value={pending.email ?? ''}
         autocomplete="email"
         required
-        class="w-full rounded-md border border-line px-3 py-2 text-sm focus:border-brand focus:outline-none"
+        class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none"
       />
     </div>
 
-    {/* Decorative test-card fields — prefilled and ignored; they exist so the
-        flow looks like a real card form. */}
-    <fieldset class="rounded-lg border border-line p-3">
-      <legend class="px-1 text-xs font-medium text-muted">Card (test — input ignored)</legend>
+    <fieldset class="rounded-xl border border-line p-3">
+      <legend class="px-1 text-xs font-medium text-muted">اطلاعات کارت آزمایشی (صرفاً نمایشی)</legend>
       <input
         type="text"
+        dir="ltr"
         value="4242 4242 4242 4242"
         inputmode="numeric"
-        aria-label="Card number"
-        class="mb-2 w-full rounded-md border border-line px-3 py-2 font-mono text-sm text-muted"
+        aria-label="شماره کارت آزمایشی"
+        class="mb-2 w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-sm text-muted"
       />
       <div class="flex gap-2">
         <input
           type="text"
+          dir="ltr"
           value="12 / 34"
-          aria-label="Expiry"
-          class="w-1/2 rounded-md border border-line px-3 py-2 font-mono text-sm text-muted"
+          aria-label="تاریخ انقضا"
+          class="w-1/2 rounded-lg border border-line bg-paper px-3 py-2 font-mono text-sm text-muted"
         />
         <input
           type="text"
+          dir="ltr"
           value="123"
-          aria-label="CVC"
-          class="w-1/2 rounded-md border border-line px-3 py-2 font-mono text-sm text-muted"
+          aria-label="CVV2"
+          class="w-1/2 rounded-lg border border-line bg-paper px-3 py-2 font-mono text-sm text-muted"
         />
       </div>
     </fieldset>
 
     <div>
       <label class="mb-1 block text-xs font-medium text-muted" for="outcome">
-        Simulate outcome
+        شبیه‌سازی نتیجه تراکنش
       </label>
       <select
         id="outcome"
         name="outcome"
-        class="w-full rounded-md border border-line px-3 py-2 text-sm focus:border-brand focus:outline-none"
+        class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none"
       >
         {Object.entries(OUTCOMES).map(([value, label]) => (
           <option value={value}>{label}</option>
@@ -138,12 +136,12 @@ try {
 
     <button
       type="submit"
-      class="w-full rounded-md bg-brand px-5 py-3 text-sm font-medium uppercase tracking-wider text-on-brand hover:bg-brand-hover"
+      class="w-full rounded-xl bg-brand px-5 py-3 text-sm font-semibold text-on-brand hover:bg-brand-hover"
     >
-      Pay {total}
+      پرداخت آزمایشی {total}
     </button>
-    <a href="/cart" class="block text-center text-xs uppercase tracking-widest text-faint hover:text-brand">
-      Cancel
+    <a href="/cart" class="block text-center text-xs text-faint hover:text-brand-fg">
+      انصراف و بازگشت به سبد خرید
     </a>
   </form>
 </div>

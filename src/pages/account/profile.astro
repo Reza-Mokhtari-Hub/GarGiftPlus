@@ -1,0 +1,115 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import Layout from '../../layouts/Layout.astro';
+import AccountShell from '../../features/account/AccountShell.astro';
+import { getConfig } from '../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../features/auth/customer';
+import { getOrCreateWalletByCustomerId } from '../../features/wallet/db';
+import { formatJalaliDateTime } from '../../lib/format';
+
+if (!(await accountsEnabled())) return Astro.redirect('/', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
+
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+const saved = Astro.url.searchParams.get('saved') === '1';
+const error = Astro.url.searchParams.get('error');
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+---
+
+<Layout title="اطلاعات حساب کاربری">
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="profile"
+    title="اطلاعات حساب کاربری"
+  >
+    <div class="max-w-2xl rounded-xl border border-line bg-surface p-6">
+      <h2 class="text-base font-bold text-ink">مشخصات فردی و تماس</h2>
+      <p class="mt-1 text-xs text-muted">
+        تکمیل نام و شماره موبایل به تیم پشتیبانی GarGift+ کمک می‌کند در صورت نیاز هنگام تحویل دستی سفارش با شما در ارتباط باشند.
+      </p>
+
+      {saved && (
+        <div
+          role="status"
+          class="mt-4 rounded-lg border border-success/40 bg-success/10 px-4 py-2.5 text-xs font-semibold text-success"
+        >
+          اطلاعات حساب کاربری شما با موفقیت ذخیره شد.
+        </div>
+      )}
+
+      {error && (
+        <div
+          role="alert"
+          class="mt-4 rounded-lg border border-danger/40 bg-danger/10 px-4 py-2.5 text-xs font-semibold text-danger"
+        >
+          {error}
+        </div>
+      )}
+
+      <form method="POST" action="/api/account/profile" class="mt-5 space-y-4">
+        <label class="block space-y-1.5 text-xs font-semibold text-ink">
+          <span>آدرس ایمیل (شناسه حساب — غیرقابل تغییر)</span>
+          <input
+            type="email"
+            value={customer.email}
+            disabled
+            dir="ltr"
+            class="ltr-inline w-full cursor-not-allowed rounded-lg border border-line bg-paper/60 px-3.5 py-2.5 text-sm text-muted"
+          />
+        </label>
+
+        <label class="block space-y-1.5 text-xs font-semibold text-ink">
+          <span>نام و نام خانوادگی</span>
+          <input
+            type="text"
+            name="full_name"
+            maxlength="120"
+            value={customer.full_name ?? ''}
+            placeholder="مثلاً: علی محمدی"
+            class="w-full rounded-lg border border-line bg-paper px-3.5 py-2.5 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+          />
+        </label>
+
+        <label class="block space-y-1.5 text-xs font-semibold text-ink">
+          <span>شماره موبایل (ایران)</span>
+          <input
+            type="tel"
+            name="phone"
+            dir="ltr"
+            value={customer.phone ?? ''}
+            placeholder="09123456789"
+            class="ltr-inline w-full rounded-lg border border-line bg-paper px-3.5 py-2.5 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+          />
+          <span class="block text-[11px] font-normal text-muted">
+            فرمت مجاز: ۰۹۱۲۳۴۵۶۷۸۹ (با ارقام فارسی یا انگلیسی)
+          </span>
+        </label>
+
+        <div class="grid gap-3 border-t border-line pt-4 text-xs text-muted sm:grid-cols-2">
+          <div>
+            <span>تاریخ ایجاد حساب: </span>
+            <strong class="text-ink">{formatJalaliDateTime(customer.created_at, { timeZone })}</strong>
+          </div>
+          {customer.last_login_at && (
+            <div>
+              <span>آخرین ورود: </span>
+              <strong class="text-ink">{formatJalaliDateTime(customer.last_login_at, { timeZone })}</strong>
+            </div>
+          )}
+        </div>
+
+        <div class="pt-2">
+          <button
+            type="submit"
+            class="rounded-lg bg-brand px-5 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+          >
+            ذخیره تغییرات
+          </button>
+        </div>
+      </form>
+    </div>
+  </AccountShell>
+</Layout>

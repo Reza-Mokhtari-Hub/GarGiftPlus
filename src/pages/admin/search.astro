@@ -1,0 +1,253 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../config';
+import { resolveAdminActor } from '../../features/fulfillment/actor';
+import { hasAnyAdminPermission } from '../../features/fulfillment/permissions';
+import { orderReference } from '../../features/orders/number';
+import { listAdminTickets } from '../../features/tickets/db';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const q = (Astro.url.searchParams.get('q') ?? '').trim();
+const actor = await resolveAdminActor(env.DB, {
+  locals: Astro.locals,
+  cookies: Astro.cookies,
+  request: Astro.request,
+  signingSecret: env.AUTH_SECRET,
+});
+
+const canOrders = actor.permissions.has('orders.view');
+const canCustomers = actor.permissions.has('customers.view');
+const canProducts = hasAnyAdminPermission(actor, ['products.view', 'products.manage']);
+const canReceipts = actor.permissions.has('receipts.review');
+const canTickets = actor.permissions.has('tickets.manage');
+
+const like = `%${q.toLowerCase()}%`;
+
+const [ordersRes, customersRes, productsRes, receiptsRes, tickets] =
+  q.length >= 2
+    ? await Promise.all([
+        canOrders
+          ? env.DB.prepare(
+              `SELECT id, public_id, email, status, fulfillment_status, amount_total_cents, currency, created_at
+                 FROM orders
+                WHERE LOWER(public_id) LIKE ? OR LOWER(COALESCE(email, '')) LIKE ? OR CAST(id AS TEXT) LIKE ?
+                ORDER BY created_at DESC LIMIT 12`,
+            )
+              .bind(like, like, like)
+              .all<{
+                id: number;
+                public_id: string;
+                email: string | null;
+                status: string;
+                fulfillment_status: string;
+                amount_total_cents: number;
+                currency: string;
+                created_at: string;
+              }>()
+              .catch(() => ({ results: [] }))
+          : Promise.resolve({ results: [] }),
+        canCustomers
+          ? env.DB.prepare(
+              `SELECT public_id, email, full_name, phone, status
+                 FROM customers
+                WHERE LOWER(email) LIKE ? OR LOWER(COALESCE(full_name, '')) LIKE ? OR LOWER(COALESCE(phone, '')) LIKE ? OR LOWER(COALESCE(public_id, '')) LIKE ?
+                ORDER BY created_at DESC LIMIT 12`,
+            )
+              .bind(like, like, like, like)
+              .all<{
+                public_id: string | null;
+                email: string;
+                full_name: string | null;
+                phone: string | null;
+                status: string;
+              }>()
+              .catch(() => ({ results: [] }))
+          : Promise.resolve({ results: [] }),
+        canProducts
+          ? env.DB.prepare(
+              `SELECT public_id, name, slug, price_cents, active
+                 FROM products
+                WHERE LOWER(name) LIKE ? OR LOWER(slug) LIKE ? OR LOWER(COALESCE(brand, '')) LIKE ? OR LOWER(public_id) LIKE ?
+                ORDER BY active DESC, id DESC LIMIT 12`,
+            )
+              .bind(like, like, like, like)
+              .all<{
+                public_id: string;
+                name: string;
+                slug: string;
+                price_cents: number;
+                active: number;
+              }>()
+              .catch(() => ({ results: [] }))
+          : Promise.resolve({ results: [] }),
+        canReceipts
+          ? env.DB.prepare(
+              `SELECT public_id, target_public_id, customer_email, tracking_code, amount, status
+                 FROM bank_transfer_receipts
+                WHERE LOWER(public_id) LIKE ? OR LOWER(COALESCE(customer_email, '')) LIKE ? OR LOWER(COALESCE(tracking_code, '')) LIKE ? OR LOWER(target_public_id) LIKE ?
+                ORDER BY created_at DESC LIMIT 12`,
+            )
+              .bind(like, like, like, like)
+              .all<{
+                public_id: string;
+                target_public_id: string;
+                customer_email: string;
+                tracking_code: string;
+                amount: number;
+                status: string;
+              }>()
+              .catch(() => ({ results: [] }))
+          : Promise.resolve({ results: [] }),
+        canTickets ? listAdminTickets(env.DB, { q }, 12, 0) : Promise.resolve([]),
+      ])
+    : [
+        { results: [] },
+        { results: [] },
+        { results: [] },
+        { results: [] },
+        [],
+      ];
+
+const orders = ordersRes.results ?? [];
+const customers = customersRes.results ?? [];
+const products = productsRes.results ?? [];
+const receipts = receiptsRes.results ?? [];
+const totalHits = orders.length + customers.length + products.length + receipts.length + tickets.length;
+const onCfg = getConfig().orderNumber;
+const currency = getConfig().currency;
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+---
+
+<AdminLayout
+  title="جستجوی سراسری مدیریت"
+  active="dashboard"
+  requiredPermission="dashboard.view"
+  breadcrumbs={[{ label: 'داشبورد', href: '/admin' }, { label: 'جستجوی سراسری' }]}
+>
+  <AdminPageHeader
+    title="جستجوی سراسری در ماژول‌های پنل"
+    subtitle="جستجوی همزمان در سفارش‌ها، مشتریان، محصولات، فیش‌های بانکی و تیکت‌ها متناسب با سطح دسترسی شما"
+    badge={q ? `${toPersianDigits(totalHits)} نتیجه` : undefined}
+  />
+
+  <form method="GET" action="/admin/search" class="gg-admin-card mb-6 flex flex-wrap gap-3 p-4">
+    <input
+      type="search"
+      name="q"
+      value={q}
+      autofocus
+      placeholder="شماره سفارش، ایمیل مشتری، نام محصول، کد رهگیری فیش یا موضوع تیکت (حداقل ۲ کاراکتر)..."
+      class="gg-admin-input flex-1 text-xs"
+    />
+    <button type="submit" class="gg-admin-btn-primary text-xs">جستجو در کل سیستم</button>
+  </form>
+
+  {q.length < 2 ? (
+    <AdminEmptyState
+      title="عبارت جستجو را وارد کنید"
+      description="حداقل ۲ کاراکتر وارد کنید تا نتایج مجاز برای نقش کاربری شما در سراسر ماژول‌های GarGift+ نمایش داده شود."
+    />
+  ) : totalHits === 0 ? (
+    <AdminEmptyState
+      title={`نتیجه‌ای برای «${q}» یافت نشد`}
+      description="عبارت دیگری را امتحان کنید یا فیلتر بخش مورد نظر را مستقیماً بررسی نمایید."
+    />
+  ) : (
+    <div class="space-y-6">
+      {orders.length > 0 && (
+        <section class="gg-admin-card p-5">
+          <h2 class="mb-3 text-sm font-bold text-ink">سفارش‌ها ({toPersianDigits(orders.length)})</h2>
+          <div class="divide-y divide-line text-xs">
+            {orders.map((o) => (
+              <div class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <div class="flex items-center gap-3">
+                  <a href={`/admin/orders/${o.public_id}`} class="ltr-inline font-mono font-bold text-brand-fg hover:underline">
+                    #{orderReference(o.public_id, o.id, onCfg)}
+                  </a>
+                  <span class="ltr-inline font-mono text-muted">{o.email || '—'}</span>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="text-faint">{formatJalaliDateTime(o.created_at, { timeZone })}</span>
+                  <span class="font-bold text-ink">{formatPrice(o.amount_total_cents, o.currency)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {customers.length > 0 && (
+        <section class="gg-admin-card p-5">
+          <h2 class="mb-3 text-sm font-bold text-ink">مشتریان ({toPersianDigits(customers.length)})</h2>
+          <div class="divide-y divide-line text-xs">
+            {customers.map((c) => (
+              <div class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <div class="flex items-center gap-3">
+                  <a href={`/admin/customers/${encodeURIComponent(c.email)}`} class="ltr-inline font-mono font-bold text-brand-fg hover:underline">
+                    {c.email}
+                  </a>
+                  <span class="text-ink">{c.full_name || '—'}</span>
+                </div>
+                <span class="ltr-inline font-mono text-muted">{c.phone || '—'}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {products.length > 0 && (
+        <section class="gg-admin-card p-5">
+          <h2 class="mb-3 text-sm font-bold text-ink">محصولات ({toPersianDigits(products.length)})</h2>
+          <div class="divide-y divide-line text-xs">
+            {products.map((p) => (
+              <div class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <a href={`/admin/products/${p.public_id}/edit`} class="font-bold text-brand-fg hover:underline">
+                  {p.name}
+                </a>
+                <span class="font-bold text-ink">{formatPrice(p.price_cents, currency)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {receipts.length > 0 && (
+        <section class="gg-admin-card p-5">
+          <h2 class="mb-3 text-sm font-bold text-ink">فیش‌های بانکی ({toPersianDigits(receipts.length)})</h2>
+          <div class="divide-y divide-line text-xs">
+            {receipts.map((r) => (
+              <div class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <div class="flex items-center gap-3">
+                  <a href="/admin/receipts" class="ltr-inline font-mono font-bold text-brand-fg hover:underline">
+                    {r.tracking_code}
+                  </a>
+                  <span class="ltr-inline font-mono text-muted">{r.customer_email}</span>
+                </div>
+                <span class="font-bold text-ink">{formatPrice(r.amount, currency)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {tickets.length > 0 && (
+        <section class="gg-admin-card p-5">
+          <h2 class="mb-3 text-sm font-bold text-ink">تیکت‌های پشتیبانی ({toPersianDigits(tickets.length)})</h2>
+          <div class="divide-y divide-line text-xs">
+            {tickets.map((t) => (
+              <div class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                <a href={`/admin/tickets?ticket=${encodeURIComponent(t.public_id)}`} class="font-bold text-brand-fg hover:underline">
+                  {t.subject}
+                </a>
+                <span class="ltr-inline font-mono text-muted">{t.customer_email}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  )}
+</AdminLayout>

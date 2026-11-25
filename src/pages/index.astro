@@ -2,18 +2,93 @@
 import { env } from 'cloudflare:workers';
 import Layout from '../layouts/Layout.astro';
 import ProductList from '../features/products/ProductList.astro';
+import DynamicHomepage from '../features/homepage/DynamicHomepage.astro';
+import { loadHomepageData } from '../features/homepage/db';
 import { resolveHomePath } from '../features/settings/home';
+import { addCacheTags, productCacheTags } from '../features/cache/tags';
+import { publicOrigin } from '../features/http/origin';
+import { getConfig } from '../config';
+import { fa } from '../i18n/fa';
 
-// A store can point `/` at a page or a single product instead of the catalog.
-// Rewriting rather than duplicating those templates keeps one implementation of
-// each, and it makes the canonical URL resolve to the real page — so the same
-// content served at `/` and at `/pages/<slug>` is not two indexable copies.
-// Anything unresolvable (never set, unpublished, deleted, deactivated) falls
-// through to the catalog: a 404 homepage would be edge-cached for everyone.
-const homePath = await resolveHomePath(env.DB, Astro.locals.settings?.homePage);
-if (homePath) return Astro.rewrite(homePath);
+// Custom home page: rewrite in-process to `/pages/<slug>` or `/products/<slug>`
+// when configured in settings.
+const homePath = await resolveHomePath(env.DB, Astro.locals.settings?.homePage ?? null);
+if (homePath) {
+  return Astro.rewrite(homePath);
+}
+
+const config = getConfig();
+const storeName = Astro.locals.settings?.storeName ?? config.storeName;
+const origin = publicOrigin(Astro.url.origin, env.CANONICAL_ORIGIN);
+
+const homepageData = await loadHomepageData(env.DB, {
+  imageBaseUrl: config.images.baseUrl,
+  delivery: Astro.locals.settings?.imageDelivery,
+  currency: config.currency,
+});
+
+if (homepageData.referencedProductPublicIds.length > 0) {
+  addCacheTags(
+    Astro.response.headers,
+    productCacheTags(homepageData.referencedProductPublicIds),
+  );
+}
+
+const heroTitle = homepageData.heroSection?.title || fa.home.heroTitle;
+const heroDescription =
+  homepageData.heroSection?.description ||
+  homepageData.heroSection?.subtitle ||
+  fa.SEO.defaultDescription;
+
+const jsonLdGraph: Record<string, unknown>[] = [
+  {
+    '@type': 'Organization',
+    '@id': `${origin}/#organization`,
+    name: storeName,
+    url: `${origin}/`,
+    description: homepageData.footerConfig.description,
+  },
+  {
+    '@type': 'WebSite',
+    '@id': `${origin}/#website`,
+    url: `${origin}/`,
+    name: storeName,
+    inLanguage: 'fa-IR',
+    publisher: { '@id': `${origin}/#organization` },
+    potentialAction: {
+      '@type': 'SearchAction',
+      target: `${origin}/search?q={search_term_string}`,
+      'query-input': 'required name=search_term_string',
+    },
+  },
+];
+
+if (homepageData.faqs.length > 0) {
+  jsonLdGraph.push({
+    '@type': 'FAQPage',
+    mainEntity: homepageData.faqs.map((faq) => ({
+      '@type': 'Question',
+      name: faq.question,
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: faq.answer,
+      },
+    })),
+  });
+}
+
+const jsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@graph': jsonLdGraph,
+});
 ---
 
-<Layout>
-  <ProductList />
+<Layout title={heroTitle} description={heroDescription} jsonLd={jsonLd}>
+  {
+    homepageData.activeSections.length > 0 ? (
+      <DynamicHomepage data={homepageData} />
+    ) : (
+      <ProductList />
+    )
+  }
 </Layout>

@@ -1,0 +1,918 @@
+---
+import ProductCard from '#theme/ProductCard.astro';
+import StoreImage from '../storefront/controls/StoreImage.astro';
+import type { HomepageDataModel } from './db';
+import { toPersianDigits } from '../../lib/format';
+
+interface Props {
+  data: HomepageDataModel;
+}
+
+const { data } = Astro.props;
+
+const bannerThemeClasses: Record<string, string> = {
+  violet:
+    'border-brand/30 bg-gradient-to-br from-brand/12 via-surface to-brand-soft/70',
+  turquoise:
+    'border-accent/35 bg-gradient-to-br from-accent/12 via-surface to-brand-soft/40',
+  coral:
+    'border-coral/35 bg-gradient-to-br from-coral/12 via-surface to-brand-soft/40',
+  amber:
+    'border-amber/35 bg-gradient-to-br from-amber/12 via-surface to-brand-soft/40',
+  navy:
+    'border-brand/40 bg-gradient-to-br from-surface-elevated via-surface to-brand-soft/60',
+};
+
+const bannerBadgeClasses: Record<string, string> = {
+  violet: 'bg-brand text-on-brand',
+  turquoise: 'bg-accent text-on-brand',
+  coral: 'bg-coral text-on-brand',
+  amber: 'bg-amber text-on-brand',
+  navy: 'bg-brand-soft text-brand-fg',
+};
+---
+
+<div class="flex flex-col gap-14 sm:gap-20" data-gargift-homepage>
+  {
+    data.activeSections.map((section) => {
+      switch (section.section_key) {
+        case 'hero': {
+          const titleWords = section.title.trim().split(/\s+/);
+          const splitIndex = Math.max(1, Math.ceil(titleWords.length / 2));
+          const titlePart1 = titleWords.slice(0, splitIndex).join(' ');
+          const titlePart2 = titleWords.slice(splitIndex).join(' ');
+          return (
+            <section
+              data-homepage-section="hero"
+              class="relative overflow-hidden rounded-3xl border border-[#e3e7f7] bg-white p-5 shadow-[0_14px_36px_-8px_rgba(91,99,254,0.10)] sm:p-8 lg:p-10 dark:border-[#19283a] dark:bg-[#080c14]/95 dark:shadow-[0_24px_60px_rgba(0,0,0,0.8)]"
+            >
+              <!-- جلوه نوری پس‌زمینه اختصاصی حالت تاریک (Neon City Ambient Glow) -->
+              <div
+                aria-hidden="true"
+                class="pointer-events-none absolute inset-0 hidden dark:block"
+                style="background: radial-gradient(circle at 28% 45%, rgba(53, 217, 204, 0.13), transparent 52%), radial-gradient(circle at 8% 18%, rgba(255, 67, 112, 0.10), transparent 45%), linear-gradient(rgba(53, 217, 204, 0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(53, 217, 204, 0.035) 1px, transparent 1px); background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;"
+              ></div>
+
+              <div class="relative z-10 grid items-center gap-8 lg:grid-cols-12 lg:gap-10">
+                <!-- ستون اصلی محتوای Hero -->
+                <div class="flex flex-col items-start lg:col-span-7">
+                  <!-- در حالت روشن: کارت بنر تصویری MonkeyGames بالای ستون؛ در حالت تاریک: بج نئونی Neon City -->
+                  <div class="mb-4 flex w-full flex-wrap items-center justify-between gap-2">
+                    {section.badge_text && (
+                      <span class="inline-flex items-center gap-2 rounded-full border border-[#5b63fe]/25 bg-[#eef0ff] px-3.5 py-1.5 text-xs font-extrabold text-[#5258e8] dark:border-[#35d9cc]/40 dark:bg-[#0b1f26] dark:text-[#35d9cc] dark:shadow-[0_0_20px_rgba(53,217,204,0.15)]">
+                        <span class="h-2 w-2 rounded-full bg-[#ff4370] dark:bg-[#35d9cc] dark:shadow-[0_0_8px_#35d9cc]"></span>
+                        <span>{section.badge_text}</span>
+                      </span>
+                    )}
+
+                    <div class="flex items-center gap-1.5 dark:hidden" aria-hidden="true">
+                      <span class="rounded-full bg-[#ff4370] px-3 py-1 text-[11px] font-extrabold text-white shadow-xs">
+                        پرطرفدار
+                      </span>
+                      <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#191c32] text-white">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                          <rect x="2" y="6" width="20" height="12" rx="2" />
+                          <path d="M6 12h4M8 10v4M15 13h.01M18 11h.01" />
+                        </svg>
+                      </span>
+                      <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-[#191c32] text-white">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                          <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
+                        </svg>
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- بنر گرافیکی عریض حالت روشن (سبک MonkeyGames Hero Showcase) -->
+                  <div class="relative mb-6 w-full overflow-hidden rounded-3xl bg-gradient-to-br from-[#231555] via-[#4a42ec] to-[#0ea5e9] p-6 text-white shadow-[0_16px_36px_-8px_rgba(91,99,254,0.4)] sm:p-7 dark:hidden">
+                    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_80%_20%,rgba(255,255,255,0.22),transparent_55%)]"></div>
+                    <div class="relative z-10 flex flex-wrap items-center justify-between gap-2">
+                      <span class="rounded-full bg-white/20 px-3 py-1 font-mono text-[11px] font-extrabold tracking-wide text-white backdrop-blur-md" dir="ltr">
+                        GARGIFT+ STORE
+                      </span>
+                      <span class="rounded-full bg-black/45 px-3 py-1 text-[11px] font-bold text-white backdrop-blur-md">
+                        +۸ سرویس پریمیوم فعال
+                      </span>
+                    </div>
+                    <div class="relative z-10 mt-6 flex flex-wrap items-end justify-between gap-4">
+                      <div>
+                        <p class="text-xs font-bold text-white/80">ویترین دیجیتال گرگیفت+</p>
+                        <p class="mt-1 text-lg font-extrabold sm:text-xl">
+                          ChatGPT Plus · Apple · Steam · PlayStation · PUBG
+                        </p>
+                      </div>
+                      <span class="rounded-2xl bg-white/15 px-3.5 py-2 text-xs font-extrabold text-white backdrop-blur-md">
+                        تحویل تخصصی
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- عنوان اصلی H1: در حالت تاریک دو رنگ (سفید + فیروزه‌ای درخشان Neon City) -->
+                  <h1 class="text-2xl font-extrabold leading-tight tracking-tight text-[#191c32] sm:text-4xl lg:text-[2.75rem] dark:text-white">
+                    <span>{titlePart1}</span>
+                    {titlePart2 && (
+                      <>
+                        {' '}
+                        <span class="text-[#5b63fe] dark:block dark:mt-1 dark:text-[#35d9cc] dark:drop-shadow-[0_0_24px_rgba(53,217,204,0.35)]">
+                          {titlePart2}
+                        </span>
+                      </>
+                    )}
+                  </h1>
+
+                  {section.subtitle && (
+                    <p class="mt-3 text-base font-bold leading-relaxed text-[#5258e8] sm:text-lg dark:text-[#cbd5e1]">
+                      {section.subtitle}
+                    </p>
+                  )}
+
+                  {section.description && (
+                    <p class="mt-2.5 max-w-2xl text-sm leading-relaxed text-[#5e6484] sm:text-base dark:text-[#94a3b8]">
+                      {section.description}
+                    </p>
+                  )}
+
+                  <!-- دکمه‌های اقدام (در لایت مود آبی-بنفش MonkeyGames / در دارک مود فیروزه‌ای نئونی Neon City) -->
+                  <div class="mt-7 flex w-full flex-wrap items-center gap-3 sm:w-auto">
+                    <a
+                      href={section.cta_href || '/products'}
+                      class="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-[#5b63fe] px-6 py-3.5 text-sm font-extrabold text-white shadow-[0_10px_24px_-4px_rgba(91,99,254,0.5)] transition-all hover:bg-[#4951ec] sm:flex-initial dark:rounded-xl dark:bg-[#35d9cc] dark:text-[#041217] dark:shadow-[0_0_28px_rgba(53,217,204,0.4)] dark:hover:bg-[#22e5d5]"
+                    >
+                      <span>{section.cta_text || 'مشاهده محصولات'}</span>
+                      <span aria-hidden="true">&larr;</span>
+                    </a>
+
+                    {section.secondary_cta_text && (
+                      <a
+                        href={section.secondary_cta_href || '/account'}
+                        class="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl border border-[#e3e7f7] bg-[#f4f6fc] px-5 py-3.5 text-sm font-bold text-[#191c32] transition-colors hover:border-[#5b63fe] hover:text-[#5b63fe] sm:flex-initial dark:rounded-xl dark:border-[#1e2f42] dark:bg-[#0d1422] dark:text-white dark:hover:border-[#35d9cc]/60 dark:hover:text-[#35d9cc]"
+                      >
+                        <span>{section.secondary_cta_text}</span>
+                      </a>
+                    )}
+                  </div>
+
+                  <!-- ۴ کارت شاخص پایین دکمه‌ها (مشابه ۴ باکس KPI زیر دکمه‌های Neon City در دارک مود و تیک‌های اعتماد در لایت مود) -->
+                  <div class="mt-8 grid w-full grid-cols-2 gap-2.5 sm:grid-cols-4">
+                    <div class="flex items-center gap-2 rounded-2xl border border-[#e3e7f7] bg-[#f7f8fd] px-2.5 py-2.5 dark:rounded-xl dark:border-[#1a2838] dark:bg-[#0c121e]/90">
+                      <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-[#eef0ff] text-xs text-[#5b63fe] dark:bg-[#35d9cc]/15 dark:text-[#35d9cc]">
+                        ✓
+                      </span>
+                      <div class="min-w-0">
+                        <p class="text-[11px] font-extrabold leading-tight text-[#191c32] dark:text-white">تحویل تخصصی</p>
+                        <p class="mt-0.5 text-[10px] leading-tight text-[#5e6484] dark:text-[#7f93ac]">تیم گرگیفت+</p>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 rounded-2xl border border-[#e3e7f7] bg-[#f7f8fd] px-2.5 py-2.5 dark:rounded-xl dark:border-[#1a2838] dark:bg-[#0c121e]/90">
+                      <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-[#eef0ff] text-xs text-[#5b63fe] dark:bg-[#35d9cc]/15 dark:text-[#35d9cc]">
+                        ⚡
+                      </span>
+                      <div class="min-w-0">
+                        <p class="text-[11px] font-extrabold leading-tight text-[#191c32] dark:text-white">پرداخت امن</p>
+                        <p class="mt-0.5 text-[10px] leading-tight text-[#5e6484] dark:text-[#7f93ac]">درگاه و کیف پول</p>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 rounded-2xl border border-[#e3e7f7] bg-[#f7f8fd] px-2.5 py-2.5 dark:rounded-xl dark:border-[#1a2838] dark:bg-[#0c121e]/90">
+                      <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-[#eef0ff] text-xs text-[#5b63fe] dark:bg-[#35d9cc]/15 dark:text-[#35d9cc]">
+                        🛡️
+                      </span>
+                      <div class="min-w-0">
+                        <p class="text-[11px] font-extrabold leading-tight text-[#191c32] dark:text-white">حریم خصوصی</p>
+                        <p class="mt-0.5 text-[10px] leading-tight text-[#5e6484] dark:text-[#7f93ac]">بدون رمز عبور</p>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 rounded-2xl border border-[#e3e7f7] bg-[#f7f8fd] px-2.5 py-2.5 dark:rounded-xl dark:border-[#1a2838] dark:bg-[#0c121e]/90">
+                      <span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-[#eef0ff] text-xs text-[#5b63fe] dark:bg-[#35d9cc]/15 dark:text-[#35d9cc]">
+                        🎧
+                      </span>
+                      <div class="min-w-0">
+                        <p class="text-[11px] font-extrabold leading-tight text-[#191c32] dark:text-white">پشتیبانی فعال</p>
+                        <p class="mt-0.5 text-[10px] leading-tight text-[#5e6484] dark:text-[#7f93ac]">۹:۰۰ تا ۲۴:۰۰</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ستون کناری (در حالت روشن: کارت سفید MonkeyGames + دو کارت تصویری کوچک؛ در حالت تاریک: کارت نئونی MOST POPULAR / LEGEND Rank) -->
+                <div class="lg:col-span-5">
+                  {data.heroDesktopImage || data.heroMobileImage ? (
+                    <div class="overflow-hidden rounded-3xl border border-line bg-surface shadow-lg">
+                      {data.heroDesktopImage && data.heroMobileImage ? (
+                        <picture>
+                          <source
+                            media="(max-width: 767px)"
+                            srcset={data.heroMobileImage.srcset ?? data.heroMobileImage.src}
+                          />
+                          <StoreImage
+                            image={data.heroDesktopImage}
+                            class="h-full w-full object-cover"
+                          />
+                        </picture>
+                      ) : (
+                        <StoreImage
+                          image={(data.heroDesktopImage ?? data.heroMobileImage)!}
+                          class="h-full w-full object-cover"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <!-- چیدمان اختصاصی حالت روشن (MonkeyGames Right Spotlight Card + 2 Mini Thumbnails) -->
+                      <div class="flex flex-col gap-4 dark:hidden">
+                        <div class="rounded-3xl border border-[#e3e7f7] bg-[#f8f9fe] p-5 shadow-xs sm:p-6">
+                          <div class="flex items-center justify-between gap-2">
+                            <h2 class="text-base font-extrabold text-[#191c32] sm:text-lg">
+                              پکیج‌های منتخب دیجیتال
+                            </h2>
+                            <span class="rounded-full bg-[#ff4370]/15 px-2.5 py-0.5 text-[11px] font-extrabold text-[#ff4370]">
+                              ویژه
+                            </span>
+                          </div>
+
+                          <div class="mt-3.5 flex flex-wrap gap-1.5">
+                            <a href="/categories/ai-subscriptions" class="rounded-xl bg-[#eef0ff] px-3 py-1 text-xs font-bold text-[#5258e8] hover:bg-[#5b63fe] hover:text-white transition-colors">
+                              ChatGPT Plus
+                            </a>
+                            <a href="/categories/ai-subscriptions" class="rounded-xl bg-[#eef0ff] px-3 py-1 text-xs font-bold text-[#5258e8] hover:bg-[#5b63fe] hover:text-white transition-colors">
+                              Claude Pro
+                            </a>
+                            <a href="/categories/gift-cards" class="rounded-xl bg-[#eef0ff] px-3 py-1 text-xs font-bold text-[#5258e8] hover:bg-[#5b63fe] hover:text-white transition-colors">
+                              Apple US
+                            </a>
+                            <a href="/categories/gift-cards" class="rounded-xl bg-[#eef0ff] px-3 py-1 text-xs font-bold text-[#5258e8] hover:bg-[#5b63fe] hover:text-white transition-colors">
+                              PlayStation
+                            </a>
+                            <a href="/categories/game-topup" class="rounded-xl bg-[#eef0ff] px-3 py-1 text-xs font-bold text-[#5258e8] hover:bg-[#5b63fe] hover:text-white transition-colors">
+                              PUBG UC
+                            </a>
+                          </div>
+
+                          <div class="mt-5 flex items-center justify-between gap-3">
+                            <div class="flex items-center gap-2.5 rounded-2xl bg-white px-3.5 py-2.5 shadow-2xs border border-[#e3e7f7]">
+                              <span class="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[#84cc16] text-sm font-extrabold text-white">
+                                ★
+                              </span>
+                              <div class="leading-tight">
+                                <p class="text-[11px] font-medium text-[#7c82a2]">کیفیت سرویس</p>
+                                <p class="text-xs font-extrabold text-[#191c32]">۱۰۰٪ اورجینال</p>
+                              </div>
+                            </div>
+
+                            <a
+                              href="/products"
+                              class="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-[#5b63fe] px-4 py-3 text-xs font-extrabold text-white shadow-[0_8px_20px_-4px_rgba(91,99,254,0.45)] transition-all hover:bg-[#4951ec]"
+                            >
+                              <span>کاتالوگ کامل</span>
+                              <span aria-hidden="true">&larr;</span>
+                            </a>
+                          </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-3.5">
+                          <a
+                            href="/categories/ai-subscriptions"
+                            class="group relative flex aspect-[16/10] flex-col justify-between overflow-hidden rounded-3xl bg-gradient-to-br from-[#312e81] via-[#4f46e5] to-[#06b6d4] p-4 text-white shadow-sm transition-transform hover:-translate-y-0.5"
+                          >
+                            <span class="w-fit rounded-full bg-white/20 px-2.5 py-0.5 font-mono text-[10px] font-extrabold backdrop-blur-xs" dir="ltr">
+                              AI PRO
+                            </span>
+                            <div>
+                              <p class="text-xs font-extrabold">هوش مصنوعی</p>
+                              <p class="text-[11px] text-white/80">ChatGPT و Claude</p>
+                            </div>
+                          </a>
+
+                          <a
+                            href="/categories/gift-cards"
+                            class="group relative flex aspect-[16/10] flex-col items-center justify-center overflow-hidden rounded-3xl bg-[#141829] p-4 text-white shadow-sm transition-transform hover:-translate-y-0.5"
+                          >
+                            <span class="gg-numeric rounded-2xl bg-white/10 px-3.5 py-1.5 text-base font-extrabold text-white backdrop-blur-xs">
+                              +۸ سرویس
+                            </span>
+                            <p class="mt-2 text-xs font-bold text-white/85">گیفت‌کارت و بازی</p>
+                          </a>
+                        </div>
+                      </div>
+
+                      <!-- چیدمان اختصاصی حالت تاریک (کارت نئونی MOST POPULAR / LEGEND Rank از تصویر Neon City) -->
+                      <div class="relative hidden rounded-2xl border border-[#35d9cc]/35 bg-[#0b101b]/95 p-5 shadow-[0_0_45px_rgba(53,217,204,0.09)] sm:p-6 dark:block">
+                        <span class="absolute -top-3.5 right-6 rounded-full bg-[#35d9cc] px-3.5 py-1 text-[11px] font-extrabold text-[#041217] shadow-[0_0_16px_rgba(53,217,204,0.55)]">
+                          محبوب‌ترین سرویس‌ها
+                        </span>
+
+                        <!-- قاب سیاه نئونی با آیکون تاج/هدیه فیروزه‌ای درخشان -->
+                        <div class="relative flex aspect-[16/9] items-center justify-center overflow-hidden rounded-xl border border-[#172636] bg-[#060910]">
+                          <div
+                            aria-hidden="true"
+                            class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(53,217,204,0.25),transparent_62%)]"
+                          ></div>
+                          <svg
+                            width="56"
+                            height="56"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="#35d9cc"
+                            stroke-width="1.75"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                            aria-hidden="true"
+                            class="relative drop-shadow-[0_0_16px_rgba(53,217,204,0.65)]"
+                          >
+                            <path d="m2 4 3 12h14l3-12-6 7-4-7-4 7-6-7zm3 16h14" />
+                          </svg>
+                        </div>
+
+                        <div class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                          <div>
+                            <h2 class="text-lg font-extrabold text-white">
+                              سرویس‌های VIP گرگیفت+
+                            </h2>
+                            <p class="mt-1 text-xs leading-relaxed text-[#94a3b8]">
+                              گیفت‌کارت‌های اورجینال، اشتراک‌های هوش مصنوعی و شارژ سریع بازی‌ها
+                            </p>
+                          </div>
+
+                          <a
+                            href="/products"
+                            class="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-[#35d9cc] px-4 py-2.5 text-xs font-extrabold text-[#041217] shadow-[0_0_20px_rgba(53,217,204,0.35)] transition-all hover:bg-[#22e5d5]"
+                          >
+                            <span>+ مشاهده و خرید</span>
+                          </a>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </section>
+          );
+        }
+
+        case 'categories':
+          if (data.categories.length === 0) return null;
+          return (
+            <section data-homepage-section="categories">
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  {section.badge_text && (
+                    <p class="text-xs font-bold text-accent-fg">{section.badge_text}</p>
+                  )}
+                  <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                </div>
+                {section.cta_href && (
+                  <a
+                    href={section.cta_href}
+                    class="inline-flex items-center gap-1.5 text-xs font-bold text-brand-fg transition-colors hover:underline"
+                  >
+                    <span>{section.cta_text || 'مشاهده همه'}</span>
+                    <span aria-hidden="true">&larr;</span>
+                  </a>
+                )}
+              </div>
+
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                {data.categories.map((cat, idx) => {
+                  const accents = [
+                    'border-brand/30 hover:border-brand bg-surface',
+                    'border-accent/35 hover:border-accent bg-surface',
+                    'border-coral/35 hover:border-coral bg-surface',
+                    'border-amber/35 hover:border-amber bg-surface',
+                  ];
+                  const badgeColors = [
+                    'bg-brand-soft text-brand-fg',
+                    'bg-accent/15 text-accent-fg',
+                    'bg-coral/15 text-coral',
+                    'bg-amber/15 text-amber',
+                  ];
+                  const cardAccent = accents[idx % accents.length];
+                  const iconBadge = badgeColors[idx % badgeColors.length];
+                  return (
+                    <a
+                      href={cat.href}
+                      class={`group flex flex-col justify-between rounded-2xl border p-5 transition-all hover:-translate-y-0.5 hover:shadow-md ${cardAccent}`}
+                    >
+                      <div class="flex items-start justify-between gap-3">
+                        {cat.image ? (
+                          <div class="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-elevated">
+                            <StoreImage
+                              image={cat.image}
+                              class="h-full w-full object-cover"
+                            />
+                          </div>
+                        ) : (
+                          <span
+                            class={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl font-bold ${iconBadge}`}
+                          >
+                            <svg
+                              width="20"
+                              height="20"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2"
+                              aria-hidden="true"
+                            >
+                              <rect x="3" y="4" width="18" height="16" rx="2" />
+                              <path d="M7 8h10M7 12h6" />
+                            </svg>
+                          </span>
+                        )}
+                        <span class="gg-numeric rounded-md border border-line bg-paper px-2.5 py-1 text-[11px] font-semibold text-muted">
+                          {toPersianDigits(cat.productCount)} محصول
+                        </span>
+                      </div>
+
+                      <div class="mt-4">
+                        <h3 class="text-base font-extrabold text-ink transition-colors group-hover:text-brand-fg">
+                          {cat.name}
+                        </h3>
+                        {cat.description && (
+                          <p class="mt-1 line-clamp-2 text-xs leading-relaxed text-muted">
+                            {cat.description}
+                          </p>
+                        )}
+                      </div>
+
+                      <div class="mt-4 flex items-center justify-between border-t border-line pt-3 text-xs font-bold text-brand-fg">
+                        <span>مشاهده محصولات</span>
+                        <span aria-hidden="true" class="transition-transform group-hover:-translate-x-1">
+                          &larr;
+                        </span>
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            </section>
+          );
+
+        case 'featured_products':
+          if (data.featuredProducts.length === 0) return null;
+          return (
+            <section data-homepage-section="featured_products">
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  {section.badge_text && (
+                    <p class="text-xs font-bold text-brand-fg">{section.badge_text}</p>
+                  )}
+                  <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                </div>
+                <a
+                  href={section.cta_href || '/products?featured=1'}
+                  class="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-2 text-xs font-bold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+                >
+                  <span>{section.cta_text || 'مشاهده همه محصولات ویژه'}</span>
+                  <span aria-hidden="true">&larr;</span>
+                </a>
+              </div>
+
+              <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {data.featuredProducts.map((card, i) => (
+                  <ProductCard card={card} index={i} headingLevel="h3" />
+                ))}
+              </ul>
+            </section>
+          );
+
+        case 'popular_products':
+          if (data.popularProducts.length === 0) return null;
+          return (
+            <section data-homepage-section="popular_products">
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  {section.badge_text && (
+                    <p class="text-xs font-bold text-accent-fg">{section.badge_text}</p>
+                  )}
+                  <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                </div>
+                <a
+                  href={section.cta_href || '/products'}
+                  class="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-3.5 py-2 text-xs font-bold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+                >
+                  <span>{section.cta_text || 'مشاهده کاتالوگ کامل'}</span>
+                  <span aria-hidden="true">&larr;</span>
+                </a>
+              </div>
+
+              <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {data.popularProducts.map((card, i) => (
+                  <ProductCard card={card} index={i} headingLevel="h3" />
+                ))}
+              </ul>
+            </section>
+          );
+
+        case 'ai_products':
+          return (
+            <section
+              data-homepage-section="ai_products"
+              class="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent/8 via-surface to-brand-soft/40 p-6 sm:p-8"
+            >
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div class="max-w-2xl">
+                  <span class="inline-flex items-center gap-1.5 rounded-md bg-accent/15 px-2.5 py-1 text-xs font-bold text-accent-fg">
+                    <span>{section.badge_text || 'هوش مصنوعی (AI)'}</span>
+                  </span>
+                  <h2 class="gg-h2 mt-2 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs font-medium text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                  {section.description && (
+                    <p class="mt-1.5 text-xs leading-relaxed text-muted">{section.description}</p>
+                  )}
+                </div>
+                <a
+                  href={section.cta_href || '/categories/ai-subscriptions'}
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                >
+                  <span>{section.cta_text || 'مشاهده اشتراک‌های هوش مصنوعی'}</span>
+                  <span aria-hidden="true">&larr;</span>
+                </a>
+              </div>
+
+              {data.aiProducts.length > 0 ? (
+                <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {data.aiProducts.map((card, i) => (
+                    <ProductCard card={card} index={i} headingLevel="h3" />
+                  ))}
+                </ul>
+              ) : (
+                <div class="rounded-2xl border border-dashed border-line bg-paper p-6 text-center text-xs text-muted">
+                  برای مشاهده جدیدترین اشتراک‌های ChatGPT، Claude و Gemini به صفحه کاتالوگ محصولات مراجعه کنید.
+                </div>
+              )}
+            </section>
+          );
+
+        case 'gaming_products':
+          return (
+            <section
+              data-homepage-section="gaming_products"
+              class="rounded-3xl border border-coral/30 bg-gradient-to-br from-coral/8 via-surface to-brand-soft/35 p-6 sm:p-8"
+            >
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div class="max-w-2xl">
+                  <span class="inline-flex items-center gap-1.5 rounded-md bg-coral/15 px-2.5 py-1 text-xs font-bold text-coral">
+                    <span>{section.badge_text || 'گیمینگ و شارژ بازی'}</span>
+                  </span>
+                  <h2 class="gg-h2 mt-2 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs font-medium text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                  {section.description && (
+                    <p class="mt-1.5 text-xs leading-relaxed text-muted">{section.description}</p>
+                  )}
+                </div>
+                <a
+                  href={section.cta_href || '/categories/game-topup'}
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                >
+                  <span>{section.cta_text || 'مشاهده محصولات گیمینگ'}</span>
+                  <span aria-hidden="true">&larr;</span>
+                </a>
+              </div>
+
+              {data.gamingProducts.length > 0 ? (
+                <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {data.gamingProducts.map((card, i) => (
+                    <ProductCard card={card} index={i} headingLevel="h3" />
+                  ))}
+                </ul>
+              ) : (
+                <div class="rounded-2xl border border-dashed border-line bg-paper p-6 text-center text-xs text-muted">
+                  بسته‌های شارژ بازی و آیتم‌های درون‌بازی در کاتالوگ فروشگاه در دسترس هستند.
+                </div>
+              )}
+            </section>
+          );
+
+        case 'gift_cards':
+          return (
+            <section
+              data-homepage-section="gift_cards"
+              class="rounded-3xl border border-brand/30 bg-gradient-to-br from-brand-soft/60 via-surface to-surface-elevated p-6 sm:p-8"
+            >
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div class="max-w-2xl">
+                  <span class="inline-flex items-center gap-1.5 rounded-md bg-brand-soft px-2.5 py-1 text-xs font-bold text-brand-fg">
+                    <span>{section.badge_text || 'گیفت‌کارت‌های بین‌المللی'}</span>
+                  </span>
+                  <h2 class="gg-h2 mt-2 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs font-medium text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                  {section.description && (
+                    <p class="mt-1.5 text-xs leading-relaxed text-muted">{section.description}</p>
+                  )}
+                </div>
+                <a
+                  href={section.cta_href || '/categories/gift-cards'}
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                >
+                  <span>{section.cta_text || 'مشاهده همه گیفت‌کارت‌ها'}</span>
+                  <span aria-hidden="true">&larr;</span>
+                </a>
+              </div>
+
+              {data.giftCardProducts.length > 0 ? (
+                <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                  {data.giftCardProducts.map((card, i) => (
+                    <ProductCard card={card} index={i} headingLevel="h3" />
+                  ))}
+                </ul>
+              ) : (
+                <div class="rounded-2xl border border-dashed border-line bg-paper p-6 text-center text-xs text-muted">
+                  گیفت‌کارت‌های اپل، گوگل‌پلی، استیم و پلی‌استیشن در کاتالوگ فروشگاه قابل سفارش هستند.
+                </div>
+              )}
+            </section>
+          );
+
+        case 'promotional_banners':
+          if (data.promotionalBanners.length === 0) return null;
+          return (
+            <section data-homepage-section="promotional_banners">
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  {section.badge_text && (
+                    <p class="text-xs font-bold text-brand-fg">{section.badge_text}</p>
+                  )}
+                  <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                </div>
+              </div>
+
+              <div
+                class={`grid grid-cols-1 gap-6 ${
+                  data.promotionalBanners.length > 1 ? 'lg:grid-cols-2' : ''
+                }`}
+              >
+                {data.promotionalBanners.map((banner) => {
+                  const themeCls =
+                    bannerThemeClasses[banner.accentTheme] ?? bannerThemeClasses.violet;
+                  const badgeCls =
+                    bannerBadgeClasses[banner.accentTheme] ?? bannerBadgeClasses.violet;
+                  return (
+                    <div
+                      data-promo-banner={banner.publicId}
+                      class={`group relative flex flex-col justify-between overflow-hidden rounded-3xl border p-6 shadow-sm transition-all hover:shadow-md sm:p-8 ${themeCls}`}
+                    >
+                      <div class="relative z-10 flex flex-col items-start">
+                        {banner.badgeText && (
+                          <span
+                            class={`rounded-md px-2.5 py-1 text-[11px] font-bold ${badgeCls}`}
+                          >
+                            {banner.badgeText}
+                          </span>
+                        )}
+                        <h3 class="mt-3 text-xl font-extrabold text-ink sm:text-2xl">
+                          {banner.title}
+                        </h3>
+                        {banner.subtitle && (
+                          <p class="mt-1 font-mono text-xs font-semibold text-brand-fg" dir="ltr">
+                            {banner.subtitle}
+                          </p>
+                        )}
+                        {banner.description && (
+                          <p class="mt-2.5 max-w-xl text-xs leading-relaxed text-muted sm:text-sm">
+                            {banner.description}
+                          </p>
+                        )}
+                      </div>
+
+                      {(banner.desktopImage || banner.mobileImage) && (
+                        <div class="my-5 overflow-hidden rounded-2xl border border-line bg-surface">
+                          {banner.desktopImage && banner.mobileImage ? (
+                            <picture>
+                              <source
+                                media="(max-width: 767px)"
+                                srcset={banner.mobileImage.srcset ?? banner.mobileImage.src}
+                              />
+                              <StoreImage
+                                image={banner.desktopImage}
+                                class="h-44 w-full object-cover sm:h-52"
+                              />
+                            </picture>
+                          ) : (
+                            <StoreImage
+                              image={(banner.desktopImage ?? banner.mobileImage)!}
+                              class="h-44 w-full object-cover sm:h-52"
+                            />
+                          )}
+                        </div>
+                      )}
+
+                      <div class="relative z-10 mt-6">
+                        <a
+                          href={banner.ctaHref}
+                          class="inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                        >
+                          <span>{banner.ctaText}</span>
+                          <span aria-hidden="true">&larr;</span>
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+
+        case 'service_benefits':
+          if (data.serviceBenefits.length === 0) return null;
+          return (
+            <section id="service-benefits" data-homepage-section="service_benefits">
+              <div class="mb-6 text-center">
+                {section.badge_text && (
+                  <p class="text-xs font-bold text-accent-fg">{section.badge_text}</p>
+                )}
+                <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                {section.subtitle && (
+                  <p class="mx-auto mt-1 max-w-2xl text-xs text-muted sm:text-sm">
+                    {section.subtitle}
+                  </p>
+                )}
+              </div>
+
+              <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+                {data.serviceBenefits.map((benefit) => (
+                  <div class="flex flex-col rounded-3xl border border-[#e3e7f7] bg-white p-5 shadow-[0_10px_26px_-6px_rgba(91,99,254,0.08)] dark:rounded-2xl dark:border-[#192838] dark:bg-[#0b101b]/95 dark:shadow-[0_0_28px_rgba(53,217,204,0.04)]">
+                    <span class="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-[#eef0ff] text-[#5b63fe] dark:rounded-xl dark:border dark:border-[#35d9cc]/35 dark:bg-[#0b1f26] dark:text-[#35d9cc] dark:shadow-[0_0_16px_rgba(53,217,204,0.2)]">
+                      {benefit.icon === 'shield' ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        </svg>
+                      ) : benefit.icon === 'delivery' ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <polyline points="20 12 20 22 4 22 4 12" />
+                          <rect x="2" y="7" width="20" height="5" />
+                          <line x1="12" y1="22" x2="12" y2="7" />
+                        </svg>
+                      ) : benefit.icon === 'tracking' ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <circle cx="12" cy="12" r="10" />
+                          <polyline points="12 6 12 12 16 14" />
+                        </svg>
+                      ) : benefit.icon === 'history' ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                        </svg>
+                      )}
+                    </span>
+                    <h3 class="mt-3.5 text-sm font-extrabold text-ink dark:text-white">{benefit.title}</h3>
+                    <p class="mt-1.5 text-xs leading-relaxed text-muted">{benefit.description}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+
+        case 'testimonials':
+          if (data.approvedReviews.length === 0 && data.hideTestimonialsWhenEmpty) {
+            return null;
+          }
+          return (
+            <section data-homepage-section="testimonials">
+              <div class="mb-6">
+                {section.badge_text && (
+                  <p class="text-xs font-bold text-brand-fg">{section.badge_text}</p>
+                )}
+                <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                {section.subtitle && (
+                  <p class="mt-1 text-xs text-muted sm:text-sm">{section.subtitle}</p>
+                )}
+              </div>
+
+              {data.approvedReviews.length > 0 ? (
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {data.approvedReviews.map((rev) => (
+                    <article class="flex flex-col justify-between rounded-2xl border border-line bg-surface p-5 shadow-2xs">
+                      <div>
+                        <div class="flex items-center justify-between gap-2">
+                          <span class="text-xs font-bold text-ink">{rev.customer_name}</span>
+                          <span class="gg-numeric rounded-md bg-amber/15 px-2 py-0.5 text-xs font-bold text-amber">
+                            ★ {toPersianDigits(rev.rating)} از ۵
+                          </span>
+                        </div>
+                        {rev.product_name && (
+                          <p class="mt-1 text-[11px] font-medium text-brand-fg">
+                            محصول: {rev.product_name}
+                          </p>
+                        )}
+                        <p class="mt-3 text-xs leading-relaxed text-muted">{rev.comment}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <div class="rounded-2xl border border-dashed border-line bg-surface p-6 text-center text-xs text-muted">
+                  {data.testimonialsEmptyMessage}
+                </div>
+              )}
+            </section>
+          );
+
+        case 'faq':
+          if (data.faqs.length === 0) return null;
+          return (
+            <section id="faq" data-homepage-section="faq" class="rounded-3xl border border-line bg-surface p-6 sm:p-10">
+              <div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  {section.badge_text && (
+                    <p class="text-xs font-bold text-brand-fg">{section.badge_text}</p>
+                  )}
+                  <h2 class="gg-h2 mt-1 text-ink">{section.title}</h2>
+                  {section.subtitle && (
+                    <p class="mt-1 text-xs text-muted sm:text-sm">{section.subtitle}</p>
+                  )}
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                {data.faqs.map((item) => (
+                  <details class="group rounded-2xl border border-line bg-paper px-5 py-4 transition-colors open:border-brand/40">
+                    <summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-bold text-ink">
+                      <span>{item.question}</span>
+                      <span
+                        aria-hidden="true"
+                        class="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface text-xs text-brand-fg transition-transform group-open:rotate-180"
+                      >
+                        ▾
+                      </span>
+                    </summary>
+                    <p class="mt-3 border-t border-line pt-3 text-xs leading-relaxed text-muted sm:text-sm">
+                      {item.answer}
+                    </p>
+                  </details>
+                ))}
+              </div>
+            </section>
+          );
+
+        case 'final_cta':
+          return (
+            <section
+              data-homepage-section="final_cta"
+              class="relative overflow-hidden rounded-3xl border border-brand/35 bg-gradient-to-l from-brand-soft via-surface to-surface-elevated p-8 text-center shadow-md sm:p-12"
+            >
+              <div class="mx-auto max-w-2xl">
+                {section.badge_text && (
+                  <span class="inline-block rounded-lg bg-brand/15 px-3 py-1 text-xs font-bold text-brand-fg">
+                    {section.badge_text}
+                  </span>
+                )}
+                <h2 class="mt-3 text-2xl font-extrabold text-ink sm:text-3xl">
+                  {section.title}
+                </h2>
+                {section.subtitle && (
+                  <p class="mt-3 text-xs leading-relaxed text-muted sm:text-sm">
+                    {section.subtitle}
+                  </p>
+                )}
+
+                <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+                  <a
+                    href={section.cta_href || '/products'}
+                    class="inline-flex items-center gap-2 rounded-xl bg-brand px-6 py-3.5 text-sm font-bold text-on-brand shadow-sm transition-colors hover:bg-brand-hover"
+                  >
+                    <span>{section.cta_text || 'همین حالا محصولات گرگیفت رو ببین'}</span>
+                    <span aria-hidden="true">&larr;</span>
+                  </a>
+                  {section.secondary_cta_text && (
+                    <a
+                      href={section.secondary_cta_href || '/account'}
+                      class="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-3.5 text-sm font-bold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+                    >
+                      <span>{section.secondary_cta_text}</span>
+                    </a>
+                  )}
+                </div>
+              </div>
+            </section>
+          );
+
+        default:
+          return null;
+      }
+    })
+  }
+</div>

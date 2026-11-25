@@ -7,6 +7,11 @@ import { createLightningProvider } from './lightning-provider';
 import { getLightningBackend } from './lightning';
 import { createOpenNodeProvider } from './opennode';
 import { createDemoProvider } from './demo';
+import {
+  createBankTransferProvider,
+  createZarinpalProvider,
+  createZibalProvider,
+} from './iranProviders';
 import { getSecret, vaultReady } from '../secrets/store';
 
 export type { PaymentProvider } from './provider';
@@ -16,17 +21,47 @@ export {
   RESERVATION_EXPIRY_GRACE_SECONDS,
 } from './provider';
 export { DEMO_CHECKOUT_TTL_SECONDS } from './demo';
+export {
+  BANK_TRANSFER_TTL_SECONDS,
+  IRAN_GATEWAY_TTL_SECONDS,
+} from './iranProviders';
 
 // 'demo' is a first-class method — a simulated checkout that's ALWAYS offered
 // (records a real, demo-tagged order). The real rails work only when configured.
-export type PaymentMethod = 'stripe' | 'lightning' | 'opennode' | 'demo';
-const ALL_METHODS: PaymentMethod[] = ['stripe', 'lightning', 'opennode'];
+export type PaymentMethod =
+  | 'stripe'
+  | 'lightning'
+  | 'opennode'
+  | 'zarinpal'
+  | 'zibal'
+  | 'bank_transfer'
+  | 'wallet'
+  | 'demo';
+
+const ALL_METHODS: PaymentMethod[] = [
+  'zarinpal',
+  'zibal',
+  'bank_transfer',
+  'wallet',
+  'stripe',
+  'lightning',
+  'opennode',
+];
 // The buttons always presented at checkout. Each real rail works if configured,
 // else its button leads to setup instructions; demo always works.
 const OFFERED: PaymentMethod[] = ['stripe', 'lightning', 'demo'];
 
 export function isPaymentMethod(value: string): value is PaymentMethod {
-  return value === 'stripe' || value === 'lightning' || value === 'opennode' || value === 'demo';
+  return (
+    value === 'stripe' ||
+    value === 'lightning' ||
+    value === 'opennode' ||
+    value === 'zarinpal' ||
+    value === 'zibal' ||
+    value === 'bank_transfer' ||
+    value === 'wallet' ||
+    value === 'demo'
+  );
 }
 
 /**
@@ -51,6 +86,21 @@ export function isMethodAvailable(
       return settings.lightningBackend === 'lnbits'
         ? !!settings.lnbitsUrl && has('lnbits_api_key')
         : !!settings.phoenixdUrl && has('phoenixd_password');
+    case 'zarinpal':
+      return has('zarinpal_merchant_id');
+    case 'zibal':
+      return has('zibal_merchant_id') || settings.zibalSandbox;
+    case 'bank_transfer':
+      return settings.bankTransferEnabled && settings.hasActiveBankAccounts;
+    case 'wallet':
+      return (
+        settings.walletEnabled &&
+        (settings.walletExplicitlyEnabled ||
+          settings.hasActiveBankAccounts ||
+          has('zarinpal_merchant_id') ||
+          has('zibal_merchant_id') ||
+          settings.zibalSandbox)
+      );
     case 'demo':
       return true; // demo is always usable
   }
@@ -73,10 +123,7 @@ export function defaultMethod(settings: StoreSettings): PaymentMethod {
 
 /**
  * Methods a buyer/agent can actually pay with right now — the configured real
- * rails plus demo, minus any the admin has disabled at runtime. Used by the agent
- * checkout + discovery, so callers are never handed a method that isn't wired up
- * (or has been switched off). May be EMPTY (admin disabled everything) — callers
- * hide checkout rather than falling back to a method nobody enabled.
+ * rails plus demo, minus any the admin has disabled at runtime.
  */
 export function enabledMethods(
   settings: StoreSettings,
@@ -95,11 +142,7 @@ export function enabledMethods(
 }
 
 /**
- * Methods the checkout UI shows as buttons — Card, Lightning, Demo (plus any
- * other configured rail, e.g. OpenNode), minus any the admin disabled. Unlike
- * enabledMethods, this keeps UNconfigured-but-not-disabled real rails so they can
- * render a "set this up" link. May be EMPTY when the admin disables everything —
- * the cart/product pages then hide checkout entirely.
+ * Methods the checkout UI shows as buttons.
  */
 export function offeredMethods(
   settings: StoreSettings,
@@ -113,19 +156,31 @@ export function offeredMethods(
 }
 
 /**
- * Build a concrete payment provider. `method` selects the rail; omitted → the
- * store default. Keys/URLs are resolved from the admin config (D1 settings + the
- * encrypted vault). Real methods fail closed when their secrets cannot be
- * decrypted; only an explicit `demo` selection constructs the simulator. The
- * checkout + webhook + refund routes are the only callers.
+ * Build a concrete payment provider.
  */
 export async function getPaymentProvider(method?: PaymentMethod): Promise<PaymentProvider> {
   const settings = await getStoreSettings(env.DB);
   const m = method ?? settings.paymentProvider;
   if (m === 'demo') return createDemoProvider(env.DB);
   switch (m) {
+    case 'bank_transfer':
+      if (!settings.bankTransferEnabled || !settings.hasActiveBankAccounts) {
+        throw new Error('کارت‌به‌کارت / واریز بانکی فعال نیست.');
+      }
+      return createBankTransferProvider(env.DB);
+    case 'zarinpal': {
+      const merchantId = await getSecret(env.DB, 'zarinpal_merchant_id');
+      if (!merchantId) throw new Error('درگاه زرین‌پال پیکربندی نشده است.');
+      return createZarinpalProvider(env.DB, merchantId, settings.zarinpalSandbox);
+    }
+    case 'zibal': {
+      const merchant =
+        (await getSecret(env.DB, 'zibal_merchant_id')) ||
+        (settings.zibalSandbox ? 'zibal' : null);
+      if (!merchant) throw new Error('درگاه زیبال پیکربندی نشده است.');
+      return createZibalProvider(env.DB, merchant, settings.zibalSandbox);
+    }
     case 'lightning':
-      // Self-hosted Lightning (phoenixd / LNbits) behind a self-rendered pay page.
       return createLightningProvider(env.DB, await getLightningBackend());
     case 'opennode': {
       const key = await getSecret(env.DB, 'opennode_api_key');

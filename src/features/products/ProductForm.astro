@@ -4,25 +4,25 @@ import type { CategoryOption } from '../categories/db';
 import { getConfig, toMajorUnits, currencyDecimals } from '../../config';
 import { formatWeightValue, type WeightUnit } from '../shipping/weight';
 import { attachmentActive } from '../digitalDelivery/rollout.ts';
+import {
+  fieldOptionsOf,
+  parseFaqJson,
+  type ProductCheckoutField,
+} from './customFields';
+import { fa } from '../../i18n/fa';
+import { toPersianDigits } from '../../lib/format';
 
 interface Props {
   action: string;
   submitLabel: string;
   product?: Product | null;
   error?: string | null;
-  /** Depth-tagged categories to choose from (empty = no categories yet). */
   categoryOptions?: CategoryOption[];
-  /** Ids of categories this product currently belongs to. */
   selectedCategoryIds?: number[];
-  /** Show the single-image upload (true on create; edit uses the gallery). */
+  checkoutFields?: ProductCheckoutField[];
   showImage?: boolean;
-  /** Optional form id, so out-of-tree inputs (e.g. the variants editor) can submit
-      with this form via the HTML `form="..."` attribute. */
   formId?: string;
-  /** Store-wide weight unit (Admin → Settings). Storage is always grams. */
   weightUnit?: WeightUnit;
-  /** True when every enabled zone prices by weight, so a blank weight would make
-   *  this product unsellable. Shown as a requirement rather than discovered later. */
   weightRequired?: boolean;
 }
 
@@ -33,22 +33,50 @@ const {
   error = null,
   categoryOptions = [],
   selectedCategoryIds = [],
+  checkoutFields = [],
   showImage = true,
   formId,
   weightUnit = 'g',
   weightRequired = false,
 } = Astro.props;
+
 const selected = new Set(selectedCategoryIds);
-// New products default to the store currency; edits keep their own.
 const defaultCurrency = product?.currency ?? getConfig().currency;
 const priceDecimals = currencyDecimals(defaultCurrency);
 const price = product
-  ? toMajorUnits(product.price_cents, product.currency).toFixed(currencyDecimals(product.currency))
+  ? toMajorUnits(product.price_cents, product.currency).toFixed(priceDecimals)
   : '';
-// Input increment matches the currency's precision: 0.01 (USD), 1 (JPY), 0.001 (BHD).
+const comparePrice =
+  product?.compare_price_cents != null && product.compare_price_cents > 0
+    ? toMajorUnits(product.compare_price_cents, product.currency).toFixed(priceDecimals)
+    : '';
 const priceStep = priceDecimals > 0 ? (10 ** -priceDecimals).toFixed(priceDecimals) : '1';
+const currencyLabel =
+  defaultCurrency.toUpperCase() === 'IRT'
+    ? fa.common.toman
+    : defaultCurrency.toUpperCase() === 'IRR'
+      ? fa.common.rial
+      : defaultCurrency.toUpperCase();
+
+const faqs = parseFaqJson(product?.faq_json);
+const initialCfRows = checkoutFields.map((f, idx) => ({
+  public_id: f.public_id ?? null,
+  field_key: f.field_key,
+  label: f.label,
+  field_type: f.field_type,
+  placeholder: f.placeholder ?? '',
+  help_text: f.help_text ?? '',
+  options: fieldOptionsOf(f).join('\n'),
+  is_required: f.is_required === 1,
+  min_length: f.min_length != null ? String(f.min_length) : '',
+  max_length: f.max_length != null ? String(f.max_length) : '',
+  sort_order: idx,
+  is_active: f.is_active === 1,
+}));
+
 const inputClass =
-  'mt-1 w-full rounded-md border border-line px-3 py-2 focus:border-brand focus:outline-none';
+  'mt-1 w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-brand focus:outline-none';
+const sectionClass = 'rounded-xl border border-line bg-surface p-5 space-y-4';
 ---
 
 <form
@@ -56,160 +84,865 @@ const inputClass =
   action={action}
   enctype="multipart/form-data"
   id={formId}
-  class="max-w-lg space-y-4"
+  class="max-w-3xl space-y-6"
 >
   {
     error && (
-      <p class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+      <div class="gg-status-error rounded-lg border px-4 py-3 text-sm font-medium">
         {error}
-      </p>
-    )
-  }
-
-  <div>
-    <label class="block text-sm font-medium" for="name">Name</label>
-    <input id="name" name="name" type="text" required value={product?.name ?? ''} class={inputClass} />
-  </div>
-
-  <div>
-    <label class="block text-sm font-medium" for="slug">
-      Slug <span class="text-faint">(URL — blank to auto-generate from name)</span>
-    </label>
-    <input
-      id="slug"
-      name="slug"
-      type="text"
-      value={product?.slug ?? ''}
-      placeholder="auto-from-name"
-      class={inputClass}
-    />
-  </div>
-
-  <div>
-    <label class="block text-sm font-medium" for="description">Description</label>
-    <textarea id="description" name="description" rows="3" class={inputClass}
-      >{product?.description ?? ''}</textarea>
-      <p class="mt-1 text-xs text-gray-500">Plain text or Markdown — paragraphs, lists, links, and <code>/images/…</code> media render on the product page.</p>
-  </div>
-
-  <div class="grid grid-cols-2 gap-4">
-    <div>
-      <label class="block text-sm font-medium" for="price">Price (USD)</label>
-      <input id="price" name="price" type="number" step={priceStep} min="0" required value={price} class={inputClass} />
-    </div>
-    <div>
-      <label class="block text-sm font-medium" for="stock">Stock</label>
-      <input id="stock" name="stock" type="number" step="1" min="0" value={product?.stock ?? 0} class={inputClass} />
-    </div>
-  </div>
-
-  {attachmentActive() && <fieldset class="rounded-md border border-line p-4">
-    <legend class="px-1 text-sm font-medium">Shipping</legend>
-    <label class="flex items-center gap-2 text-sm">
-      <input
-        name="requires_shipping"
-        type="checkbox"
-        checked={product ? product.requires_shipping === 1 : true}
-        class="h-4 w-4"
-      />
-      Requires shipping
-    </label>
-    <p class="mt-1 text-xs text-muted">
-      Uncheck for digital goods (ebooks, gift cards). They are excluded from shipment weight
-      and never block checkout for a missing weight.
-    </p>
-    <div class="mt-3">
-      <label class="block text-sm font-medium" for="weight">Weight ({weightUnit})</label>
-      <input
-        id="weight"
-        name="weight"
-        type="text"
-        inputmode="decimal"
-        value={product?.weight_grams != null ? formatWeightValue(product.weight_grams, weightUnit) : ''}
-        class={inputClass}
-      />
-      <p class="mt-1 text-xs text-muted">
-        Packed item weight, excluding the shared packaging allowance set in Shipping.
-        {weightRequired
-          ? ' Required: every shipping zone prices by weight, so this product cannot be sold without it.'
-          : ' Optional while a flat rate is available.'}
-      </p>
-    </div>
-  </fieldset>}
-
-  <fieldset class="rounded-md border border-line p-4">
-    <legend class="px-1 text-sm font-medium">Digital delivery</legend>
-    {product?.file_key && (
-      <p class="mb-3 text-sm text-muted">
-        Attached: <strong>{product.file_name ?? 'download'}</strong>
-        {product.file_size_bytes != null && ` (${Math.ceil(product.file_size_bytes / 1024)} KB)`}
-      </p>
-    )}
-    <label class="block text-sm font-medium" for="deliverable">{product?.file_key ? 'Replace file' : 'Attach file'}</label>
-    <input
-      id="deliverable"
-      name="deliverable"
-      type="file"
-      accept=".pdf,.zip,.epub,.mp3,.m4a,.txt"
-      class="mt-1 block w-full text-sm text-muted"
-    />
-    <p class="mt-1 text-xs text-muted">Private download after payment. PDF, ZIP, EPUB, MP3, M4A, or TXT; 25 MB maximum. For a download-only product, uncheck <strong>Requires shipping</strong> above.</p>
-    {product?.file_key && (
-      <label class="mt-3 flex items-center gap-2 text-sm">
-        <input type="checkbox" name="remove_deliverable" class="h-4 w-4" />
-        Remove attachment from future purchases
-      </label>
-    )}
-  </fieldset>
-
-  {
-    showImage && (
-      <div>
-        <label class="block text-sm font-medium" for="image">
-          Image
-        </label>
-        <input id="image" name="image" type="file" accept="image/*" class="mt-1 block w-full text-sm text-muted file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-brand file:px-4 file:py-2 file:text-xs file:font-medium file:uppercase file:tracking-wider file:text-on-brand hover:file:bg-brand-hover" />
       </div>
     )
   }
 
-  {
-    categoryOptions.length > 0 && (
-      <fieldset>
-        <legend class="block text-sm font-medium">Categories</legend>
-        <div class="mt-1 max-h-48 space-y-1 overflow-auto rounded-md border border-line p-2">
-          {categoryOptions.map((c) => (
-            <label
-              class="flex items-center gap-2 text-sm"
-              style={`padding-left:${c.depth * 16}px`}
-            >
-              {/* cat_ public IDs — resolved back to row ids server-side. */}
-              <input
-                type="checkbox"
-                name="category"
-                value={c.public_id}
-                checked={selected.has(c.id)}
-                class="h-4 w-4"
-              />
-              {c.name}
-            </label>
-          ))}
-        </div>
-      </fieldset>
-    )
-  }
-
-  <label class="flex items-center gap-2 text-sm">
-    <input name="active" type="checkbox" checked={product ? product.active === 1 : true} class="h-4 w-4" />
-    Active (visible in storefront)
-  </label>
-
+  {/* Legacy stock preserved cleanly in DB; never exposed for digital service fulfillment */}
+  <input type="hidden" name="stock" value={String(product?.stock ?? 0)} />
   <input type="hidden" name="currency" value={defaultCurrency} />
 
-  <div class="flex gap-3 pt-2">
-    <button type="submit" class="rounded-md bg-brand px-5 py-2 font-medium text-on-brand hover:bg-brand-hover">
+  {/* بخش ۱: اطلاعات پایه محصول دیجیتال */}
+  <section class={sectionClass}>
+    <h2 class="text-sm font-bold text-ink">{fa.admin.products.sectionBasic}</h2>
+
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div class="sm:col-span-2">
+        <label class="block text-sm font-medium text-ink" for="name">عنوان محصول *</label>
+        <input
+          id="name"
+          name="name"
+          type="text"
+          required
+          value={product?.name ?? ''}
+          placeholder="مثال: اشتراک ChatGPT Plus یک‌ماهه"
+          class={inputClass}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="slug">
+          نامک یکتا (Slug) <span class="text-xs font-normal text-faint">(اختیاری — انگلیسی)</span>
+        </label>
+        <input
+          id="slug"
+          name="slug"
+          type="text"
+          value={product?.slug ?? ''}
+          placeholder="chatgpt-plus-1m"
+          class={`${inputClass} ltr-inline font-mono`}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="badge">نشان کوتاه (Badge)</label>
+        <input
+          id="badge"
+          name="badge"
+          type="text"
+          value={product?.badge ?? ''}
+          placeholder="مثال: تحویل فوری، پرفروش"
+          class={inputClass}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="brand">برند / سرویس</label>
+        <input
+          id="brand"
+          name="brand"
+          type="text"
+          value={product?.brand ?? ''}
+          placeholder="مثال: OpenAI، Google Play، PUBG"
+          class={inputClass}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="region">ریجن / منطقه پیش‌فرض</label>
+        <input
+          id="region"
+          name="region"
+          type="text"
+          value={product?.region ?? ''}
+          placeholder="مثال: آمریکا (US)، گلوبال، ترکیه"
+          class={inputClass}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="display_order">ترتیب نمایش در فروشگاه</label>
+        <input
+          id="display_order"
+          name="display_order"
+          type="number"
+          step="1"
+          value={product?.display_order ?? 0}
+          class={`${inputClass} tabular-nums`}
+        />
+      </div>
+
+      <div class="flex flex-col justify-end gap-2.5 pb-1">
+        <label class="flex items-center gap-2 text-sm font-medium text-ink">
+          <input
+            name="active"
+            type="checkbox"
+            checked={product ? product.active === 1 : true}
+            class="h-4 w-4 accent-[var(--gg-brand)]"
+          />
+          فعال (قابل سفارش در فروشگاه)
+        </label>
+        <label class="flex items-center gap-2 text-sm font-medium text-ink">
+          <input
+            name="is_featured"
+            type="checkbox"
+            checked={product ? product.is_featured === 1 : false}
+            class="h-4 w-4 accent-[var(--gg-brand)]"
+          />
+          نمایش به عنوان محصول ویژه (منتخب)
+        </label>
+      </div>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink" for="short_description">معرفی کوتاه</label>
+      <input
+        id="short_description"
+        name="short_description"
+        type="text"
+        value={product?.short_description ?? ''}
+        placeholder="یک جمله خلاصه برای نمایش زیر عنوان محصول"
+        class={inputClass}
+      />
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-ink" for="description">توضیحات کامل محصول</label>
+      <textarea
+        id="description"
+        name="description"
+        rows="4"
+        class={inputClass}
+      >{product?.description ?? ''}</textarea>
+      <p class="mt-1 text-xs text-faint">
+        از متن ساده یا مارک‌داون پشتیبانی می‌کند (لینک، لیست و <code class="ltr-inline">/images/...</code>).
+      </p>
+    </div>
+  </section>
+
+  {/* بخش ۲: قیمت‌گذاری و زمان تحویل */}
+  <section class={sectionClass}>
+    <h2 class="text-sm font-bold text-ink">{fa.admin.products.sectionPricing}</h2>
+
+    <div class="grid gap-4 sm:grid-cols-3">
+      <div>
+        <label class="block text-sm font-medium text-ink" for="price">
+          قیمت فروش ({currencyLabel}) *
+        </label>
+        <input
+          id="price"
+          name="price"
+          type="number"
+          step={priceStep}
+          min="0"
+          required
+          value={price}
+          class={`${inputClass} ltr-inline tabular-nums`}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="compare_price">
+          قیمت قبل از تخفیف ({currencyLabel})
+        </label>
+        <input
+          id="compare_price"
+          name="compare_price"
+          type="number"
+          step={priceStep}
+          min="0"
+          value={comparePrice}
+          placeholder="اختیاری"
+          class={`${inputClass} ltr-inline tabular-nums`}
+        />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-ink" for="estimated_delivery">
+          زمان تقریبی تحویل
+        </label>
+        <input
+          id="estimated_delivery"
+          name="estimated_delivery"
+          type="text"
+          value={product?.estimated_delivery ?? ''}
+          placeholder="مثال: ۱۵ تا ۶۰ دقیقه"
+          class={inputClass}
+        />
+      </div>
+    </div>
+  </section>
+
+  {/* بخش ۳: دسته‌بندی‌ها و تصویر اصلی */}
+  {(categoryOptions.length > 0 || showImage) && (
+    <section class={sectionClass}>
+      <h2 class="text-sm font-bold text-ink">{fa.admin.products.sectionCategories}</h2>
+
+      {
+        showImage && (
+          <div>
+            <label class="block text-sm font-medium text-ink" for="image">
+              تصویر اصلی محصول
+            </label>
+            <input
+              id="image"
+              name="image"
+              type="file"
+              accept="image/*"
+              class="mt-1 block w-full text-sm text-muted file:me-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-brand file:px-4 file:py-2 file:text-xs file:font-semibold file:text-on-brand hover:file:bg-brand-hover"
+            />
+          </div>
+        )
+      }
+
+      {
+        categoryOptions.length > 0 && (
+          <fieldset>
+            <legend class="block text-sm font-medium text-ink">انتخاب دسته‌بندی‌ها</legend>
+            <div class="mt-2 max-h-48 space-y-1.5 overflow-auto rounded-lg border border-line bg-paper p-3">
+              {categoryOptions.map((c) => (
+                <label
+                  class="flex items-center gap-2 text-sm text-ink"
+                  style={`padding-inline-start:${c.depth * 16}px`}
+                >
+                  <input
+                    type="checkbox"
+                    name="category"
+                    value={c.public_id}
+                    checked={selected.has(c.id)}
+                    class="h-4 w-4 accent-[var(--gg-brand)]"
+                  />
+                  {c.name}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )
+      }
+    </section>
+  )}
+
+  {/* بخش ۴: راهنمای فعال‌سازی، سوالات متداول و سئو */}
+  <section class={sectionClass}>
+    <h2 class="text-sm font-bold text-ink">{fa.admin.products.sectionContent}</h2>
+
+    <div>
+      <label class="block text-sm font-medium text-ink" for="instructions">
+        {fa.product.instructionsTitle}
+      </label>
+      <textarea
+        id="instructions"
+        name="instructions"
+        rows="3"
+        placeholder="نکات مهم برای خریدار پیش از ثبت سفارش و نحوه فعال‌سازی سرویس پس از تحویل..."
+        class={inputClass}
+      >{product?.instructions ?? ''}</textarea>
+    </div>
+
+    <div data-faq-builder class="space-y-3 border-t border-line pt-4">
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-sm font-medium text-ink">{fa.product.faqTitle}</span>
+        <button
+          type="button"
+          data-faq-add
+          class="rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-ink hover:border-brand hover:text-brand-fg"
+        >
+          + افزودن پرسش
+        </button>
+      </div>
+      <div data-faq-rows class="space-y-3">
+        {(faqs.length > 0 ? faqs : [{ q: '', a: '' }]).map((item) => (
+          <div data-faq-row class="grid gap-2 rounded-lg border border-line bg-paper p-3 sm:grid-cols-[1fr_1fr_auto]">
+            <input
+              type="text"
+              name="faq_q"
+              value={item.q}
+              placeholder="پرسش (مثال: چقدر طول می‌کشد انجام شود؟)"
+              class="rounded-md border border-line bg-surface px-3 py-1.5 text-sm text-ink focus:border-brand focus:outline-none"
+            />
+            <input
+              type="text"
+              name="faq_a"
+              value={item.a}
+              placeholder="پاسخ..."
+              class="rounded-md border border-line bg-surface px-3 py-1.5 text-sm text-ink focus:border-brand focus:outline-none"
+            />
+            <button
+              type="button"
+              data-faq-remove
+              class="px-2 py-1 text-xs font-medium text-red-500 hover:underline"
+            >
+              {fa.common.delete}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <div class="grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
+      <div>
+        <label class="block text-sm font-medium text-ink" for="seo_title">عنوان سئو (Meta Title)</label>
+        <input
+          id="seo_title"
+          name="seo_title"
+          type="text"
+          value={product?.seo_title ?? ''}
+          placeholder="خالی = عنوان محصول"
+          class={inputClass}
+        />
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-ink" for="seo_description">توضیحات سئو (Meta Description)</label>
+        <input
+          id="seo_description"
+          name="seo_description"
+          type="text"
+          value={product?.seo_description ?? ''}
+          placeholder="توضیح مختصر برای موتورهای جستجو"
+          class={inputClass}
+        />
+      </div>
+    </div>
+  </section>
+
+  {/* بخش ۵: سازنده فیلدهای سفارشی هنگام خرید */}
+  <section
+    class={sectionClass}
+    data-cf-builder
+    data-initial={JSON.stringify(initialCfRows)}
+  >
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 class="text-sm font-bold text-ink">{fa.admin.customFields.title}</h2>
+        <p class="mt-1 text-xs text-muted">{fa.admin.customFields.subtitle}</p>
+      </div>
+      <button
+        type="button"
+        data-cf-add
+        class="rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-on-brand hover:bg-brand-hover"
+      >
+        {fa.admin.customFields.addField}
+      </button>
+    </div>
+
+    <div class="gg-status-warning rounded-lg border px-3.5 py-2.5 text-xs font-medium">
+      {fa.admin.customFields.securityNotice}
+    </div>
+
+    <input type="hidden" name="checkout_fields_json" data-cf-json value={JSON.stringify(initialCfRows)} />
+
+    <div data-cf-list class="space-y-3"></div>
+
+    <div class="rounded-xl border border-dashed border-line bg-paper p-4">
+      <p class="mb-3 text-xs font-bold text-faint">{fa.admin.customFields.livePreviewTitle}</p>
+      <div data-cf-preview class="space-y-3 text-sm"></div>
+    </div>
+  </section>
+
+  {/* بخش ۶: فایل پیوست تحویل (اختیاری) */}
+  <details open={product?.file_key ? true : undefined} class="rounded-xl border border-line bg-surface p-4">
+    <summary class="cursor-pointer text-sm font-semibold text-ink">
+      {fa.admin.products.sectionDeliverable}
+    </summary>
+    <div class="mt-3 space-y-2">
+      {product?.file_key && (
+        <p class="text-sm text-muted">
+          فایل پیوست فعلی: <strong>{product.file_name ?? 'فایل'}</strong>
+          {product.file_size_bytes != null && ` (${toPersianDigits(Math.ceil(product.file_size_bytes / 1024))} کیلوبایت)`}
+        </p>
+      )}
+      <label class="block text-sm font-medium text-ink" for="deliverable">
+        {product?.file_key ? 'جایگزینی فایل' : 'پیوست فایل'}
+      </label>
+      <input
+        id="deliverable"
+        name="deliverable"
+        type="file"
+        accept=".pdf,.zip,.epub,.mp3,.m4a,.txt"
+        class="mt-1 block w-full text-sm text-muted"
+      />
+      <p class="text-xs text-faint">
+        تنها در صورت نیاز به دانلود فایل پس از پرداخت (حداکثر ۲۵ مگابایت).
+      </p>
+      {product?.file_key && (
+        <label class="mt-2 flex items-center gap-2 text-sm text-ink">
+          <input type="checkbox" name="remove_deliverable" class="h-4 w-4" />
+          حذف فایل پیوست برای سفارش‌های آینده
+        </label>
+      )}
+    </div>
+  </details>
+
+  {/* بخش ۷: تنظیمات پیشرفته ارسال فیزیکی (پیش‌فرض خاموش برای سرویس دیجیتال) */}
+  <details open={product?.requires_shipping === 1 ? true : undefined} class="rounded-xl border border-line bg-surface p-4">
+    <summary class="cursor-pointer text-sm font-semibold text-ink">
+      {fa.admin.products.sectionLegacyShipping}
+    </summary>
+    <div class="mt-3">
+      {attachmentActive() && <fieldset class="rounded-lg border border-line p-4">
+        <legend class="px-1 text-xs font-semibold text-faint">تنظیمات ارسال پستی</legend>
+        <label class="flex items-center gap-2 text-sm text-ink">
+          <input
+            name="requires_shipping"
+            type="checkbox"
+            checked={product ? product.requires_shipping === 1 : false}
+            class="h-4 w-4 accent-[var(--gg-brand)]"
+          />
+          نیاز به ارسال فیزیکی (پستی)
+        </label>
+        <p class="mt-1 text-xs text-faint">
+          برای محصولات دیجیتال، گیفت‌کارت‌ها، ارز بازی و اشتراک‌ها این گزینه باید غیرفعال باشد.
+        </p>
+        <div class="mt-3">
+          <label class="block text-sm font-medium text-ink" for="weight">وزن ({weightUnit})</label>
+          <input
+            id="weight"
+            name="weight"
+            type="text"
+            inputmode="decimal"
+            value={product?.weight_grams != null ? formatWeightValue(product.weight_grams, weightUnit) : ''}
+            class={`${inputClass} ltr-inline`}
+          />
+          <p class="mt-1 text-xs text-faint">
+            {weightRequired
+              ? 'در صورت فعال بودن ارسال فیزیکی، وارد کردن وزن الزامی است.'
+              : 'اختیاری.'}
+          </p>
+        </div>
+      </fieldset>}
+    </div>
+  </details>
+
+  <div class="flex flex-wrap gap-3 pt-2">
+    <button
+      type="submit"
+      class="rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-hover"
+    >
       {submitLabel}
     </button>
-    <a href="/admin/products" class="rounded-md border border-line px-5 py-2 hover:bg-surface">Cancel</a>
+    <a
+      href="/admin/products"
+      class="rounded-lg border border-line bg-surface px-5 py-2.5 text-sm font-medium text-ink hover:bg-surface-elevated"
+    >
+      {fa.common.cancel}
+    </a>
   </div>
 </form>
+
+<script>
+  // @ts-nocheck -- client script for FAQ rows & interactive Custom Checkout Fields Builder
+  (() => {
+    // ── FAQ Dynamic Rows ──
+    const faqBuilder = document.querySelector('[data-faq-builder]');
+    if (faqBuilder instanceof HTMLElement) {
+      const rowsWrap = faqBuilder.querySelector('[data-faq-rows]');
+      const addFaqBtn = faqBuilder.querySelector('[data-faq-add]');
+      const firstRow = rowsWrap?.querySelector('[data-faq-row]');
+      if (rowsWrap && addFaqBtn && firstRow) {
+        addFaqBtn.addEventListener('click', () => {
+          const clone = firstRow.cloneNode(true);
+          clone.querySelectorAll('input').forEach((inp) => {
+            inp.value = '';
+          });
+          rowsWrap.appendChild(clone);
+          clone.querySelector('input[name="faq_q"]')?.focus();
+        });
+        rowsWrap.addEventListener('click', (e) => {
+          const el = e.target instanceof Element ? e.target.closest('[data-faq-remove]') : null;
+          if (!el) return;
+          const row = el.closest('[data-faq-row]');
+          if (!row) return;
+          const all = rowsWrap.querySelectorAll('[data-faq-row]');
+          if (all.length <= 1) {
+            row.querySelectorAll('input').forEach((inp) => {
+              inp.value = '';
+            });
+          } else {
+            row.remove();
+          }
+        });
+      }
+    }
+
+    // ── Custom Checkout Fields Builder & Live Preview ──
+    const builder = document.querySelector('[data-cf-builder]');
+    if (!(builder instanceof HTMLElement)) return;
+
+    const listEl = builder.querySelector('[data-cf-list]');
+    const previewEl = builder.querySelector('[data-cf-preview]');
+    const jsonInput = builder.querySelector('[data-cf-json]');
+    const addBtn = builder.querySelector('[data-cf-add]');
+    if (!listEl || !previewEl || !(jsonInput instanceof HTMLInputElement) || !addBtn) return;
+
+    const ALLOWED_TYPES = [
+      { value: 'text', label: 'متن کوتاه (text)' },
+      { value: 'email', label: 'ایمیل (email)' },
+      { value: 'number', label: 'عدد (number)' },
+      { value: 'select', label: 'لیست کشویی (select)' },
+      { value: 'textarea', label: 'متن چندخطی (textarea)' },
+    ];
+
+    let rows = [];
+    try {
+      const parsed = JSON.parse(builder.dataset.initial || '[]');
+      if (Array.isArray(parsed)) rows = parsed;
+    } catch {
+      rows = [];
+    }
+
+    const slugifyKey = (text) => {
+      const s = String(text || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      if (!s) return '';
+      return /^[a-z]/.test(s) ? s.slice(0, 50) : `f_${s}`.slice(0, 50);
+    };
+
+    const syncHiddenJson = () => {
+      const payload = rows.map((r, i) => ({
+        public_id: r.public_id || null,
+        field_key: (r.field_key || '').trim(),
+        label: (r.label || '').trim(),
+        field_type: ALLOWED_TYPES.some((t) => t.value === r.field_type) ? r.field_type : 'text',
+        placeholder: r.placeholder || '',
+        help_text: r.help_text || '',
+        options: r.options || '',
+        is_required: Boolean(r.is_required),
+        min_length: r.min_length || '',
+        max_length: r.max_length || '',
+        sort_order: i,
+        is_active: r.is_active !== false,
+      }));
+      jsonInput.value = JSON.stringify(payload);
+    };
+
+    const renderPreview = () => {
+      previewEl.replaceChildren();
+      const activeRows = rows.filter((r) => r.is_active !== false && (r.label || r.field_key));
+      if (activeRows.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'text-xs text-faint';
+        empty.textContent = 'هنوز فیلدی تعریف نشده است. برای مشاهده پیش‌نمایش یک فیلد اضافه کنید.';
+        previewEl.appendChild(empty);
+        return;
+      }
+
+      for (const r of activeRows) {
+        const wrap = document.createElement('div');
+        wrap.className = 'space-y-1';
+
+        const lbl = document.createElement('label');
+        lbl.className = 'block text-xs font-semibold text-ink';
+        lbl.textContent = r.label || r.field_key;
+        if (r.is_required) {
+          const req = document.createElement('span');
+          req.className = 'ms-1 text-red-500';
+          req.textContent = '*';
+          lbl.appendChild(req);
+        }
+        wrap.appendChild(lbl);
+
+        const baseCls =
+          'w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-ink placeholder:text-faint';
+        if (r.field_type === 'textarea') {
+          const ta = document.createElement('textarea');
+          ta.rows = 2;
+          ta.placeholder = r.placeholder || '';
+          ta.className = baseCls;
+          wrap.appendChild(ta);
+        } else if (r.field_type === 'select') {
+          const sel = document.createElement('select');
+          sel.className = baseCls;
+          const phOpt = document.createElement('option');
+          phOpt.value = '';
+          phOpt.textContent = 'انتخاب کنید...';
+          sel.appendChild(phOpt);
+          const opts = String(r.options || '')
+            .split(/[\n,،]+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+          for (const opt of opts) {
+            const o = document.createElement('option');
+            o.value = opt;
+            o.textContent = opt;
+            sel.appendChild(o);
+          }
+          wrap.appendChild(sel);
+        } else {
+          const inp = document.createElement('input');
+          inp.type = r.field_type === 'email' ? 'email' : r.field_type === 'number' ? 'text' : 'text';
+          inp.placeholder = r.placeholder || '';
+          inp.className =
+            r.field_type === 'email' || r.field_type === 'number' ? `${baseCls} ltr-inline` : baseCls;
+          wrap.appendChild(inp);
+        }
+
+        if (r.help_text) {
+          const help = document.createElement('p');
+          help.className = 'text-[11px] text-faint';
+          help.textContent = r.help_text;
+          wrap.appendChild(help);
+        }
+
+        previewEl.appendChild(wrap);
+      }
+    };
+
+    const makeTextField = (title, value, placeholder, onInput, extraCls = '') => {
+      const lbl = document.createElement('label');
+      lbl.className = 'flex flex-col gap-1 text-xs font-medium text-muted';
+      lbl.textContent = title;
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = value || '';
+      inp.placeholder = placeholder || '';
+      inp.className = `rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink focus:border-brand focus:outline-none ${extraCls}`;
+      inp.addEventListener('input', () => onInput(inp.value));
+      lbl.appendChild(inp);
+      return { lbl, inp };
+    };
+
+    const renderList = () => {
+      listEl.replaceChildren();
+      rows.forEach((row, index) => {
+        const card = document.createElement('div');
+        card.className = 'rounded-xl border border-line bg-paper p-4 space-y-3';
+
+        // Header bar: index + move up/down + delete
+        const head = document.createElement('div');
+        head.className = 'flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2';
+
+        const title = document.createElement('span');
+        title.className = 'text-xs font-bold text-ink';
+        title.textContent = `فیلد #${index + 1}${row.label ? ` — ${row.label}` : ''}`;
+        head.appendChild(title);
+
+        const controls = document.createElement('div');
+        controls.className = 'flex items-center gap-2 text-xs';
+
+        const upBtn = document.createElement('button');
+        upBtn.type = 'button';
+        upBtn.textContent = '▲ بالا';
+        upBtn.disabled = index === 0;
+        upBtn.className = 'rounded border border-line px-2 py-1 text-muted hover:text-ink disabled:opacity-40';
+        upBtn.addEventListener('click', () => {
+          if (index <= 0) return;
+          const prev = rows[index - 1];
+          rows[index - 1] = rows[index];
+          rows[index] = prev;
+          syncHiddenJson();
+          renderList();
+          renderPreview();
+        });
+
+        const downBtn = document.createElement('button');
+        downBtn.type = 'button';
+        downBtn.textContent = '▼ پایین';
+        downBtn.disabled = index === rows.length - 1;
+        downBtn.className = 'rounded border border-line px-2 py-1 text-muted hover:text-ink disabled:opacity-40';
+        downBtn.addEventListener('click', () => {
+          if (index >= rows.length - 1) return;
+          const next = rows[index + 1];
+          rows[index + 1] = rows[index];
+          rows[index] = next;
+          syncHiddenJson();
+          renderList();
+          renderPreview();
+        });
+
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.textContent = 'حذف فیلد';
+        delBtn.className = 'rounded border border-line px-2 py-1 text-red-500 hover:bg-red-500/10';
+        delBtn.addEventListener('click', () => {
+          rows.splice(index, 1);
+          syncHiddenJson();
+          renderList();
+          renderPreview();
+        });
+
+        controls.append(upBtn, downBtn, delBtn);
+        head.appendChild(controls);
+        card.appendChild(head);
+
+        // Main inputs grid
+        const grid = document.createElement('div');
+        grid.className = 'grid gap-3 sm:grid-cols-3';
+
+        let keyInpRef = null;
+        const labelCtrl = makeTextField('عنوان نمایشی (فارسی) *', row.label, 'مثال: آیدی عددی بازی', (val) => {
+          row.label = val;
+          title.textContent = `فیلد #${index + 1}${val ? ` — ${val}` : ''}`;
+          if (!row._manualKey && !row.public_id && keyInpRef) {
+            const auto = slugifyKey(val);
+            if (auto) {
+              row.field_key = auto;
+              keyInpRef.value = auto;
+            }
+          }
+          syncHiddenJson();
+          renderPreview();
+        });
+
+        const keyCtrl = makeTextField(
+          'کلید یکتا (انگلیسی) *',
+          row.field_key,
+          'player_id',
+          (val) => {
+            row._manualKey = true;
+            row.field_key = val.toLowerCase();
+            syncHiddenJson();
+            renderPreview();
+          },
+          'ltr-inline font-mono',
+        );
+        keyInpRef = keyCtrl.inp;
+
+        // Type select
+        const typeLbl = document.createElement('label');
+        typeLbl.className = 'flex flex-col gap-1 text-xs font-medium text-muted';
+        typeLbl.textContent = 'نوع فیلد';
+        const typeSel = document.createElement('select');
+        typeSel.className =
+          'rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink focus:border-brand focus:outline-none';
+        for (const t of ALLOWED_TYPES) {
+          const opt = document.createElement('option');
+          opt.value = t.value;
+          opt.textContent = t.label;
+          if (row.field_type === t.value) opt.selected = true;
+          typeSel.appendChild(opt);
+        }
+        typeLbl.appendChild(typeSel);
+
+        grid.append(labelCtrl.lbl, keyCtrl.lbl, typeLbl);
+        card.appendChild(grid);
+
+        // Secondary inputs grid
+        const grid2 = document.createElement('div');
+        grid2.className = 'grid gap-3 sm:grid-cols-2';
+        const phCtrl = makeTextField('متن راهنمای داخل کادر', row.placeholder, 'مثال: 5123456789', (val) => {
+          row.placeholder = val;
+          syncHiddenJson();
+          renderPreview();
+        });
+        const helpCtrl = makeTextField('توضیح تکمیلی زیر فیلد', row.help_text, 'راهنمای یافتن آیدی...', (val) => {
+          row.help_text = val;
+          syncHiddenJson();
+          renderPreview();
+        });
+        grid2.append(phCtrl.lbl, helpCtrl.lbl);
+        card.appendChild(grid2);
+
+        // Select options box (only shown when field_type === 'select')
+        const optsWrap = document.createElement('div');
+        optsWrap.className = row.field_type === 'select' ? 'block' : 'hidden';
+        const optsLbl = document.createElement('label');
+        optsLbl.className = 'flex flex-col gap-1 text-xs font-medium text-muted';
+        optsLbl.textContent = 'گزینه‌ها (هر گزینه در یک خط یا با ویرگول)';
+        const optsArea = document.createElement('textarea');
+        optsArea.rows = 2;
+        optsArea.value = row.options || '';
+        optsArea.placeholder = 'اروپا\nخاورمیانه\nآسیا';
+        optsArea.className =
+          'rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink focus:border-brand focus:outline-none';
+        optsArea.addEventListener('input', () => {
+          row.options = optsArea.value;
+          syncHiddenJson();
+          renderPreview();
+        });
+        optsLbl.appendChild(optsArea);
+        optsWrap.appendChild(optsLbl);
+        card.appendChild(optsWrap);
+
+        typeSel.addEventListener('change', () => {
+          row.field_type = typeSel.value;
+          optsWrap.className = row.field_type === 'select' ? 'block' : 'hidden';
+          syncHiddenJson();
+          renderPreview();
+        });
+
+        // Bounds & flags row
+        const bottom = document.createElement('div');
+        bottom.className = 'flex flex-wrap items-center gap-4 pt-1';
+
+        const minCtrl = makeTextField('حداقل طول', row.min_length, '0', (val) => {
+          row.min_length = val;
+          syncHiddenJson();
+        }, 'w-20 ltr-inline tabular-nums');
+        const maxCtrl = makeTextField('حداکثر طول', row.max_length, '120', (val) => {
+          row.max_length = val;
+          syncHiddenJson();
+        }, 'w-20 ltr-inline tabular-nums');
+
+        const reqLbl = document.createElement('label');
+        reqLbl.className = 'flex items-center gap-1.5 text-xs font-medium text-ink pt-4';
+        const reqCb = document.createElement('input');
+        reqCb.type = 'checkbox';
+        reqCb.checked = Boolean(row.is_required);
+        reqCb.className = 'h-4 w-4 accent-[var(--gg-brand)]';
+        reqCb.addEventListener('change', () => {
+          row.is_required = reqCb.checked;
+          syncHiddenJson();
+          renderPreview();
+        });
+        reqLbl.append(reqCb, 'الزامی');
+
+        const actLbl = document.createElement('label');
+        actLbl.className = 'flex items-center gap-1.5 text-xs font-medium text-ink pt-4';
+        const actCb = document.createElement('input');
+        actCb.type = 'checkbox';
+        actCb.checked = row.is_active !== false;
+        actCb.className = 'h-4 w-4 accent-[var(--gg-brand)]';
+        actCb.addEventListener('change', () => {
+          row.is_active = actCb.checked;
+          syncHiddenJson();
+          renderPreview();
+        });
+        actLbl.append(actCb, 'فعال');
+
+        bottom.append(minCtrl.lbl, maxCtrl.lbl, reqLbl, actLbl);
+        card.appendChild(bottom);
+
+        listEl.appendChild(card);
+      });
+    };
+
+    addBtn.addEventListener('click', () => {
+      rows.push({
+        public_id: null,
+        field_key: '',
+        label: '',
+        field_type: 'text',
+        placeholder: '',
+        help_text: '',
+        options: '',
+        is_required: true,
+        min_length: '',
+        max_length: '',
+        sort_order: rows.length,
+        is_active: true,
+        _manualKey: false,
+      });
+      syncHiddenJson();
+      renderList();
+      renderPreview();
+    });
+
+    const parentForm = builder.closest('form');
+    if (parentForm) {
+      parentForm.addEventListener('submit', syncHiddenJson);
+    }
+
+    syncHiddenJson();
+    renderList();
+    renderPreview();
+  })();
+</script>

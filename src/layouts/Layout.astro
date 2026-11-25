@@ -1,11 +1,33 @@
 ---
 import { env } from 'cloudflare:workers';
+import '@fontsource/vazirmatn/arabic-400.css';
+import '@fontsource/vazirmatn/latin-400.css';
+import '@fontsource/vazirmatn/arabic-500.css';
+import '@fontsource/vazirmatn/latin-500.css';
+import '@fontsource/vazirmatn/arabic-600.css';
+import '@fontsource/vazirmatn/latin-600.css';
+import '@fontsource/vazirmatn/arabic-700.css';
+import '@fontsource/vazirmatn/latin-700.css';
+import '@fontsource/vazirmatn/arabic-800.css';
+import '@fontsource/vazirmatn/latin-800.css';
+import '@fontsource/jetbrains-mono/latin-400.css';
+import '@fontsource/jetbrains-mono/latin-500.css';
+import '@fontsource/jetbrains-mono/latin-600.css';
 import { getConfig } from '../config';
 import { publicOrigin } from '../features/http/origin';
 import { normalizeSearchQuery } from '../features/search/query';
 import { EMPTY_MENUS, visibleItems } from '../features/navigation/db';
-import { getEmailProvider } from '../features/email';
 import { buildShellModel } from '../features/storefront/shell';
+import type { StorefrontLink } from '../features/storefront/models';
+import { getFooterConfig, getHomepageSectionByKey } from '../features/homepage/db';
+import { isWithinScheduleWindow } from '../features/homepage/schema';
+import { fa } from '../i18n/fa';
+import { buildThemeInitScript } from '../lib/theme';
+import {
+  buildStorefrontAppearanceCss,
+  parseThemeAppearanceConfig,
+} from '../features/theme/appearance';
+import { productImageUrl } from '../features/products/image';
 import StoreHeader from '#theme/Header.astro';
 import StoreFooter from '#theme/Footer.astro';
 import '../styles/global.css';
@@ -18,58 +40,84 @@ interface Props {
   /** Override the canonical URL. Used where two routes render the same content
    *  — the catalog is at both / and /products — so only one is indexable. */
   canonical?: string;
+  /** Optional JSON-LD structured data payload. */
+  jsonLd?: string;
 }
 
-const { title, description, image, canonical: canonicalOverride } = Astro.props;
+const { title, description, image, canonical: canonicalOverride, jsonLd } = Astro.props;
 const config = getConfig();
 const { features } = config;
-// Runtime override (set by the setup wizard) wins over the build-time default.
 const storeName = Astro.locals.settings?.storeName ?? config.storeName;
-// Optional header logo. Falls back to the text store name whenever unset, so
-// the header can never end up empty.
 const logoImageKey = Astro.locals.settings?.logoImageKey ?? null;
-// Loaded by middleware alongside settings (one batched D1 read), so navigation
-// costs no extra round trip on uncached routes like /cart and /checkout.
-// Unavailable targets (draft pages, inactive products, deleted rows) are dropped
-// here rather than rendered as dead links — the storefront has no way to explain
-// the problem to a shopper, so admin is where it gets surfaced.
 const menus = Astro.locals.menus ?? EMPTY_MENUS;
 const headerItems = visibleItems(menus.header);
 const footerItems = visibleItems(menus.footer);
-// Cart can be switched off at runtime → browse-only catalog (hide the cart link).
 const cartEnabled = Astro.locals.settings?.cartEnabled ?? true;
-// Accounts nav link: the runtime toggle wins over the build-time default.
-// The header must use the SAME predicate as /account, or it advertises a link
-// that immediately redirects. The route requires the flag, AUTH_SECRET, and a
-// configured email provider (accounts are passwordless, so without one there is
-// no way to sign in). Judging by the flag alone rendered a dead link whenever a
-// store enabled accounts before configuring email.
-//
-// No extra D1 read: settings are already loaded, and the provider lookup
-// short-circuits before touching the vault unless email is actually enabled.
 const accountsFlag = Astro.locals.settings?.accountsEnabled ?? features.accounts;
-const accountsOn =
-  accountsFlag && !!env.AUTH_SECRET && Astro.locals.settings
-    ? (await getEmailProvider(Astro.locals.settings)) !== null
-    : false;
-// Announcement bar: the message is its own on/off switch (empty = hidden). Astro
-// escapes both values on render, so admin-entered text can't inject markup.
-const announcement = Astro.locals.settings?.announcement ?? '';
-const announcementHref = Astro.locals.settings?.announcementHref ?? '';
-const pageTitle = title ? `${title} — ${storeName}` : storeName;
+const accountsOn = Boolean(accountsFlag && (env.AUTH_SECRET || import.meta.env.DEV));
+let announcement = Astro.locals.settings?.announcement ?? '';
+let announcementHref = Astro.locals.settings?.announcementHref ?? '';
+let categoryLinks: StorefrontLink[] = [];
+let footerInfo = null;
+
+try {
+  const [catResult, footerCfg, anncSection] = await Promise.all([
+    env.DB.prepare(
+      `SELECT name, slug FROM categories
+        WHERE parent_id IS NULL AND COALESCE(is_featured, 1) = 1
+        ORDER BY COALESCE(display_order, 0) ASC, name ASC
+        LIMIT 8`,
+    ).all<{ name: string; slug: string }>(),
+    getFooterConfig(env.DB),
+    getHomepageSectionByKey(env.DB, 'announcement'),
+  ]);
+  categoryLinks = (catResult.results ?? []).map((c) => ({
+    text: c.name,
+    href: `/categories/${c.slug}`,
+  }));
+  footerInfo = footerCfg;
+  if (anncSection) {
+    if (
+      anncSection.is_enabled === 1 &&
+      isWithinScheduleWindow(anncSection.start_at, anncSection.end_at)
+    ) {
+      if (!announcement) {
+        announcement = anncSection.title;
+        announcementHref = anncSection.cta_href ?? '';
+      }
+    } else if (anncSection.is_enabled === 0 && !Astro.locals.settings?.announcement) {
+      announcement = '';
+    }
+  }
+} catch {
+  // Graceful fallback on minimal or pre-migration test fixtures
+}
+
+const customStoreTitle = Astro.locals.settings?.seoMetaTitle?.trim() || storeName;
+const pageTitle = title ? `${title}${fa.SEO.titleSeparator}${storeName}` : customStoreTitle;
 const query =
   Astro.url.pathname === '/search'
     ? normalizeSearchQuery(Astro.url.searchParams.get('q') ?? '')
     : '';
 
-const desc = (description ?? `Shop ${storeName}.`).slice(0, 160);
+const desc = (
+  description ??
+  Astro.locals.settings?.seoMetaDescription ??
+  fa.SEO.defaultDescription
+).slice(0, 160);
 const origin = publicOrigin(Astro.url.origin, env.CANONICAL_ORIGIN);
 const canonical = canonicalOverride ?? new URL(Astro.url.pathname, origin).href;
-const ogImage = image ? new URL(image, origin).href : undefined;
+const fallbackOgPath = Astro.locals.settings?.seoOgImageKey
+  ? productImageUrl(Astro.locals.settings.seoOgImageKey, config.images.baseUrl)
+  : null;
+const effectiveImage = image || fallbackOgPath;
+const ogImage = effectiveImage ? new URL(effectiveImage, origin).href : undefined;
+const appearanceConfig = parseThemeAppearanceConfig(Astro.locals.settings?.themeAppearanceConfig);
+const appearanceCss = Astro.locals.settings?.themeAppearanceConfig
+  ? buildStorefrontAppearanceCss(appearanceConfig)
+  : '';
+const themeInitScript = buildThemeInitScript('storefront', appearanceConfig.defaultMode);
 
-// The header and footer are store-owned, so they receive a model rather than
-// request context. Built from values middleware already loaded — no extra D1
-// read, on routes (checkout, pay) least able to afford one.
 const shell = buildShellModel({
   storeName,
   logoImageKey,
@@ -78,6 +126,8 @@ const shell = buildShellModel({
   announcementHref,
   headerItems,
   footerItems,
+  categoryLinks: categoryLinks.length > 0 ? categoryLinks : undefined,
+  footerInfo,
   searchQuery: query,
   cartEnabled,
   accountsEnabled: accountsOn,
@@ -85,23 +135,21 @@ const shell = buildShellModel({
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="fa" dir="rtl" data-theme="light" data-theme-mode={appearanceConfig.defaultMode}>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script is:inline set:html={themeInitScript} />
+    {appearanceCss && <style is:inline set:html={appearanceCss} />}
     <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    {/* Declared so Safari stops probing the site root for it. Those probes are
-        not free here: /apple-touch-icon*.png is not excluded by the middleware's
-        document check, so each 404 ran the settings+menus D1 batch and rendered
-        the branded 404 page. The files are also present as static assets, which
-        answers the agents that probe regardless without invoking the Worker. */}
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <title>{pageTitle}</title>
     <meta name="description" content={desc} />
     <link rel="canonical" href={canonical} />
 
     <meta property="og:type" content="website" />
+    <meta property="og:locale" content="fa_IR" />
     <meta property="og:site_name" content={storeName} />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={desc} />
@@ -112,12 +160,9 @@ const shell = buildShellModel({
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={desc} />
     {ogImage && <meta name="twitter:image" content={ogImage} />}
+    {jsonLd && <script type="application/ld+json" set:html={jsonLd} />}
 
-    {/* Progressive image reveal, site-wide. The marker class is added in <head>,
-        before any image markup is parsed, so incomplete images start on their
-        neutral frame instead of flashing white. Capture-phase listeners catch
-        every [data-image-fade] on the page, including images added later. With
-        scripts blocked the class is never added and images stay visible. */}
+    {/* Progressive image reveal, site-wide. */}
     <script is:inline>
       document.documentElement.classList.add('image-fade-enabled');
       const finishImageFade = (event) => {
@@ -131,50 +176,106 @@ const shell = buildShellModel({
     </script>
   </head>
   <body class="flex min-h-screen flex-col bg-paper text-ink antialiased">
+    <a
+      href="#main-content"
+      class="sr-only focus:not-sr-only focus:fixed focus:start-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-brand focus:px-4 focus:py-2 focus:text-xs focus:font-semibold focus:text-on-brand"
+    >
+      {fa.common.skipToContent}
+    </a>
+
     <StoreHeader model={shell} />
 
     <main class="page-shell">
-      <slot />
+      <div id="main-content" class="contents" tabindex="-1">
+        <slot />
+      </div>
     </main>
 
     <StoreFooter model={shell} />
 
-    {/* Slide-out cart drawer. Progressive enhancement: hidden + inert until JS
-        opens it; the /cart page and plain form posts are the no-JS baseline. */}
+    {/* Slide-out cart drawer (RTL inline-end side). */}
     <div
       data-cart-drawer
       class="invisible pointer-events-none fixed inset-0 z-40"
       role="dialog"
       aria-modal="true"
-      aria-label="Cart"
+      aria-label={fa.cart.drawerAria}
     >
-      <div data-cart-backdrop class="absolute inset-0 bg-black/30 opacity-0 transition-opacity duration-300"></div>
+      <div
+        data-cart-backdrop
+        class="absolute inset-0 bg-black/45 opacity-0 transition-opacity duration-300"
+      />
       <aside
         data-cart-panel
-        class="absolute right-0 top-0 flex h-full w-full max-w-md translate-x-full flex-col bg-paper shadow-xl transition-transform duration-300"
+        class="absolute end-0 top-0 flex h-full w-full max-w-md -translate-x-full flex-col border-s border-line bg-paper shadow-xl transition-transform duration-300"
       >
-        <div class="flex items-center justify-between border-b border-line px-6 py-5">
-          <h2 class="font-serif text-2xl tracking-tight">Your cart</h2>
-          {/* 44px box, not a bare glyph: the hit area was only as big as the
-              × itself, which is well under the 44×44 minimum for a touch target
-              — and this is the primary way out of a full-height mobile drawer.
-              -mr-2 pulls the enlarged box back so the × stays optically aligned
-              with the panel's px-6 edge. */}
+        <div class="flex items-center justify-between border-b border-line px-6 py-4">
+          <h2 class="gg-h2 text-ink">{fa.cart.title}</h2>
           <button
             type="button"
             data-cart-close
-            aria-label="Close cart"
-            class="-mr-2 flex h-11 w-11 items-center justify-center rounded-md text-3xl leading-none text-faint transition-colors hover:bg-surface hover:text-brand"
+            aria-label={fa.cart.closeCart}
+            class="-me-2 flex h-11 w-11 items-center justify-center rounded-lg text-2xl leading-none text-faint transition-colors hover:bg-surface hover:text-brand-fg"
           >
             &times;
           </button>
         </div>
-        <div data-cart-body class="flex-1 overflow-y-auto px-6 py-5"></div>
+        <div data-cart-body class="flex-1 overflow-y-auto px-6 py-5" />
       </aside>
     </div>
 
     <script>
       // @ts-nocheck -- plain-JS client script (annotations would ship to the browser)
+      const hasSessionHint = /(?:^|;\s*)gg_has_session=1/.test(document.cookie);
+      if (hasSessionHint || location.pathname.startsWith('/account')) {
+        fetch('/partials/account-nav', { headers: { 'X-Partial': '1' } })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((info) => {
+            if (!info || !info.authenticated) return;
+            for (const widget of document.querySelectorAll('[data-account-widget]')) {
+              const guest = widget.querySelector('[data-account-guest-link]');
+              const drop = widget.querySelector('[data-account-dropdown]');
+              const av = widget.querySelector('[data-account-avatar]');
+              const nm = widget.querySelector('[data-account-display-name]');
+              const dnm = widget.querySelector('[data-account-dropdown-name]');
+              const dem = widget.querySelector('[data-account-dropdown-email]');
+              const wb = widget.querySelector('[data-account-wallet-balance]');
+              if (guest) {
+                guest.classList.add('hidden');
+                guest.classList.remove('inline-flex', 'flex');
+                guest.hidden = true;
+              }
+              if (drop) {
+                drop.classList.remove('hidden');
+                drop.hidden = false;
+              }
+              if (av && info.initials) av.textContent = info.initials;
+              if (nm && info.displayName) nm.textContent = info.displayName;
+              if (dnm && info.displayName) dnm.textContent = info.displayName;
+              if (dem && info.email) dem.textContent = info.email;
+              if (wb && info.walletBalanceFormatted) wb.textContent = info.walletBalanceFormatted;
+            }
+            const mobLabel = document.querySelector('[data-mobile-account-label]');
+            const mobSubs = document.querySelector('[data-mobile-account-sublinks]');
+            if (mobLabel && info.displayName) {
+              mobLabel.textContent = `داشبورد من (${info.displayName})`;
+            }
+            if (mobSubs) {
+              mobSubs.classList.remove('hidden');
+              mobSubs.classList.add('flex');
+            }
+            const homeCta = document.querySelector('[data-home-account-cta] span');
+            const homeSub = document.querySelector('[data-home-account-subtitle]');
+            if (homeCta && info.displayName) {
+              homeCta.textContent = `داشبورد من (${info.displayName})`;
+            }
+            if (homeSub && info.walletBalanceFormatted) {
+              homeSub.textContent = `موجودی کیف پول شما: ${info.walletBalanceFormatted}`;
+            }
+          })
+          .catch(() => {});
+      }
+
       const drawer = document.querySelector('[data-cart-drawer]');
       if (drawer instanceof HTMLElement) {
         const panel = drawer.querySelector('[data-cart-panel]');
@@ -182,23 +283,19 @@ const shell = buildShellModel({
         const body = drawer.querySelector('[data-cart-body]');
         const label = document.querySelector('[data-cart-count-label]');
         const cartCountKey = 'minshop_cart_count';
+        const toFaDigits = (v) => String(v).replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]);
 
         const renderBadge = (n) => {
           const count = Math.max(0, Number(n) || 0);
-          if (label) label.textContent = count > 0 ? ` (${count > 99 ? '99+' : count})` : '';
+          if (label) label.textContent = count > 0 ? ` (${count > 99 ? '۹۹+' : toFaDigits(count)})` : '';
           return count;
         };
-        // The count lives in a script-readable cookie written beside the (httpOnly)
-        // cart, so the badge needs no request on page load and can't drift from the
-        // real cart the way a separate localStorage copy would.
         const countFromCookie = () => {
           const m = document.cookie.match(/(?:^|;\s*)cart_n=(\d+)/);
           return m ? Number(m[1]) : 0;
         };
         const setBadge = (n) => {
           const count = renderBadge(n);
-          // localStorage is not the source of truth here — writing it only fires the
-          // `storage` event, which is how OTHER open tabs learn to re-read the cookie.
           try {
             localStorage.setItem(cartCountKey, String(count));
           } catch {
@@ -208,27 +305,23 @@ const shell = buildShellModel({
         if (label) {
           renderBadge(countFromCookie());
           window.addEventListener('storage', (event) => {
-            // Another tab changed the cart; the cookie is already shared, so re-read it.
             if (event.key === cartCountKey) renderBadge(countFromCookie());
           });
-          // Returning via bfcache (back button) can restore stale markup — re-read.
           window.addEventListener('pageshow', () => renderBadge(countFromCookie()));
         }
         const open = () => {
-          // The nav disclosure is pure CSS and knows nothing about the cart, so
-          // without this both panels sit open at once on a narrow viewport.
           document.querySelector('[data-nav-disclosure]')?.removeAttribute('open');
           drawer.classList.remove('invisible', 'pointer-events-none');
           requestAnimationFrame(() =>
             requestAnimationFrame(() => {
-              panel?.classList.remove('translate-x-full');
+              panel?.classList.remove('-translate-x-full');
               backdrop?.classList.remove('opacity-0');
             }),
           );
           document.body.style.overflow = 'hidden';
         };
         const close = () => {
-          panel?.classList.add('translate-x-full');
+          panel?.classList.add('-translate-x-full');
           backdrop?.classList.add('opacity-0');
           document.body.style.overflow = '';
           setTimeout(() => drawer.classList.add('invisible', 'pointer-events-none'), 300);
@@ -242,7 +335,6 @@ const shell = buildShellModel({
           setBadge(root ? Number(root.getAttribute('data-cart-count')) : 0);
         };
 
-        // Open from the header cart link (anchor stays a real link with no JS).
         for (const el of document.querySelectorAll('[data-cart-open]')) {
           el.addEventListener('click', async (e) => {
             e.preventDefault();
@@ -256,25 +348,54 @@ const shell = buildShellModel({
           if (e.key === 'Escape' && !drawer.classList.contains('invisible')) close();
         });
 
-        // Intercept add/update/remove posts everywhere EXCEPT the full /cart page,
-        // which keeps its own server-rendered flow.
         document.addEventListener('submit', async (e) => {
           const form = e.target;
           if (!(form instanceof HTMLFormElement)) return;
           if ((form.getAttribute('action') || '') !== '/api/cart') return;
-          // Opt-out: "Buy now" adds to cart then navigates to the full /cart page —
-          // let it do the native post + redirect, no drawer. The flag can sit on the
-          // form (separate buy-now form) or on the clicked button (shared options form).
           if (form.hasAttribute('data-fullpage')) return;
           if (e.submitter instanceof HTMLElement && e.submitter.hasAttribute('data-fullpage'))
             return;
           if (location.pathname === '/cart') return;
           e.preventDefault();
-          await fetch('/api/cart', {
+
+          const errBanner = form.querySelector('[data-cart-form-error]');
+          if (errBanner instanceof HTMLElement) {
+            errBanner.textContent = '';
+            errBanner.classList.add('hidden');
+          }
+          for (const inp of form.querySelectorAll('[aria-invalid="true"]')) {
+            inp.removeAttribute('aria-invalid');
+          }
+
+          const res = await fetch('/api/cart', {
             method: 'POST',
             headers: { 'X-Partial': '1' },
             body: new URLSearchParams(new FormData(form)),
           });
+          if (!res.ok) {
+            const payload = await res.json().catch(() => null);
+            const message =
+              payload && typeof payload.error === 'string'
+                ? payload.error
+                : 'لطفاً فیلدهای الزامی محصول را تکمیل کنید.';
+            if (errBanner instanceof HTMLElement) {
+              errBanner.textContent = message;
+              errBanner.classList.remove('hidden');
+            }
+            const fieldErrors = payload && payload.fieldErrors && typeof payload.fieldErrors === 'object' ? payload.fieldErrors : null;
+            if (fieldErrors) {
+              const firstKey = Object.keys(fieldErrors)[0];
+              for (const k of Object.keys(fieldErrors)) {
+                const el = form.querySelector(`[name="cf_${CSS.escape(k)}"]`);
+                if (el instanceof HTMLElement) el.setAttribute('aria-invalid', 'true');
+              }
+              if (firstKey) {
+                const firstEl = form.querySelector(`[name="cf_${CSS.escape(firstKey)}"]`);
+                if (firstEl instanceof HTMLElement) firstEl.focus();
+              }
+            }
+            return;
+          }
           await refresh();
           open();
         });
@@ -282,3 +403,4 @@ const shell = buildShellModel({
     </script>
   </body>
 </html>
+

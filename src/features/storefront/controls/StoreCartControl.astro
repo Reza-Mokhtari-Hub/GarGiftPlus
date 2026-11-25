@@ -1,29 +1,45 @@
 ---
+import { fa } from '../../../i18n/fa';
+
 /**
  * The header cart link and its live count badge.
- *
- * Owns two hooks the document shell's enhancement script depends on:
- * `data-cart-open` (intercepted to open the drawer instead of navigating) and
- * `data-cart-count-label` (where the badge text is written). The script fails
- * soft when they are missing, so losing them breaks the drawer silently —
- * which is why they live here and not in an editable file.
- *
- * The drawer markup itself stays in the document shell, beside that script.
+ * Owns `data-cart-open` and `data-cart-count-label`.
  */
 interface Props {
   href: string;
   class?: string;
 }
 
-const { href, class: className = 'inline-flex items-center hover:text-brand' } = Astro.props;
+const {
+  href,
+  class: className =
+    'inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-brand hover:text-brand-fg',
+} = Astro.props;
 ---
 
-<a href={href} data-cart-open class={className}>
-  Cart
+<a href={href} data-cart-open aria-label={fa.navigation.cart} class={className}>
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    class="shrink-0"
+  >
+    <circle cx="8" cy="21" r="1" />
+    <circle cx="19" cy="21" r="1" />
+    <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
+  </svg>
+  <span class="hidden sm:inline">{fa.navigation.cart}</span>
   <span
     data-cart-count-label
-    class="inline-block min-w-[4ch] tabular-nums"
+    class="inline-block tabular-nums text-brand-fg font-semibold"
     aria-live="polite"
     aria-atomic="true"
   />
 </a>
+

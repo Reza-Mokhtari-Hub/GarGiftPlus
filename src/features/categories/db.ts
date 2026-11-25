@@ -8,6 +8,15 @@ export interface Category {
   slug: string;
   parent_id: number | null;
   public_id: string | null;
+  description?: string | null;
+  image_key?: string | null;
+  icon_key?: string | null;
+  accent_color?: string | null;
+  display_order?: number;
+  is_featured?: number;
+  is_active?: number;
+  seo_title?: string | null;
+  seo_description?: string | null;
   created_at: string;
 }
 
@@ -29,13 +38,29 @@ export interface CategoryFields {
   name: string;
   slug: string;
   parent_id: number | null;
+  description?: string | null;
+  image_key?: string | null;
+  icon_key?: string | null;
+  accent_color?: string | null;
+  display_order?: number;
+  is_featured?: number;
+  is_active?: number;
+  seo_title?: string | null;
+  seo_description?: string | null;
 }
 
 export async function listCategories(db: D1Database): Promise<Category[]> {
-  const { results } = await db
-    .prepare('SELECT * FROM categories ORDER BY name')
-    .all<Category>();
-  return results ?? [];
+  try {
+    const { results } = await db
+      .prepare('SELECT * FROM categories ORDER BY COALESCE(display_order, 0) ASC, name ASC')
+      .all<Category>();
+    return results ?? [];
+  } catch {
+    const { results } = await db
+      .prepare('SELECT * FROM categories ORDER BY name ASC')
+      .all<Category>();
+    return results ?? [];
+  }
 }
 
 export async function getCategory(db: D1Database, id: number): Promise<Category | null> {
@@ -70,34 +95,119 @@ export async function getCategoriesByPublicIds(
 
 export async function createCategory(db: D1Database, c: CategoryFields): Promise<number> {
   return withPublicId('category', async (publicId) => {
-    const row = await db
-      .prepare('INSERT INTO categories (name, slug, parent_id, public_id) VALUES (?, ?, ?, ?) RETURNING id')
-      .bind(c.name, c.slug, c.parent_id, publicId)
-      .first<{ id: number }>();
-    return row!.id;
+    try {
+      const row = await db
+        .prepare(
+          `INSERT INTO categories
+             (name, slug, parent_id, public_id, description, image_key, icon_key, accent_color, display_order, is_featured, is_active, seo_title, seo_description)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           RETURNING id`,
+        )
+        .bind(
+          c.name,
+          c.slug,
+          c.parent_id,
+          publicId,
+          c.description ?? null,
+          c.image_key ?? null,
+          c.icon_key ?? null,
+          c.accent_color ?? null,
+          c.display_order ?? 0,
+          c.is_featured ?? 1,
+          c.is_active ?? 1,
+          c.seo_title ?? null,
+          c.seo_description ?? null,
+        )
+        .first<{ id: number }>();
+      return row!.id;
+    } catch {
+      const row = await db
+        .prepare('INSERT INTO categories (name, slug, parent_id, public_id) VALUES (?, ?, ?, ?) RETURNING id')
+        .bind(c.name, c.slug, c.parent_id, publicId)
+        .first<{ id: number }>();
+      return row!.id;
+    }
   });
 }
 
 export async function updateCategory(db: D1Database, id: number, c: CategoryFields): Promise<void> {
-  await db
-    .prepare('UPDATE categories SET name = ?, slug = ?, parent_id = ? WHERE id = ?')
-    .bind(c.name, c.slug, c.parent_id, id)
-    .run();
+  try {
+    await db
+      .prepare(
+        `UPDATE categories
+            SET name = ?,
+                slug = ?,
+                parent_id = ?,
+                description = ?,
+                image_key = ?,
+                icon_key = ?,
+                accent_color = ?,
+                display_order = ?,
+                is_featured = ?,
+                is_active = ?,
+                seo_title = ?,
+                seo_description = ?
+          WHERE id = ?`,
+      )
+      .bind(
+        c.name,
+        c.slug,
+        c.parent_id,
+        c.description ?? null,
+        c.image_key ?? null,
+        c.icon_key ?? null,
+        c.accent_color ?? null,
+        c.display_order ?? 0,
+        c.is_featured ?? 1,
+        c.is_active ?? 1,
+        c.seo_title ?? null,
+        c.seo_description ?? null,
+        id,
+      )
+      .run();
+  } catch {
+    await db
+      .prepare('UPDATE categories SET name = ?, slug = ?, parent_id = ? WHERE id = ?')
+      .bind(c.name, c.slug, c.parent_id, id)
+      .run();
+  }
 }
 
 /**
- * Delete a category: reparent its direct children to its own parent (so the tree
- * stays connected), drop its product links, then remove it. FKs aren't enforced
- * on D1, so cleanup is explicit.
+ * حذف ایمن دسته‌بندی:
+ * - انتقال زیردسته‌های مستقیم به دسته والد تا ساختار درختی گسسته نشود.
+ * - در صورت انتخاب دسته جایگزین (`reassignToId`)، محصولات متصل به این دسته به دسته مقصد منتقل می‌شوند.
+ * - در نهایت حذف اتصالات و خود ردیف دسته‌بندی به‌صورت تراکنش یکجا (`db.batch`).
  */
-export async function deleteCategory(db: D1Database, id: number): Promise<void> {
+export async function deleteCategory(
+  db: D1Database,
+  id: number,
+  reassignToId: number | null = null,
+): Promise<void> {
   const cat = await getCategory(db, id);
   if (!cat) return;
-  await db.batch([
+
+  const stmts = [
     db.prepare('UPDATE categories SET parent_id = ? WHERE parent_id = ?').bind(cat.parent_id, id),
+  ];
+
+  if (reassignToId != null && reassignToId !== id) {
+    stmts.push(
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO product_categories (product_id, category_id)
+           SELECT product_id, ? FROM product_categories WHERE category_id = ?`,
+        )
+        .bind(reassignToId, id),
+    );
+  }
+
+  stmts.push(
     db.prepare('DELETE FROM product_categories WHERE category_id = ?').bind(id),
     db.prepare('DELETE FROM categories WHERE id = ?').bind(id),
-  ]);
+  );
+
+  await db.batch(stmts);
 }
 
 /** All descendant ids of a category, including itself (recursive CTE). */
@@ -149,7 +259,7 @@ export async function categoriesForProduct(db: D1Database, productId: number): P
     .prepare(
       `SELECT c.* FROM categories c
        JOIN product_categories pc ON pc.category_id = c.id
-       WHERE pc.product_id = ? ORDER BY c.name`,
+       WHERE pc.product_id = ? ORDER BY COALESCE(c.display_order, 0) ASC, c.name ASC`,
     )
     .bind(productId)
     .all<Category>();
@@ -206,11 +316,6 @@ export async function relatedProducts(
   return results ?? [];
 }
 
-/**
- * Active products sharing ≥1 category with any of `productIds`, excluding those
- * ids themselves — used to top up a sparse search-results grid with on-topic
- * items. Newest first. Returns [] when there are no source ids or the limit ≤ 0.
- */
 export async function productsInSharedCategories(
   db: D1Database,
   productIds: number[],
@@ -305,7 +410,7 @@ export async function countProductsInCategory(
 export function childrenOf(cats: Category[], parentId: number | null): Category[] {
   return cats
     .filter((c) => c.parent_id === parentId)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0) || a.name.localeCompare(b.name));
 }
 
 /** Build a nested tree from the flat list. */
@@ -321,7 +426,9 @@ export function buildTree(cats: Category[]): CategoryNode[] {
     }
   }
   const sortRec = (nodes: CategoryNode[], depth: number) => {
-    nodes.sort((a, b) => a.name.localeCompare(b.name));
+    nodes.sort(
+      (a, b) => (a.display_order ?? 0) - (b.display_order ?? 0) || a.name.localeCompare(b.name),
+    );
     for (const n of nodes) {
       n.depth = depth;
       sortRec(n.children, depth + 1);

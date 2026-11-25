@@ -11,6 +11,8 @@ import { getStoreSettings } from '../../../../features/settings/db';
 import { parsePublicId } from '../../../../features/ids/publicId';
 import { CACHE_TAG } from '../../../../features/cache/tags';
 import { purgeCacheTags } from '../../../../features/cache/purge';
+import { guardAdminApi } from '../../../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../../../features/audit/db';
 
 export const prerender = false;
 
@@ -31,7 +33,10 @@ function nonNegativeInteger(value: FormDataEntryValue | null): number {
 // The wire-format cursor is the LAST PROCESSED product's prod_ public ID ('' =
 // start): admin output never carries a numeric row id, while the keyset itself
 // stays on the integer id internally.
-export const POST: APIRoute = async ({ request, redirect }) => {
+export const POST: APIRoute = async ({ request, redirect, locals, cookies }) => {
+  const auth = await guardAdminApi(env.DB, { locals, cookies, request }, 'settings.manage');
+  if (!auth.ok) return auth.response;
+
   const wantsJson =
     request.headers.get('x-requested-with') === 'fetch' ||
     request.headers.get('accept')?.includes('application/json');
@@ -81,7 +86,17 @@ export const POST: APIRoute = async ({ request, redirect }) => {
     const nextCursor = done ? null : (batch.at(-1)?.public_id ?? cursorPublicId);
     // One purge at completion, not one per five-row batch: the Free-plan purge
     // bucket is intentionally small and reindex advances batches rapidly.
-    if (done) await purgeCacheTags([CACHE_TAG.catalog]);
+    if (done) {
+      await purgeCacheTags([CACHE_TAG.catalog]);
+      await recordAdminAuditLog(env.DB, {
+        action: 'search_index_rebuilt',
+        module: 'settings',
+        targetType: 'search_index',
+        targetId: 'vectorize',
+        actor: auth.actor.id,
+        details: { processed, total },
+      });
+    }
 
     if (wantsJson) {
       return Response.json({ processed, total, nextCursor, done });

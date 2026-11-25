@@ -1,0 +1,17 @@
+---
+import type { ContentPageModel } from '../../features/storefront/models';
+
+/**
+ * قالب صفحات محتوایی GarGift+ (درباره ما، قوانین، راهنماها)
+ */
+interface Props {
+  model: ContentPageModel;
+}
+
+const { model } = Astro.props;
+---
+
+<article class="markdown-content" data-page-layout={model.layout} style={model.layoutStyle}>
+  <h1>{model.title}</h1>
+  <Fragment set:html={model.html} />
+</article>

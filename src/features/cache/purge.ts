@@ -29,6 +29,9 @@ export async function purgeCacheTags(
 ): Promise<void> {
   const normalized = normalizeCacheTags(tags);
   if (normalized.length === 0) return;
+  if (purger === cache && (import.meta.env?.DEV || typeof purger?.purge !== 'function')) {
+    return;
+  }
 
   try {
     const result = await purger.purge({ tags: normalized });

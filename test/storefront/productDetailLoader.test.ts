@@ -53,6 +53,10 @@ vi.mock('../../src/features/search', () => ({
 vi.mock('../../src/features/payments', () => ({
   enabledMethods: vi.fn(() => []),
 }));
+const customFieldsData = [] as Array<Record<string, unknown>>;
+vi.mock('../../src/features/products/customFieldsDb', () => ({
+  listProductCheckoutFields: vi.fn(async () => customFieldsData),
+}));
 
 const { loadProductDetail } = await import('../../src/features/storefront/productDetail');
 
@@ -101,10 +105,17 @@ const galleryRow = (overrides: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
-  rows.product = { ...rows.product, public_id: 'prod_k7m2qx8vn6' };
+  rows.product = {
+    ...rows.product,
+    public_id: 'prod_k7m2qx8vn6',
+    active: 1,
+    stock: 7,
+    requires_shipping: 1,
+  };
   rows.variants = [];
   rows.extras = [];
   rows.images = [];
+  customFieldsData.length = 0;
 });
 
 describe('loadProductDetail public-ID policy', () => {
@@ -161,5 +172,74 @@ describe('loadProductDetail public-ID policy', () => {
     vi.mocked(db.getProductBySlug).mockResolvedValueOnce(null);
 
     await expect(load()).resolves.toEqual({ status: 'not_found' });
+  });
+});
+
+describe('loadProductDetail digital inventory decoupling', () => {
+  it('keeps digital product purchasable and hides lowStock even when stock is 0', async () => {
+    rows.product = {
+      ...rows.product,
+      requires_shipping: 0,
+      stock: 0,
+      active: 1,
+    };
+    rows.variants = [variant({ stock: 0, active: 1 })];
+
+    const loaded = await load();
+    expect(loaded.status).toBe('ok');
+    if (loaded.status !== 'ok') return;
+    expect(loaded.model.soldOut).toBe(false);
+    expect(loaded.model.lowStock).toBe(false);
+    expect(loaded.model.digitalDelivery).toBe(true);
+    expect(loaded.purchase.variants[0].soldOut).toBe(false);
+    expect(loaded.purchase.variants[0].defaultSelected).toBe(true);
+  });
+
+  it('marks inactive variants soldOut even when digital stock is positive', async () => {
+    rows.product = {
+      ...rows.product,
+      requires_shipping: 0,
+      stock: 50,
+      active: 1,
+    };
+    rows.variants = [
+      variant({ id: 7, public_id: 'var_aaaaaaaaaa', stock: 50, active: 0 }),
+      variant({ id: 8, public_id: 'var_bbbbbbbbbb', stock: 0, active: 1 }),
+    ];
+
+    const loaded = await load();
+    expect(loaded.status).toBe('ok');
+    if (loaded.status !== 'ok') return;
+    expect(loaded.model.soldOut).toBe(false);
+    expect(loaded.purchase.variants[0].soldOut).toBe(true);
+    expect(loaded.purchase.variants[1].soldOut).toBe(false);
+    expect(loaded.purchase.variants[1].defaultSelected).toBe(true);
+  });
+
+  it('forces hasOptions when active custom checkout fields exist', async () => {
+    rows.product = { ...rows.product, requires_shipping: 0, stock: 0, active: 1 };
+    customFieldsData.push({
+      id: 3,
+      public_id: 'pfld_1111111111',
+      product_id: 42,
+      field_key: 'account_email',
+      label: 'ایمیل اکانت',
+      field_type: 'email',
+      placeholder: 'name@example.com',
+      help_text: null,
+      options_json: null,
+      is_required: 1,
+      min_length: null,
+      max_length: 120,
+      sort_order: 0,
+      is_active: 1,
+    });
+
+    const loaded = await load();
+    expect(loaded.status).toBe('ok');
+    if (loaded.status !== 'ok') return;
+    expect(loaded.purchase.hasOptions).toBe(true);
+    expect(loaded.purchase.customFields).toHaveLength(1);
+    expect(loaded.purchase.customFields?.[0].key).toBe('account_email');
   });
 });

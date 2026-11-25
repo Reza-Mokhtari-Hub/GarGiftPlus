@@ -12,8 +12,12 @@
  * multiples of 10. Add an override map here if you ever sell in those.
  */
 
-/** Decimal places a currency uses (2 USD, 0 JPY, 3 BHD). */
+import { formatRial, formatToman } from './lib/format.ts';
+
+/** Decimal places a currency uses (2 USD, 0 JPY/IRT/IRR, 3 BHD). */
 export function currencyDecimals(currency: string): number {
+  const lower = currency.trim().toLowerCase();
+  if (lower === 'irt' || lower === 'irr') return 0;
   return (
     new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -22,7 +26,7 @@ export function currencyDecimals(currency: string): number {
   );
 }
 
-/** Minor units per major unit (100 USD, 1 JPY, 1000 BHD). */
+/** Minor units per major unit (100 USD, 1 JPY/IRT/IRR, 1000 BHD). */
 export function minorUnitsPerMajor(currency: string): number {
   return 10 ** currencyDecimals(currency);
 }
@@ -50,6 +54,9 @@ const priceFormatters = new Map<string, Intl.NumberFormat>();
  * currency from their caller instead, so they stay pure and unit-testable.
  */
 export function formatMoney(cents: number, currency: string): string {
+  const lower = currency.trim().toLowerCase();
+  if (lower === 'irt') return formatToman(cents);
+  if (lower === 'irr') return formatRial(cents);
   const code = currency.toUpperCase();
   let formatter = priceFormatters.get(code);
   if (!formatter) {

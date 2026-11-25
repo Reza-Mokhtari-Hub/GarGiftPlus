@@ -14,8 +14,8 @@ export interface ProductFilters {
 }
 
 export const PRODUCT_STATUS_OPTIONS: { value: 'active' | 'inactive'; label: string }[] = [
-  { value: 'active', label: 'Active' },
-  { value: 'inactive', label: 'Hidden' },
+  { value: 'active', label: 'فعال' },
+  { value: 'inactive', label: 'غیرفعال' },
 ];
 
 export const PRODUCT_STOCK_OPTIONS: { value: StockState; label: string }[] = [
@@ -49,6 +49,12 @@ export function parseProductFilters(params: URLSearchParams): ProductFilters {
   };
 }
 
+export function parseAdminCategoryFilter(params: URLSearchParams): string | null {
+  const raw = (params.get('category') ?? '').trim();
+  if (raw === 'none') return 'none';
+  return /^cat_[0-9abcdefghjkmnpqrstvwxyz]{10}$/.test(raw) ? raw : null;
+}
+
 export function hasProductFilters(f: ProductFilters): boolean {
   return f.status !== null || f.stock !== null || f.q !== null;
 }
@@ -69,12 +75,33 @@ export function productFilterClause(f: ProductFilters): { where: string; params:
   if (f.stock) parts.push(`(${STOCK[f.stock]})`);
   if (f.q) {
     // NOCASE matches the case-insensitive name sort, so search and sort agree.
-    parts.push("p.name LIKE ? ESCAPE '\\' COLLATE NOCASE");
-    params.push(`%${escapeLike(f.q)}%`);
+    parts.push("(p.name LIKE ? ESCAPE '\\' COLLATE NOCASE OR COALESCE(p.brand, '') LIKE ? ESCAPE '\\' COLLATE NOCASE)");
+    const pat = `%${escapeLike(f.q)}%`;
+    params.push(pat, pat);
   }
 
   return {
     where: parts.length ? `WHERE ${parts.join(' AND ')}` : '',
     params,
   };
+}
+
+export function productAdminFilterClause(
+  f: ProductFilters,
+  categoryPublicId: string | null,
+): { where: string; params: string[] } {
+  const base = productFilterClause(f);
+  if (!categoryPublicId) return base;
+
+  const extraWhere =
+    categoryPublicId === 'none'
+      ? 'NOT EXISTS (SELECT 1 FROM product_categories pc WHERE pc.product_id = p.id)'
+      : `EXISTS (
+          SELECT 1 FROM product_categories pc
+          JOIN categories c ON c.id = pc.category_id
+          WHERE pc.product_id = p.id AND c.public_id = ?
+        )`;
+  const nextParams = categoryPublicId === 'none' ? base.params : [...base.params, categoryPublicId];
+  const combinedWhere = base.where ? `${base.where} AND ${extraWhere}` : `WHERE ${extraWhere}`;
+  return { where: combinedWhere, params: nextParams };
 }

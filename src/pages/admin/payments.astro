@@ -1,0 +1,277 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../config';
+import {
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_TX_STATUS_LABELS,
+} from '../../features/payments/transactions';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const settings = Astro.locals.settings;
+const methodFilter = (Astro.url.searchParams.get('method') ?? '').trim();
+const statusFilter = (Astro.url.searchParams.get('status') ?? '').trim();
+const q = (Astro.url.searchParams.get('q') ?? '').trim().toLowerCase();
+
+const [statsRes, txsRes] = await Promise.all([
+  env.DB
+    .prepare(
+      `SELECT
+         COUNT(*) AS total_count,
+         SUM(CASE WHEN status = 'VERIFIED' THEN 1 ELSE 0 END) AS verified_count,
+         SUM(CASE WHEN status = 'PAYMENT_REVIEW' THEN 1 ELSE 0 END) AS review_count,
+         SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+         COALESCE(SUM(CASE WHEN status = 'VERIFIED' THEN amount ELSE 0 END), 0) AS verified_amount
+       FROM payment_transactions`,
+    )
+    .first<{
+      total_count: number;
+      verified_count: number | null;
+      review_count: number | null;
+      failed_count: number | null;
+      verified_amount: number;
+    }>(),
+  env.DB
+    .prepare('SELECT * FROM payment_transactions ORDER BY created_at DESC, id DESC LIMIT 150')
+    .all<{
+      public_id: string;
+      target_type: string;
+      target_public_id: string;
+      customer_email: string | null;
+      method: string;
+      amount: number;
+      currency: string;
+      status: string;
+      ref_id: string | null;
+      card_pan: string | null;
+      authority_or_track_id: string | null;
+      created_at: string;
+    }>(),
+]);
+
+const allTxs = txsRes.results ?? [];
+const filtered = allTxs.filter((tx) => {
+  if (methodFilter && tx.method !== methodFilter) return false;
+  if (statusFilter && tx.status !== statusFilter) return false;
+  if (
+    q &&
+    !tx.public_id.toLowerCase().includes(q) &&
+    !tx.target_public_id.toLowerCase().includes(q) &&
+    !(tx.customer_email ?? '').toLowerCase().includes(q) &&
+    !(tx.ref_id ?? '').toLowerCase().includes(q)
+  ) {
+    return false;
+  }
+  return true;
+});
+
+const disabled = new Set(settings?.disabledPaymentMethods ?? []);
+const configured = new Set(settings?.configuredSecrets ?? []);
+const gateways = [
+  {
+    key: 'zarinpal',
+    name: 'زرین‌پال (Zarinpal)',
+    configured: configured.has('zarinpal_merchant_id') || Boolean(settings?.zarinpalSandbox),
+    enabled: !disabled.has('zarinpal'),
+    mode: settings?.zarinpalSandbox ? 'سندباکس آزمایشی' : 'عملیاتی',
+  },
+  {
+    key: 'zibal',
+    name: 'زیبال (Zibal)',
+    configured: configured.has('zibal_merchant') || Boolean(settings?.zibalSandbox),
+    enabled: !disabled.has('zibal'),
+    mode: settings?.zibalSandbox ? 'سندباکس آزمایشی' : 'عملیاتی',
+  },
+  {
+    key: 'bank_transfer',
+    name: 'کارت‌به‌کارت / واریز بانکی',
+    configured: Boolean(settings?.hasActiveBankAccounts),
+    enabled: Boolean(settings?.bankTransferEnabled) && !disabled.has('bank_transfer'),
+    mode: 'تایید دستی فیش',
+  },
+  {
+    key: 'wallet',
+    name: 'کیف پول گارگیفت+',
+    configured: true,
+    enabled: Boolean(settings?.walletEnabled) && !disabled.has('wallet'),
+    mode: 'تسویه آنی',
+  },
+];
+---
+
+<AdminLayout
+  title="پرداخت‌ها و درگاه‌ها"
+  active="payments"
+  requiredPermission="payments.view"
+  breadcrumbs={[{ label: 'مشتریان و مالی' }, { label: 'پرداخت‌ها و درگاه‌ها' }]}
+>
+  <AdminPageHeader
+    title="مرکز پایش پرداخت‌ها و وضعیت درگاه‌ها"
+    subtitle="مشاهده تراکنش‌های زرین‌پال، زیبال، کارت‌به‌کارت و کیف پول بدون افشای کلیدهای امنیتی"
+  >
+    <div slot="actions" class="flex flex-wrap items-center gap-2">
+      <a href="/admin/receipts" class="gg-admin-btn-secondary text-xs">صف فیش‌های بانکی</a>
+      <a href="/admin/settings?tab=payments" class="gg-admin-btn-primary text-xs">تنظیمات درگاه‌ها</a>
+    </div>
+  </AdminPageHeader>
+
+  <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <AdminKpiCard
+      label="کل مبلغ تراکنش‌های موفق"
+      value={formatPrice(statsRes?.verified_amount ?? 0)}
+      hint={`${toPersianDigits(statsRes?.verified_count ?? 0)} تراکنش تاییدشده`}
+      tone="turquoise"
+    />
+    <AdminKpiCard
+      label="تراکنش‌های در انتظار بررسی"
+      value={toPersianDigits(statsRes?.review_count ?? 0)}
+      hint="نیازمند بررسی فیش"
+      href="/admin/receipts?status=pending_review"
+      tone="amber"
+    />
+    <AdminKpiCard
+      label="تراکنش‌های ناموفق / لغوشده"
+      value={toPersianDigits(statsRes?.failed_count ?? 0)}
+      hint="کل خطاهای درگاه"
+      tone="coral"
+    />
+    <AdminKpiCard
+      label="کل رکوردهای ثبت‌شده"
+      value={toPersianDigits(statsRes?.total_count ?? 0)}
+      hint="تاریخچه payment_transactions"
+      tone="violet"
+    />
+  </div>
+
+  {/* وضعیت پیکربندی درگاه‌ها */}
+  <section class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {
+      gateways.map((gw) => (
+        <div class="gg-admin-card p-4">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-sm font-bold text-ink">{gw.name}</h2>
+            <span class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${gw.enabled && gw.configured ? 'gg-status-success' : 'gg-status-warning'}`}>
+              {gw.enabled && gw.configured ? 'آماده و فعال' : gw.enabled ? 'نیازمند تنظیم' : 'غیرفعال'}
+            </span>
+          </div>
+          <p class="mt-2 text-xs text-muted">
+            کلید / حساب: <strong class="text-ink">{gw.configured ? 'پیکربندی‌شده' : 'تنظیم‌نشده'}</strong>
+          </p>
+          <p class="mt-1 text-[11px] text-faint">حالت: {gw.mode}</p>
+        </div>
+      ))
+    }
+  </section>
+
+  {/* فیلتر و جدول تراکنش‌ها */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <form method="GET" action="/admin/payments" class="mb-4 flex flex-wrap items-center gap-3">
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder="شناسه تراکنش، سفارش، ایمیل یا شماره پیگیری..."
+        class="gg-admin-input min-w-56 flex-1 py-2 text-xs"
+      />
+      <select name="method" class="gg-admin-input w-44 py-2 text-xs">
+        <option value="">همه روش‌های پرداخت</option>
+        {Object.entries(PAYMENT_METHOD_LABELS).map(([k, label]) => (
+          <option value={k} selected={methodFilter === k}>{label}</option>
+        ))}
+      </select>
+      <select name="status" class="gg-admin-input w-44 py-2 text-xs">
+        <option value="">همه وضعیت‌ها</option>
+        {Object.entries(PAYMENT_TX_STATUS_LABELS).map(([k, label]) => (
+          <option value={k} selected={statusFilter === k}>{label}</option>
+        ))}
+      </select>
+      <button type="submit" class="gg-admin-btn-primary py-2 text-xs">فیلتر</button>
+      {(q || methodFilter || statusFilter) && (
+        <a href="/admin/payments" class="gg-admin-btn-secondary py-2 text-xs">پاک کردن</a>
+      )}
+    </form>
+
+    {
+      filtered.length === 0 ? (
+        <AdminEmptyState
+          title="تراکنش پرداختی با این فیلتر یافت نشد"
+          description="تمامی پرداخت‌های درگاه‌های اینترنتی، کارت‌به‌کارت و کیف پول در این فهرست ثبت می‌شوند."
+        />
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>شناسه تراکنش</th>
+                <th>روش پرداخت</th>
+                <th>هدف / مرجع</th>
+                <th>مشتری</th>
+                <th>مبلغ</th>
+                <th>کد پیگیری / شماره کارت</th>
+                <th>وضعیت</th>
+                <th class="text-end">تاریخ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((tx) => (
+                <tr>
+                  <td><span class="ltr-inline font-mono text-xs text-ink">{tx.public_id}</span></td>
+                  <td class="text-xs font-semibold text-ink">
+                    {PAYMENT_METHOD_LABELS[tx.method] ?? tx.method}
+                  </td>
+                  <td>
+                    {tx.target_type === 'order' ? (
+                      <a href={`/admin/orders/${tx.target_public_id}`} class="ltr-inline font-mono text-xs text-brand-fg hover:underline">
+                        {tx.target_public_id}
+                      </a>
+                    ) : (
+                      <span class="ltr-inline font-mono text-xs text-muted">{tx.target_public_id}</span>
+                    )}
+                  </td>
+                  <td>
+                    {tx.customer_email ? (
+                      <a href={`/admin/customers/${encodeURIComponent(tx.customer_email)}`} class="ltr-inline font-mono text-xs text-muted hover:text-brand-fg">
+                        {tx.customer_email}
+                      </a>
+                    ) : (
+                      <span class="text-xs text-muted">—</span>
+                    )}
+                  </td>
+                  <td class="font-bold text-ink">{formatPrice(tx.amount, tx.currency)}</td>
+                  <td class="text-xs text-muted">
+                    {tx.ref_id ? <span class="ltr-inline font-mono text-ink">{tx.ref_id}</span> : '—'}
+                    {tx.card_pan && (
+                      <span class="mt-0.5 block ltr-inline font-mono text-[11px] text-faint">{tx.card_pan}</span>
+                    )}
+                  </td>
+                  <td>
+                    <span
+                      class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                        tx.status === 'VERIFIED'
+                          ? 'gg-status-success'
+                          : tx.status === 'PAYMENT_REVIEW'
+                            ? 'gg-status-warning'
+                            : tx.status === 'FAILED' || tx.status === 'CANCELLED'
+                              ? 'gg-status-error'
+                              : 'bg-surface-2 text-muted'
+                      }`}
+                    >
+                      {(PAYMENT_TX_STATUS_LABELS as Record<string, string>)[tx.status] ?? tx.status}
+                    </span>
+                  </td>
+                  <td class="text-end text-xs text-muted">
+                    {formatJalaliDateTime(tx.created_at, { timeZone })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
+</AdminLayout>

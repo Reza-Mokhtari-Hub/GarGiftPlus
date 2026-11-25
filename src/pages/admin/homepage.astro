@@ -1,0 +1,1208 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import {
+  getFooterConfig,
+  listAllProductReviewsForAdmin,
+  listHomepageSections,
+  listPromotionalBanners,
+  listStorefrontFaqs,
+} from '../../features/homepage/db';
+import { SECTION_LABELS_FA } from '../../features/homepage/schema';
+import { listCategories } from '../../features/categories/db';
+import { listMedia } from '../../features/media/db';
+import { mediaUrl } from '../../features/media/url';
+import { getConfig } from '../../config';
+import { toPersianDigits } from '../../lib/format';
+
+const activeTab = (Astro.url.searchParams.get('tab') ?? 'sections').trim();
+const savedMsg = Astro.url.searchParams.get('saved');
+const errorMsg = Astro.url.searchParams.get('error');
+
+const [sections, banners, faqs, reviews, footerConfig, categories, recentMedia] =
+  await Promise.all([
+    listHomepageSections(env.DB),
+    listPromotionalBanners(env.DB),
+    listStorefrontFaqs(env.DB, false),
+    listAllProductReviewsForAdmin(env.DB, 50),
+    getFooterConfig(env.DB),
+    listCategories(env.DB),
+    listMedia(env.DB, 36, 0),
+  ]);
+
+const imageBaseUrl = getConfig().images.baseUrl;
+
+const tabs = [
+  { key: 'sections', label: 'بخش‌های صفحه اصلی', count: sections.length },
+  { key: 'banners', label: 'بنرهای تبلیغاتی', count: banners.length },
+  { key: 'faqs', label: 'پرسش‌های متداول (FAQ)', count: faqs.length },
+  { key: 'reviews', label: 'دیدگاه‌های مشتریان', count: reviews.length },
+  { key: 'footer', label: 'فوتر و اطلاعات تماس', count: null },
+];
+---
+
+<AdminLayout
+  title="مدیریت صفحه اصلی و بنرها"
+  active="homepage"
+  requiredPermission="content.manage"
+  breadcrumbs={[{ label: 'محتوا و فروشگاه' }, { label: 'صفحه اصلی و بنرها' }]}
+>
+  <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-extrabold text-ink">مدیریت پویا صفحه اصلی، بنرها و محتوای فروشگاه</h1>
+      <p class="mt-1 text-xs text-muted">
+        کنترل کامل ترتیب بخش‌های صفحه اصلی، بنرهای تبلیغاتی، نوار اطلاع‌رسانی، سوالات متداول و فوتر بدون نیاز به تغییر کد.
+      </p>
+    </div>
+    <a
+      href="/"
+      target="_blank"
+      rel="noopener"
+      class="inline-flex items-center gap-1.5 rounded-lg border border-brand/35 bg-brand/10 px-3.5 py-2 text-xs font-bold text-brand-fg transition-colors hover:bg-brand hover:text-on-brand"
+    >
+      <span>مشاهده زنده صفحه اصلی</span>
+      <span aria-hidden="true">&larr;</span>
+    </a>
+  </div>
+
+  {
+    savedMsg && (
+      <div
+        role="status"
+        class="gg-status-success mb-6 rounded-xl border px-4 py-3 text-xs font-semibold"
+      >
+        {savedMsg}
+      </div>
+    )
+  }
+
+  {
+    errorMsg && (
+      <div
+        role="alert"
+        class="gg-status-error mb-6 rounded-xl border px-4 py-3 text-xs font-semibold"
+      >
+        {errorMsg}
+      </div>
+    )
+  }
+
+  <!-- نوار تب‌ها -->
+  <div class="mb-6 flex flex-wrap gap-2 border-b border-line pb-3">
+    {
+      tabs.map((t) => {
+        const current = activeTab === t.key;
+        return (
+          <a
+            href={`/admin/homepage?tab=${t.key}`}
+            class={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold transition-colors ${
+              current
+                ? 'bg-brand text-on-brand shadow-xs'
+                : 'border border-line bg-surface text-muted hover:border-brand/40 hover:text-ink'
+            }`}
+          >
+            <span>{t.label}</span>
+            {t.count !== null && (
+              <span
+                class={`gg-numeric rounded-md px-1.5 py-0.5 text-[11px] ${
+                  current ? 'bg-on-brand/20 text-on-brand' : 'bg-paper text-faint'
+                }`}
+              >
+                {toPersianDigits(t.count)}
+              </span>
+            )}
+          </a>
+        );
+      })
+    }
+  </div>
+
+  {
+    activeTab === 'sections' && (
+      <div class="flex flex-col gap-8">
+        <!-- جدول مرتب‌سازی و فعال‌سازی سریع -->
+        <section class="rounded-2xl border border-line bg-surface p-5">
+          <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-base font-extrabold text-ink">ترتیب نمایش و وضعیت فعال بودن بخش‌ها</h2>
+              <p class="mt-0.5 text-xs text-muted">
+                عدد ترتیب کمتر، بخش را بالاتر در صفحه اصلی نمایش می‌دهد. بخش‌های غیرفعال در فروشگاه رندر نمی‌شوند.
+              </p>
+            </div>
+          </div>
+
+          <form method="POST" action="/api/admin/homepage">
+            <input type="hidden" name="_action" value="reorder_sections" />
+            <input type="hidden" name="_tab" value="sections" />
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-right text-xs">
+                <thead>
+                  <tr class="border-b border-line text-faint">
+                    <th class="py-2.5 pe-3 font-bold">فعال</th>
+                    <th class="py-2.5 pe-3 font-bold">بخش صفحه اصلی</th>
+                    <th class="py-2.5 pe-3 font-bold">کلید سیستمی</th>
+                    <th class="py-2.5 pe-3 font-bold">عنوان فعلی</th>
+                    <th class="py-2.5 font-bold">ترتیب نمایش</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sections.map((sec) => (
+                    <tr class="border-b border-line/70 last:border-b-0">
+                      <td class="py-2.5 pe-3">
+                        <input type="hidden" name="section_keys" value={sec.section_key} />
+                        <input
+                          type="checkbox"
+                          name={`is_enabled_${sec.section_key}`}
+                          value="1"
+                          checked={sec.is_enabled === 1}
+                          aria-label={`فعال بودن ${sec.title}`}
+                          class="h-4 w-4 rounded border-line text-brand focus:ring-brand"
+                        />
+                      </td>
+                      <td class="py-2.5 pe-3 font-bold text-ink">
+                        {SECTION_LABELS_FA[sec.section_key] ?? sec.section_key}
+                      </td>
+                      <td class="py-2.5 pe-3 font-mono text-[11px] text-muted" dir="ltr">
+                        {sec.section_key}
+                      </td>
+                      <td class="py-2.5 pe-3 text-muted">{sec.title}</td>
+                      <td class="py-2.5">
+                        <input
+                          type="number"
+                          name={`sort_order_${sec.section_key}`}
+                          value={sec.sort_order}
+                          class="w-20 rounded-lg border border-line bg-paper px-2.5 py-1 text-center font-mono text-xs text-ink"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div class="mt-4 flex justify-end">
+              <button
+                type="submit"
+                class="rounded-xl bg-brand px-5 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+              >
+                ذخیره ترتیب و وضعیت بخش‌ها
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <!-- ویرایشگر جزئیات هر بخش -->
+        <section class="flex flex-col gap-4">
+          <h2 class="text-base font-extrabold text-ink">ویرایش محتوا، لینک‌ها، تصاویر و زمان‌بندی هر بخش</h2>
+          {sections.map((sec) => (
+            <details
+              id={`section-${sec.section_key}`}
+              class="group rounded-2xl border border-line bg-surface p-5"
+              open={sec.section_key === 'hero' || sec.section_key === 'announcement'}
+            >
+              <summary class="flex cursor-pointer list-none items-center justify-between gap-3">
+                <div class="flex flex-wrap items-center gap-2.5">
+                  <span
+                    class={`rounded-md px-2 py-0.5 text-[11px] font-bold ${
+                      sec.is_enabled === 1
+                        ? 'bg-brand-soft text-brand-fg'
+                        : 'bg-surface-elevated text-faint'
+                    }`}
+                  >
+                    {sec.is_enabled === 1 ? 'فعال' : 'غیرفعال'}
+                  </span>
+                  <span class="text-sm font-extrabold text-ink">
+                    {SECTION_LABELS_FA[sec.section_key] ?? sec.section_key}
+                  </span>
+                  <span class="font-mono text-[11px] text-faint" dir="ltr">
+                    ({sec.section_key})
+                  </span>
+                </div>
+                <span class="text-xs font-semibold text-brand-fg">ویرایش جزئیات ▾</span>
+              </summary>
+
+              <form
+                method="POST"
+                action="/api/admin/homepage"
+                enctype="multipart/form-data"
+                class="mt-5 grid grid-cols-1 gap-4 border-t border-line pt-5 sm:grid-cols-2"
+              >
+                <input type="hidden" name="_action" value="update_section" />
+                <input type="hidden" name="_tab" value="sections" />
+                <input type="hidden" name="section_key" value={sec.section_key} />
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">عنوان بخش *</label>
+                  <input
+                    type="text"
+                    name="title"
+                    value={sec.title}
+                    required
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">نشان بالای عنوان (Badge)</label>
+                  <input
+                    type="text"
+                    name="badge_text"
+                    value={sec.badge_text ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label class="mb-1 block text-xs font-bold text-ink">زیرعنوان</label>
+                  <input
+                    type="text"
+                    name="subtitle"
+                    value={sec.subtitle ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label class="mb-1 block text-xs font-bold text-ink">توضیحات تکمیلی</label>
+                  <textarea
+                    name="description"
+                    rows={2}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  >{sec.description ?? ''}</textarea>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">متن دکمه اصلی (CTA)</label>
+                  <input
+                    type="text"
+                    name="cta_text"
+                    value={sec.cta_text ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">لینک دکمه اصلی (مثلاً /products)</label>
+                  <input
+                    type="text"
+                    name="cta_href"
+                    dir="ltr"
+                    value={sec.cta_href ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                {sec.section_key === 'hero' || sec.section_key === 'final_cta' ? (
+                  <>
+                    <div>
+                      <label class="mb-1 block text-xs font-bold text-ink">متن دکمه دوم</label>
+                      <input
+                        type="text"
+                        name="secondary_cta_text"
+                        value={sec.secondary_cta_text ?? ''}
+                        class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                      />
+                    </div>
+                    <div>
+                      <label class="mb-1 block text-xs font-bold text-ink">لینک دکمه دوم</label>
+                      <input
+                        type="text"
+                        name="secondary_cta_href"
+                        dir="ltr"
+                        value={sec.secondary_cta_href ?? ''}
+                        class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                      />
+                    </div>
+                  </>
+                ) : null}
+
+                {sec.section_key === 'hero' && (
+                  <>
+                    <div>
+                      <label class="mb-1 block text-xs font-bold text-ink">
+                        تصویر دسکتاپ Hero (آپلود فایل یا کلید رسانه)
+                      </label>
+                      <input
+                        type="file"
+                        name="desktop_image_file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        class="mb-2 block w-full text-xs text-muted"
+                      />
+                      <input
+                        type="text"
+                        name="desktop_image_key"
+                        dir="ltr"
+                        placeholder="media/..."
+                        value={sec.desktop_image_key ?? ''}
+                        class="w-full rounded-lg border border-line bg-paper px-3 py-1.5 font-mono text-xs text-ink"
+                      />
+                    </div>
+                    <div>
+                      <label class="mb-1 block text-xs font-bold text-ink">
+                        تصویر موبایل Hero (آپلود فایل یا کلید رسانه)
+                      </label>
+                      <input
+                        type="file"
+                        name="mobile_image_file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        class="mb-2 block w-full text-xs text-muted"
+                      />
+                      <input
+                        type="text"
+                        name="mobile_image_key"
+                        dir="ltr"
+                        placeholder="media/..."
+                        value={sec.mobile_image_key ?? ''}
+                        class="w-full rounded-lg border border-line bg-paper px-3 py-1.5 font-mono text-xs text-ink"
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">فیلتر اسلاگ دسته‌بندی (اختیاری)</label>
+                  <select
+                    name="category_filter_slug"
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  >
+                    <option value="">بدون محدودیت دسته‌بندی خاص</option>
+                    {categories.map((cat) => (
+                      <option
+                        value={cat.slug}
+                        selected={sec.category_filter_slug === cat.slug}
+                      >
+                        {cat.name} ({cat.slug})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label class="mb-1 block text-xs font-bold text-ink">حداکثر تعداد آیتم</label>
+                    <input
+                      type="number"
+                      name="max_items"
+                      min={1}
+                      max={24}
+                      value={sec.max_items}
+                      class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                    />
+                  </div>
+                  <div>
+                    <label class="mb-1 block text-xs font-bold text-ink">ترتیب نمایش</label>
+                    <input
+                      type="number"
+                      name="sort_order"
+                      value={sec.sort_order}
+                      class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">زمان شروع نمایش (اختیاری ISO)</label>
+                  <input
+                    type="text"
+                    name="start_at"
+                    dir="ltr"
+                    placeholder="2026-01-01T00:00:00Z"
+                    value={sec.start_at ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">زمان پایان نمایش (اختیاری ISO)</label>
+                  <input
+                    type="text"
+                    name="end_at"
+                    dir="ltr"
+                    placeholder="2026-12-31T23:59:59Z"
+                    value={sec.end_at ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div class="flex items-center justify-between pt-2 sm:col-span-2">
+                  <label class="inline-flex items-center gap-2 text-xs font-bold text-ink">
+                    <input
+                      type="checkbox"
+                      name="is_enabled"
+                      value="1"
+                      checked={sec.is_enabled === 1}
+                      class="h-4 w-4 rounded border-line text-brand"
+                    />
+                    <span>این بخش در صفحه اصلی فعال باشد</span>
+                  </label>
+
+                  <button
+                    type="submit"
+                    class="rounded-xl bg-brand px-5 py-2 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                  >
+                    ذخیره تغییرات این بخش
+                  </button>
+                </div>
+              </form>
+            </details>
+          ))}
+        </section>
+      </div>
+    )
+  }
+
+  {
+    activeTab === 'banners' && (
+      <div class="flex flex-col gap-8">
+        <!-- فرم افزودن بنر تبلیغاتی جدید -->
+        <section class="rounded-2xl border border-line bg-surface p-6">
+          <h2 class="text-base font-extrabold text-ink">افزودن بنر تبلیغاتی و کمپین جدید</h2>
+          <p class="mt-1 text-xs text-muted">
+            می‌توانید تصویر دسکتاپ و موبایل را مستقیماً در R2 آپلود کنید یا از کلید تصاویر موجود در کتابخانه رسانه استفاده نمایید.
+          </p>
+
+          <form
+            method="POST"
+            action="/api/admin/homepage"
+            enctype="multipart/form-data"
+            class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2"
+          >
+            <input type="hidden" name="_action" value="create_banner" />
+            <input type="hidden" name="_tab" value="banners" />
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">عنوان بنر *</label>
+              <input
+                type="text"
+                name="title"
+                required
+                placeholder="مثلاً جشنواره تخفیف اشتراک‌های هوش مصنوعی"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">زیرعنوان (اختیاری)</label>
+              <input
+                type="text"
+                name="subtitle"
+                placeholder="ChatGPT Plus · Claude Pro · Gemini"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div class="sm:col-span-2">
+              <label class="mb-1 block text-xs font-bold text-ink">توضیحات بنر</label>
+              <textarea
+                name="description"
+                rows={2}
+                placeholder="توضیحات کوتاه پیشنهاد ویژه..."
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">متن نشان (Badge)</label>
+              <input
+                type="text"
+                name="badge_text"
+                placeholder="پیشنهاد ویژه"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">تم رنگی بنر</label>
+              <select
+                name="accent_theme"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              >
+                <option value="violet">بنفش الکتریک (Violet)</option>
+                <option value="turquoise">فیروزه‌ای (Turquoise)</option>
+                <option value="coral">مرجانی (Coral Pink)</option>
+                <option value="amber">کهربایی (Warm Amber)</option>
+                <option value="navy">سرمه‌ای تیره (Deep Navy)</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">متن دکمه (CTA)</label>
+              <input
+                type="text"
+                name="cta_text"
+                value="مشاهده پیشنهاد"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">لینک مقصد بنر * (مثلاً /products)</label>
+              <input
+                type="text"
+                name="cta_href"
+                dir="ltr"
+                required
+                value="/products"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">تصویر دسکتاپ (آپلود یا کلید رسانه)</label>
+              <input
+                type="file"
+                name="desktop_image_file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                class="mb-2 block w-full text-xs text-muted"
+              />
+              <input
+                type="text"
+                name="desktop_image_key"
+                dir="ltr"
+                placeholder="media/..."
+                class="w-full rounded-lg border border-line bg-paper px-3 py-1.5 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">تصویر موبایل (آپلود یا کلید رسانه)</label>
+              <input
+                type="file"
+                name="mobile_image_file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                class="mb-2 block w-full text-xs text-muted"
+              />
+              <input
+                type="text"
+                name="mobile_image_key"
+                dir="ltr"
+                placeholder="media/..."
+                class="w-full rounded-lg border border-line bg-paper px-3 py-1.5 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">زمان شروع نمایش (اختیاری)</label>
+              <input
+                type="text"
+                name="start_at"
+                dir="ltr"
+                placeholder="2026-01-01T00:00:00Z"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">زمان پایان نمایش (اختیاری)</label>
+              <input
+                type="text"
+                name="end_at"
+                dir="ltr"
+                placeholder="2026-12-31T23:59:59Z"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">متن جایگزین تصویر (Alt Text)</label>
+              <input
+                type="text"
+                name="alt_text"
+                placeholder="توضیح تصویر برای سئو و دسترس‌پذیری"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">ترتیب نمایش</label>
+              <input
+                type="number"
+                name="sort_order"
+                value={10}
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div class="flex items-center justify-between pt-2 sm:col-span-2">
+              <label class="inline-flex items-center gap-2 text-xs font-bold text-ink">
+                <input
+                  type="checkbox"
+                  name="is_active"
+                  value="1"
+                  checked
+                  class="h-4 w-4 rounded border-line text-brand"
+                />
+                <span>بنر بلافاصله فعال باشد</span>
+              </label>
+
+              <button
+                type="submit"
+                class="rounded-xl bg-brand px-5 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+              >
+                + ایجاد بنر تبلیغاتی
+              </button>
+            </div>
+          </form>
+
+          {recentMedia.length > 0 && (
+            <div class="mt-6 border-t border-line pt-4">
+              <p class="mb-2 text-xs font-bold text-muted">
+                کلید تصاویر اخیر در کتابخانه رسانه (برای کپی سریع):
+              </p>
+              <div class="flex flex-wrap gap-2">
+                {recentMedia.slice(0, 8).map((m) => (
+                  <div class="flex items-center gap-2 rounded-lg border border-line bg-paper px-2.5 py-1 text-[11px]">
+                    <img
+                      src={mediaUrl(m.image_key, imageBaseUrl)}
+                      alt={m.original_name}
+                      class="h-6 w-6 rounded object-cover"
+                    />
+                    <code dir="ltr" class="font-mono text-ink">{m.image_key}</code>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <!-- فهرست بنرهای موجود -->
+        <section class="flex flex-col gap-4">
+          <h2 class="text-base font-extrabold text-ink">بنرهای ثبت‌شده ({toPersianDigits(banners.length)})</h2>
+          {banners.map((b) => (
+            <div class="rounded-2xl border border-line bg-surface p-5">
+              <form
+                method="POST"
+                action="/api/admin/homepage"
+                enctype="multipart/form-data"
+                class="grid grid-cols-1 gap-4 sm:grid-cols-2"
+              >
+                <input type="hidden" name="_action" value="update_banner" />
+                <input type="hidden" name="_tab" value="banners" />
+                <input type="hidden" name="public_id" value={b.public_id} />
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">عنوان بنر *</label>
+                  <input
+                    type="text"
+                    name="title"
+                    value={b.title}
+                    required
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">زیرعنوان</label>
+                  <input
+                    type="text"
+                    name="subtitle"
+                    value={b.subtitle ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label class="mb-1 block text-xs font-bold text-ink">توضیحات</label>
+                  <textarea
+                    name="description"
+                    rows={2}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  >{b.description ?? ''}</textarea>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">نشان (Badge)</label>
+                  <input
+                    type="text"
+                    name="badge_text"
+                    value={b.badge_text ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">تم رنگی</label>
+                  <select
+                    name="accent_theme"
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  >
+                    <option value="violet" selected={b.accent_theme === 'violet'}>بنفش الکتریک (Violet)</option>
+                    <option value="turquoise" selected={b.accent_theme === 'turquoise'}>فیروزه‌ای (Turquoise)</option>
+                    <option value="coral" selected={b.accent_theme === 'coral'}>مرجانی (Coral Pink)</option>
+                    <option value="amber" selected={b.accent_theme === 'amber'}>کهربایی (Warm Amber)</option>
+                    <option value="navy" selected={b.accent_theme === 'navy'}>سرمه‌ای تیره (Deep Navy)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">متن دکمه</label>
+                  <input
+                    type="text"
+                    name="cta_text"
+                    value={b.cta_text ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">لینک مقصد *</label>
+                  <input
+                    type="text"
+                    name="cta_href"
+                    dir="ltr"
+                    value={b.cta_href}
+                    required
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">کلید یا فایل تصویر دسکتاپ</label>
+                  <input
+                    type="file"
+                    name="desktop_image_file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    class="mb-1.5 block w-full text-xs text-muted"
+                  />
+                  <input
+                    type="text"
+                    name="desktop_image_key"
+                    dir="ltr"
+                    value={b.desktop_image_key ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-1.5 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">کلید یا فایل تصویر موبایل</label>
+                  <input
+                    type="file"
+                    name="mobile_image_file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    class="mb-1.5 block w-full text-xs text-muted"
+                  />
+                  <input
+                    type="text"
+                    name="mobile_image_key"
+                    dir="ltr"
+                    value={b.mobile_image_key ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-1.5 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">زمان شروع (ISO)</label>
+                  <input
+                    type="text"
+                    name="start_at"
+                    dir="ltr"
+                    value={b.start_at ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">زمان پایان (ISO)</label>
+                  <input
+                    type="text"
+                    name="end_at"
+                    dir="ltr"
+                    value={b.end_at ?? ''}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">متن جایگزین (Alt Text)</label>
+                  <input
+                    type="text"
+                    name="alt_text"
+                    value={b.alt_text}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">ترتیب نمایش</label>
+                  <input
+                    type="number"
+                    name="sort_order"
+                    value={b.sort_order}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div class="flex flex-wrap items-center justify-between gap-3 pt-2 sm:col-span-2">
+                  <label class="inline-flex items-center gap-2 text-xs font-bold text-ink">
+                    <input
+                      type="checkbox"
+                      name="is_active"
+                      value="1"
+                      checked={b.is_active === 1}
+                      class="h-4 w-4 rounded border-line text-brand"
+                    />
+                    <span>بنر فعال باشد</span>
+                  </label>
+
+                  <button
+                    type="submit"
+                    class="rounded-xl bg-brand px-4 py-2 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                  >
+                    ذخیره تغییرات بنر
+                  </button>
+                </div>
+              </form>
+
+              <form
+                method="POST"
+                action="/api/admin/homepage"
+                data-confirm-message={`آیا از حذف بنر «${b.title}» مطمئن هستید؟`}
+                class="mt-3 flex justify-end border-t border-line pt-3"
+              >
+                <input type="hidden" name="_action" value="delete_banner" />
+                <input type="hidden" name="_tab" value="banners" />
+                <input type="hidden" name="public_id" value={b.public_id} />
+                <button
+                  type="submit"
+                  class="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-danger hover:bg-danger/10"
+                >
+                  حذف این بنر
+                </button>
+              </form>
+            </div>
+          ))}
+        </section>
+      </div>
+    )
+  }
+
+  {
+    activeTab === 'faqs' && (
+      <div class="flex flex-col gap-8">
+        <section class="rounded-2xl border border-line bg-surface p-6">
+          <h2 class="text-base font-extrabold text-ink">افزودن پرسش متداول جدید</h2>
+          <form method="POST" action="/api/admin/homepage" class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <input type="hidden" name="_action" value="create_faq" />
+            <input type="hidden" name="_tab" value="faqs" />
+
+            <div class="sm:col-span-2">
+              <label class="mb-1 block text-xs font-bold text-ink">متن پرسش *</label>
+              <input
+                type="text"
+                name="question"
+                required
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div class="sm:col-span-2">
+              <label class="mb-1 block text-xs font-bold text-ink">متن پاسخ *</label>
+              <textarea
+                name="answer"
+                rows={3}
+                required
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">دسته‌بندی موضوعی</label>
+              <select
+                name="category"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+              >
+                <option value="general">عمومی</option>
+                <option value="delivery">تحویل سفارش</option>
+                <option value="payment">پرداخت</option>
+                <option value="security">امنیت حساب</option>
+                <option value="tracking">پیگیری سفارش</option>
+                <option value="wallet">کیف پول</option>
+              </select>
+            </div>
+
+            <div>
+              <label class="mb-1 block text-xs font-bold text-ink">ترتیب نمایش</label>
+              <input
+                type="number"
+                name="sort_order"
+                value={10}
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+              />
+            </div>
+
+            <div class="flex items-center justify-between sm:col-span-2">
+              <label class="inline-flex items-center gap-2 text-xs font-bold text-ink">
+                <input
+                  type="checkbox"
+                  name="is_active"
+                  value="1"
+                  checked
+                  class="h-4 w-4 rounded border-line text-brand"
+                />
+                <span>نمایش در صفحه اصلی</span>
+              </label>
+
+              <button
+                type="submit"
+                class="rounded-xl bg-brand px-5 py-2 text-xs font-bold text-on-brand hover:bg-brand-hover"
+              >
+                + افزودن پرسش متداول
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="flex flex-col gap-4">
+          <h2 class="text-base font-extrabold text-ink">پرسش‌های متداول ثبت‌شده</h2>
+          {faqs.map((faq) => (
+            <div class="rounded-2xl border border-line bg-surface p-5">
+              <form method="POST" action="/api/admin/homepage" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <input type="hidden" name="_action" value="update_faq" />
+                <input type="hidden" name="_tab" value="faqs" />
+                <input type="hidden" name="public_id" value={faq.public_id} />
+
+                <div class="sm:col-span-2">
+                  <label class="mb-1 block text-xs font-bold text-ink">پرسش</label>
+                  <input
+                    type="text"
+                    name="question"
+                    value={faq.question}
+                    required
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  />
+                </div>
+
+                <div class="sm:col-span-2">
+                  <label class="mb-1 block text-xs font-bold text-ink">پاسخ</label>
+                  <textarea
+                    name="answer"
+                    rows={3}
+                    required
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  >{faq.answer}</textarea>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">دسته‌بندی</label>
+                  <select
+                    name="category"
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+                  >
+                    <option value="general" selected={faq.category === 'general'}>عمومی</option>
+                    <option value="delivery" selected={faq.category === 'delivery'}>تحویل سفارش</option>
+                    <option value="payment" selected={faq.category === 'payment'}>پرداخت</option>
+                    <option value="security" selected={faq.category === 'security'}>امنیت حساب</option>
+                    <option value="tracking" selected={faq.category === 'tracking'}>پیگیری سفارش</option>
+                    <option value="wallet" selected={faq.category === 'wallet'}>کیف پول</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">ترتیب نمایش</label>
+                  <input
+                    type="number"
+                    name="sort_order"
+                    value={faq.sort_order}
+                    class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+                  />
+                </div>
+
+                <div class="flex items-center justify-between pt-2 sm:col-span-2">
+                  <label class="inline-flex items-center gap-2 text-xs font-bold text-ink">
+                    <input
+                      type="checkbox"
+                      name="is_active"
+                      value="1"
+                      checked={faq.is_active === 1}
+                      class="h-4 w-4 rounded border-line text-brand"
+                    />
+                    <span>فعال</span>
+                  </label>
+                  <button
+                    type="submit"
+                    class="rounded-xl bg-brand px-4 py-2 text-xs font-bold text-on-brand hover:bg-brand-hover"
+                  >
+                    ذخیره پرسش
+                  </button>
+                </div>
+              </form>
+
+              <form
+                method="POST"
+                action="/api/admin/homepage"
+                data-confirm-message="آیا از حذف این پرسش متداول مطمئن هستید؟"
+                class="mt-2 flex justify-end border-t border-line pt-2"
+              >
+                <input type="hidden" name="_action" value="delete_faq" />
+                <input type="hidden" name="_tab" value="faqs" />
+                <input type="hidden" name="public_id" value={faq.public_id} />
+                <button type="submit" class="text-xs font-semibold text-danger hover:underline">
+                  حذف پرسش
+                </button>
+              </form>
+            </div>
+          ))}
+        </section>
+      </div>
+    )
+  }
+
+  {
+    activeTab === 'reviews' && (
+      <section class="rounded-2xl border border-line bg-surface p-6">
+        <h2 class="text-base font-extrabold text-ink">مدیریت و تایید دیدگاه‌های مشتریان واقعی</h2>
+        <p class="mt-1 text-xs text-muted">
+          گرگیفت+ هرگز دیدگاه جعلی نمایش نمی‌دهد. فقط دیدگاه‌های واقعی ثبت‌شده توسط مشتریان که توسط مدیر تایید شوند در صفحه اصلی نمایش داده می‌شوند.
+        </p>
+
+        {reviews.length === 0 ? (
+          <div class="mt-6 rounded-xl border border-dashed border-line bg-paper p-8 text-center text-xs text-muted">
+            هنوز دیدگاهی توسط مشتریان ثبت نشده است. در صورت عدم وجود دیدگاه تاییدشده، بخش دیدگاه‌ها در صفحه اصلی به‌صورت خودکار پنهان می‌شود.
+          </div>
+        ) : (
+          <div class="mt-5 flex flex-col gap-3">
+            {reviews.map((rev) => (
+              <div class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line bg-paper p-4">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold text-ink">{rev.customer_name}</span>
+                    <span class="gg-numeric rounded bg-amber/15 px-2 py-0.5 text-[11px] font-bold text-amber">
+                      ★ {toPersianDigits(rev.rating)}
+                    </span>
+                    <span
+                      class={`rounded px-2 py-0.5 text-[11px] font-bold ${
+                        rev.is_approved === 1
+                          ? 'bg-brand-soft text-brand-fg'
+                          : 'bg-surface-elevated text-faint'
+                      }`}
+                    >
+                      {rev.is_approved === 1 ? 'تاییدشده' : 'در انتظار بررسی'}
+                    </span>
+                  </div>
+                  <p class="mt-2 text-xs text-muted">{rev.comment}</p>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <form method="POST" action="/api/admin/homepage">
+                    <input type="hidden" name="_action" value="moderate_review" />
+                    <input type="hidden" name="_tab" value="reviews" />
+                    <input type="hidden" name="public_id" value={rev.public_id} />
+                    <input
+                      type="hidden"
+                      name="operation"
+                      value={rev.is_approved === 1 ? 'unapprove' : 'approve'}
+                    />
+                    <button
+                      type="submit"
+                      class="rounded-lg bg-brand px-3 py-1.5 text-xs font-bold text-on-brand"
+                    >
+                      {rev.is_approved === 1 ? 'لغو انتشار' : 'تایید و انتشار'}
+                    </button>
+                  </form>
+
+                  <form
+                    method="POST"
+                    action="/api/admin/homepage"
+                    data-confirm-message={`دیدگاه «${rev.customer_name}» حذف شود؟`}
+                  >
+                    <input type="hidden" name="_action" value="moderate_review" />
+                    <input type="hidden" name="_tab" value="reviews" />
+                    <input type="hidden" name="public_id" value={rev.public_id} />
+                    <input type="hidden" name="operation" value="delete" />
+                    <button
+                      type="submit"
+                      class="rounded-lg border border-line px-3 py-1.5 text-xs font-semibold text-danger"
+                    >
+                      حذف
+                    </button>
+                  </form>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    )
+  }
+
+  {
+    activeTab === 'footer' && (
+      <section class="rounded-2xl border border-line bg-surface p-6">
+        <h2 class="text-base font-extrabold text-ink">تنظیمات فوتر، اطلاعات تماس و پشتیبانی</h2>
+        <form method="POST" action="/api/admin/homepage" class="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <input type="hidden" name="_action" value="update_footer" />
+          <input type="hidden" name="_tab" value="footer" />
+
+          <div class="sm:col-span-2">
+            <label class="mb-1 block text-xs font-bold text-ink">توضیحات معرفی برند در فوتر</label>
+            <textarea
+              name="description"
+              rows={3}
+              class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+            >{footerConfig.description}</textarea>
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="mb-1 block text-xs font-bold text-ink">یادداشت شفافیت تحویل و اعتماد</label>
+            <textarea
+              name="trustNote"
+              rows={2}
+              class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+            >{footerConfig.trustNote}</textarea>
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-bold text-ink">ساعات پاسخگویی پشتیبانی</label>
+            <input
+              type="text"
+              name="supportHours"
+              value={footerConfig.supportHours}
+              class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-bold text-ink">تلفن پشتیبانی</label>
+            <input
+              type="text"
+              name="supportPhone"
+              value={footerConfig.supportPhone}
+              class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-bold text-ink">ایمیل پشتیبانی</label>
+            <input
+              type="text"
+              name="supportEmail"
+              dir="ltr"
+              value={footerConfig.supportEmail}
+              class="w-full rounded-lg border border-line bg-paper px-3 py-2 font-mono text-xs text-ink"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-bold text-ink">متن کپی‌رایت</label>
+            <input
+              type="text"
+              name="copyrightText"
+              value={footerConfig.copyrightText}
+              class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink"
+            />
+          </div>
+
+          <div class="flex justify-end pt-2 sm:col-span-2">
+            <button
+              type="submit"
+              class="rounded-xl bg-brand px-6 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+            >
+              ذخیره اطلاعات فوتر
+            </button>
+          </div>
+        </form>
+      </section>
+    )
+  }
+</AdminLayout>

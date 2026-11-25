@@ -41,6 +41,19 @@ import { purgeStockProductCache } from '../../features/cache/purge';
 import { lifecycleActive } from '../../features/digitalDelivery/rollout.ts';
 import { mintLightningOrder } from '../../features/payments/lightning-provider';
 import { getLightningBackend } from '../../features/payments/lightning';
+import { listProductCheckoutFields } from '../../features/products/customFieldsDb';
+import { validateCustomerInputs, type NormalizedCustomerInput } from '../../features/products/customFields';
+import {
+  getCartLineInputForProduct,
+  getCartSession,
+  getOrCreateCartSession,
+  saveCartLineInputs,
+} from '../../features/cart/inputsDb';
+import { clearCart } from '../../features/cart/cart';
+import { getVerifiedCustomer } from '../../features/auth/customer';
+import { applyWalletMutation, getOrCreateWalletByCustomerId } from '../../features/wallet/db';
+import { createPaymentTransaction } from '../../features/payments/transactionsDb';
+import { recordPaidWebhookOrder } from '../../features/orders/recordWebhook';
 
 export const prerender = false;
 
@@ -133,22 +146,22 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
   if (productIdRaw != null && String(productIdRaw).trim() !== '' && !productPublicId) {
     return new Response('Invalid product id (expected a prod_… public ID).', { status: 400 });
   }
+  let buyNowCartInputId: string | null = null;
   if (productPublicId) {
     const product = await getProductByPublicId(env.DB, productPublicId);
-    if (!product || !product.active) {
+    if (!product || !product.active || !product.public_id) {
       return new Response('Product unavailable', { status: 404 });
     }
-    // Express "Buy now" — resolve variant + extras right here so it checks out
-    // WITHOUT the cart (works even when the cart is switched off).
+    // Express "Buy now" — resolve variant + extras + custom fields without the cart.
     const variants = await listVariants(env.DB, product.id);
     let variant: ProductVariant | null = null;
     if (variants.length > 0) {
       const wantedVariant = parsePublicId(form.get('variant_id'), 'variant');
       variant = wantedVariant ? (variants.find((v) => v.public_id === wantedVariant) ?? null) : null;
       if (!variant) {
-        const label = product.variant_label || 'option';
+        const label = product.variant_label || 'گزینه';
         return redirect(
-          `/products/${product.slug}?error=${encodeURIComponent(`Please choose a ${label}.`)}`,
+          `/products/${product.slug}?error=${encodeURIComponent(`لطفاً ${label} را انتخاب کنید.`)}`,
           303,
         );
       }
@@ -160,6 +173,42 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
     const extras = extraPublicIds.length
       ? await getExtrasByPublicIds(env.DB, product.id, extraPublicIds)
       : [];
+
+    const checkoutFields = await listProductCheckoutFields(env.DB, product.id);
+    let customerInputs: NormalizedCustomerInput[] = [];
+    const passedInputId = parsePublicId(form.get('cart_input_id'), 'cartInput');
+    const existingCartSession = getCartSession(cookies);
+    if (passedInputId && existingCartSession) {
+      const stored = await getCartLineInputForProduct(
+        env.DB,
+        existingCartSession,
+        passedInputId,
+        product.public_id,
+      );
+      if (stored) {
+        const recheck = validateCustomerInputs(
+          checkoutFields,
+          Object.fromEntries(stored.map((item) => [item.key, item.value])),
+        );
+        if (!recheck.ok) {
+          return redirect(`/products/${product.slug}?error=${encodeURIComponent(recheck.error)}`, 303);
+        }
+        customerInputs = recheck.values;
+        buyNowCartInputId = passedInputId;
+      }
+    }
+    if (customerInputs.length === 0 && checkoutFields.some((f) => f.is_active === 1)) {
+      const validation = validateCustomerInputs(checkoutFields, form);
+      if (!validation.ok) {
+        return redirect(`/products/${product.slug}?error=${encodeURIComponent(validation.error)}`, 303);
+      }
+      customerInputs = validation.values;
+      if (customerInputs.length > 0) {
+        const sid = getOrCreateCartSession(cookies, url.protocol === 'https:');
+        buyNowCartInputId = await saveCartLineInputs(env.DB, sid, product.public_id, customerInputs);
+      }
+    }
+
     lines = [
       {
         product,
@@ -171,12 +220,27 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
         unitPriceCents: lineUnitPriceCents(product.price_cents, variant, extras),
         availableStock: variant ? variant.stock : product.stock,
         variantId: variant?.id ?? null,
+        ...(customerInputs.length > 0 ? { customerInputs } : {}),
       },
     ];
     cancelUrl = `${origin}/products/${product.slug}?canceled=1`;
     errorPath = `/products/${product.slug}`;
   } else {
-    const { lines: cartLines } = await resolveCart(env.DB, readCart(cookies));
+    const cartSession = getCartSession(cookies);
+    const { lines: cartLines } = await resolveCart(env.DB, readCart(cookies), cartSession);
+    for (const l of cartLines) {
+      const fields = await listProductCheckoutFields(env.DB, l.product.id);
+      if (fields.some((f) => f.is_active === 1)) {
+        const asRecord = Object.fromEntries((l.customerInputs ?? []).map((x) => [x.key, x.value]));
+        const check = validateCustomerInputs(fields, asRecord);
+        if (!check.ok) {
+          return redirect(
+            `/cart?error=${encodeURIComponent(`اطلاعات سفارش برای «${l.product.name}» ناقص است: ${check.error}`)}`,
+            303,
+          );
+        }
+      }
+    }
     lines = cartLines.map((l) => ({
       product: l.product,
       qty: l.qty,
@@ -188,14 +252,16 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
       unitPriceCents: l.unitPriceCents,
       availableStock: l.availableStock,
       variantId: l.variant?.id ?? null,
+      ...(l.customerInputs && l.customerInputs.length > 0 ? { customerInputs: l.customerInputs } : {}),
     }));
     cancelUrl = `${origin}/cart?canceled=1`;
   }
 
   if (lines.length === 0) return redirect('/cart', 303);
 
-  // Don't oversell — check the variant's stock (or the product's), not the base.
-  const short = lines.find((l) => l.availableStock < l.qty);
+  // Digital products (requires_shipping === 0) never block on stock <= 0; only
+  // physical items enforce stock availability here.
+  const short = lines.find((l) => l.product.requires_shipping === 1 && l.availableStock < l.qty);
   if (short) {
     const msg =
       short.availableStock <= 0
@@ -254,20 +320,144 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
         const xid = parsePublicId(ex, 'extra');
         if (xid) params.append('extra', xid);
       }
+      if (buyNowCartInputId) params.set('cart_input_id', buyNowCartInputId);
     }
     return redirect(`/checkout?${params}`, 303);
   }
 
+  const lineCurr = lines[0]?.product.currency?.toLowerCase();
+  const storeCurrency =
+    lineCurr === 'irt' || lineCurr === 'irr' ? lineCurr : cfg.currency;
+
+  const subtotalCents = lines.reduce((s, l) => s + l.unitPriceCents * l.qty, 0);
+  const verifiedCustomer = await getVerifiedCustomer(cookies);
+
+  // Instant Wallet Payment branch (no external gateway redirect)
+  if (selected === 'wallet') {
+    if (!verifiedCustomer) {
+      return redirect(
+        `/account/login?redirect=${encodeURIComponent(errorPath)}&error=${encodeURIComponent('برای پرداخت از طریق کیف پول، لطفاً ابتدا وارد حساب کاربری خود شوید.')}`,
+        303,
+      );
+    }
+
+    const wallet = await getOrCreateWalletByCustomerId(
+      env.DB,
+      verifiedCustomer.id,
+      storeCurrency,
+    );
+    if (wallet.balance < subtotalCents) {
+      return redirect(
+        `${errorPath}?error=${encodeURIComponent('موجودی کیف پول شما برای پرداخت این سفارش کافی نیست. لطفاً ابتدا کیف پول خود را شارژ نمایید.')}`,
+        303,
+      );
+    }
+
+    const { publicId, accessToken } = await claimOrderIdentity(env.DB);
+    const items = reservationItems(lines);
+    const reserved = await reserveInventory(
+      env.DB,
+      publicId,
+      items,
+      reservationTtlSeconds('demo'),
+      'wallet',
+      purgeStockProductCache,
+    );
+    if (!reserved) {
+      await deleteGuestAccessIfUnsettled(env.DB, publicId);
+      return redirect(
+        `${errorPath}?error=${encodeURIComponent('موجودی یکی از آیتم‌ها به پایان رسیده است.')}`,
+        303,
+      );
+    }
+
+    const mutation = await applyWalletMutation(env.DB, {
+      customerId: verifiedCustomer.id,
+      type: 'ORDER_DEBIT',
+      positiveAmount: subtotalCents,
+      idempotencyKey: `order_debit:${publicId}`,
+      referenceType: 'order',
+      referenceId: publicId,
+      reason: `پرداخت سفارش ${publicId}`,
+      actorType: 'customer',
+      actorId: verifiedCustomer.email,
+    });
+
+    if (!mutation.ok) {
+      await releaseInventoryReservation(env.DB, publicId, purgeStockProductCache);
+      await deleteGuestAccessIfUnsettled(env.DB, publicId);
+      return redirect(
+        `${errorPath}?error=${encodeURIComponent(mutation.error)}`,
+        303,
+      );
+    }
+
+    try {
+      await createPaymentTransaction(env.DB, {
+        targetType: 'order',
+        targetPublicId: publicId,
+        customerId: verifiedCustomer.id,
+        customerEmail: verifiedCustomer.email,
+        method: 'wallet',
+        amount: subtotalCents,
+        currency: wallet.currency,
+        status: 'VERIFIED',
+        refId: mutation.transaction.public_id,
+        idempotencyKey: `order:wallet:${publicId}`,
+        payload: { accessToken },
+      });
+
+      const hasPhysical = lines.some((l) => l.product.requires_shipping === 1);
+      await recordPaidWebhookOrder(
+        {
+          type: 'wallet.paid',
+          order: {
+            publicId,
+            reservationId: publicId,
+            providerSessionId: mutation.transaction.public_id,
+            providerPaymentId: mutation.transaction.public_id,
+            email: verifiedCustomer.email,
+            amountTotalCents: subtotalCents,
+            currency: wallet.currency,
+            deliveryMethod: hasPhysical ? 'shipping' : null,
+            shippingCents: 0,
+            shippingLabel: null,
+            shippingWeightGrams: null,
+            shippingAddress: null,
+            items,
+          },
+        },
+        origin,
+        'wallet',
+        settings,
+      );
+
+      await env.DB
+        .prepare(
+          `UPDATE orders
+              SET customer_id = COALESCE(customer_id, ?),
+                  payment_status = 'VERIFIED'
+            WHERE public_id = ?`,
+        )
+        .bind(verifiedCustomer.id, publicId)
+        .run();
+    } catch (err) {
+      console.error('[GarGift+] Wallet order settlement error:', err);
+      throw err;
+    }
+
+    if (!productPublicId) {
+      clearCart(cookies);
+    }
+    return redirect(`${origin}/order/${accessToken}`, 303);
+  }
+
   const provider = await getPaymentProvider(selected);
-  // Single store currency: charge every line in it (Stripe can't mix currencies
-  // in one session). New products already default to this; legacy rows are coerced.
-  const storeCurrency = cfg.currency;
 
   // Shipping (when enabled): rates come from the shared zone calculator. Stripe
   // Checkout shows a STATIC list (it collects the address itself, after this), so
   // it gets the primary zone's options; zone-accurate per-address shipping is the
   // own-checkout (Lightning) path's job — Stripe can't recompute mid-session.
-  const subtotalCents = lines.reduce((s, l) => s + l.unitPriceCents * l.qty, 0);
   const shipCalc = createConfigRatesCalculator(effectiveShipping);
   // The shopper pre-selects a destination on the cart (defaulted, editable), so
   // Stripe gets that zone's rates instead of always the first zone's. Stripe still
@@ -398,13 +588,22 @@ export const POST: APIRoute = async ({ request, cookies, url, redirect }) => {
       allowPromotionCodes: settings.discountsEnabled ?? cfg.discounts.enabled,
       automaticTax: settings.taxEnabled ?? cfg.tax.enabled,
       orderItemsJson: JSON.stringify(
-        lines.map((l) => ({ id: l.product.id, q: l.qty, n: l.name, p: l.unitPriceCents, v: l.variantId })),
+        lines.map((l) => ({
+          id: l.product.id,
+          q: l.qty,
+          n: l.name,
+          p: l.unitPriceCents,
+          v: l.variantId,
+          ti: l.product.requires_shipping === 1,
+          ...(l.customerInputs && l.customerInputs.length > 0 ? { ci: l.customerInputs } : {}),
+        })),
       ),
       // Provider metadata stays bounded (and NEVER carries the access token);
       // the cart snapshot is held in D1.
       metadata: {
         public_id: publicId,
         reservation_id: publicId,
+        ...(verifiedCustomer ? { customer_id: String(verifiedCustomer.id), customer_email: verifiedCustomer.email } : {}),
       },
       accessToken,
     });
@@ -554,7 +753,11 @@ async function handleJsonCheckout(request: Request, url: URL): Promise<Response>
             error: `"${slug}" requires a valid "variant_id" (${product.variant_label || 'option'}).`,
             product_id: product.public_id,
             slug,
-            variants: variants.map((v) => ({ id: v.public_id, label: v.label, in_stock: v.stock > 0 })),
+            variants: variants.map((v) => ({
+              id: v.public_id,
+              label: v.label,
+              in_stock: product.requires_shipping === 1 ? v.stock > 0 : v.active === 1,
+            })),
           },
           400,
         );
@@ -581,8 +784,29 @@ async function handleJsonCheckout(request: Request, url: URL): Promise<Response>
       extras = wantExtras.length ? await getExtrasByPublicIds(env.DB, product.id, wantExtras) : [];
     }
 
+    const rawInputs = (r as { customer_inputs?: unknown }).customer_inputs;
+    if (rawInputs !== undefined && (typeof rawInputs !== 'object' || rawInputs === null || Array.isArray(rawInputs))) {
+      return cjson({ error: '"customer_inputs" must be an object mapping field keys to values.' }, 400);
+    }
+    const checkoutFields = await listProductCheckoutFields(env.DB, product.id);
+    const inputCheck = validateCustomerInputs(
+      checkoutFields,
+      (rawInputs as Record<string, unknown> | undefined) ?? {},
+    );
+    if (!inputCheck.ok) {
+      return cjson(
+        {
+          error: inputCheck.error,
+          field_errors: inputCheck.fieldErrors,
+          product_id: product.public_id,
+          slug,
+        },
+        400,
+      );
+    }
+
     const availableStock = variant ? variant.stock : product.stock;
-    if (availableStock < qty) {
+    if (product.requires_shipping === 1 && availableStock < qty) {
       const label = variant ? `${product.name} — ${variant.label}` : product.name;
       return cjson(
         {
@@ -607,6 +831,7 @@ async function handleJsonCheckout(request: Request, url: URL): Promise<Response>
       variantId: variant?.id ?? null,
       variant,
       extras,
+      ...(inputCheck.values.length > 0 ? { customerInputs: inputCheck.values } : {}),
     });
   }
 
@@ -792,7 +1017,15 @@ async function handleJsonCheckout(request: Request, url: URL): Promise<Response>
         shippingWeightGrams: inAppQuote.shipmentWeightGrams,
         deliveryMethod: chosen.pickup ? 'pickup' : 'shipping',
         itemsJson: JSON.stringify(
-          lines.map((l) => ({ id: l.product.id, v: l.variantId, q: l.qty, n: l.name, p: l.unitPriceCents })),
+          lines.map((l) => ({
+            id: l.product.id,
+            v: l.variantId,
+            q: l.qty,
+            n: l.name,
+            p: l.unitPriceCents,
+            ti: l.product.requires_shipping === 1,
+            ...(l.customerInputs && l.customerInputs.length > 0 ? { ci: l.customerInputs } : {}),
+          })),
         ),
         email: shipTo.email,
         shippingAddress: {
@@ -908,7 +1141,15 @@ async function handleJsonCheckout(request: Request, url: URL): Promise<Response>
       allowPromotionCodes: jsonSettings.discountsEnabled ?? cfg.discounts.enabled,
       automaticTax: jsonSettings.taxEnabled ?? cfg.tax.enabled,
       orderItemsJson: JSON.stringify(
-        lines.map((l) => ({ id: l.product.id, q: l.qty, n: l.name, p: l.unitPriceCents, v: l.variantId })),
+        lines.map((l) => ({
+          id: l.product.id,
+          q: l.qty,
+          n: l.name,
+          p: l.unitPriceCents,
+          v: l.variantId,
+          ti: l.product.requires_shipping === 1,
+          ...(l.customerInputs && l.customerInputs.length > 0 ? { ci: l.customerInputs } : {}),
+        })),
       ),
       metadata: {
         public_id: publicId,

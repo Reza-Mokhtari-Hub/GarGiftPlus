@@ -1,132 +1,550 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminSalesChart from '../../components/admin/AdminSalesChart.astro';
 import { formatPrice, getConfig } from '../../config';
-import { countAllProducts, lowStockProducts } from '../../features/products/db';
-import { listOrders, orderStats, dailyOrderTotals } from '../../features/orders/db';
-import { countCustomers } from '../../features/customers/db';
 import { orderReference } from '../../features/orders/number';
-import RevenueChart from '../../components/RevenueChart.astro';
+import {
+  parseGranularity,
+  parseTimeframe,
+  timeframeLabel,
+  type DashboardTimeframe,
+} from '../../features/admin/dashboardMetrics';
+import { loadDashboardOverview } from '../../features/admin/dashboardDb';
+import { formatJalaliDateTime, formatRelativeTime, toPersianDigits } from '../../lib/format';
 
 // First-run onboarding: bounce to the setup wizard until it's been completed.
-// (settings is populated by middleware; absent/incomplete → wizard.)
 if (!Astro.locals.settings?.setupComplete) return Astro.redirect('/admin/setup', 302);
 
-const stats = await orderStats(env.DB);
-const productCount = await countAllProducts(env.DB);
-const customerCount = await countCustomers(env.DB);
-const daily = await dailyOrderTotals(env.DB, 14);
-const recent = await listOrders(env.DB, 5);
-const lowStock = await lowStockProducts(env.DB, 5, 8);
+const timeframe = parseTimeframe(Astro.url.searchParams.get('tf'));
+const granularity = parseGranularity(Astro.url.searchParams.get('g'));
+const currency = getConfig().currency;
 const onCfg = getConfig().orderNumber;
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
 
-const cards = [
-  {
-    label: 'Net revenue',
-    value: formatPrice(stats.revenue_cents),
-    sub: stats.refunded_cents > 0 ? `${formatPrice(stats.refunded_cents)} refunded` : null,
-  },
-  { label: 'Orders', value: String(stats.count), sub: null },
-  { label: 'Products', value: String(productCount), sub: null },
-  { label: 'Customers', value: String(customerCount), sub: null },
+const overview = await loadDashboardOverview(env.DB, { timeframe, granularity });
+const { kpis, series, topProducts, paymentMix, recentOrders, recentAudits, recentEmailFailures } =
+  overview;
+
+const totalAttention =
+  kpis.pendingReceiptsCount +
+  kpis.unfulfilledCount +
+  kpis.inProgressCount +
+  kpis.openTicketsCount;
+
+const totalMethodRevenue = Math.max(
+  1,
+  paymentMix.reduce((sum, item) => sum + Math.max(0, item.net_revenue), 0),
+);
+
+const METHOD_LABELS: Record<string, string> = {
+  wallet: 'کیف پول GarGift+',
+  bank_transfer: 'کارت‌به‌کارت بانکی',
+  zarinpal: 'درگاه زرین‌پال',
+  zibal: 'درگاه زیبال',
+  stripe: 'کارت بین‌المللی',
+  lightning: 'لایتنینگ',
+  opennode: 'بیت‌کوین (OpenNode)',
+  demo: 'سفارش تستی',
+  unknown: 'نامشخص',
+};
+
+const STATUS_LABELS: Record<string, { label: string; cls: string }> = {
+  paid: { label: 'پرداخت‌شده', cls: 'gg-status-success' },
+  pending: { label: 'در انتظار پرداخت', cls: 'gg-status-warning' },
+  refunded: { label: 'مستردشده', cls: 'gg-status-error' },
+};
+
+const FULFILLMENT_LABELS: Record<string, { label: string; cls: string }> = {
+  fulfilled: { label: 'تحویل‌شده', cls: 'gg-status-success' },
+  partially_fulfilled: { label: 'تحویل جزئی', cls: 'gg-status-info' },
+  ready_for_delivery: { label: 'آماده تحویل', cls: 'gg-status-info' },
+  processing: { label: 'در حال پردازش', cls: 'gg-status-warning' },
+  unfulfilled: { label: 'در انتظار تحویل', cls: 'gg-status-warning' },
+  cancelled: { label: 'لغوشده', cls: 'gg-status-error' },
+};
+
+const TIMEFRAMES: { key: DashboardTimeframe; label: string }[] = [
+  { key: 'today', label: 'امروز' },
+  { key: '7d', label: '۷ روز' },
+  { key: '30d', label: '۳۰ روز' },
+  { key: '90d', label: '۹۰ روز' },
 ];
+
+const netRevenueHint =
+  kpis.refundedTotal > 0
+    ? `ناخالص: ${formatPrice(kpis.grossRevenue, currency)} · مستردی: ${formatPrice(kpis.refundedTotal, currency)}`
+    : `کل فروش تاییدشده در ${timeframeLabel(timeframe)}`;
+
+const aovHint = `میانگین سبد خرید: ${formatPrice(kpis.averageOrderValue, currency)}`;
+const attentionHint =
+  totalAttention > 0
+    ? `${toPersianDigits(kpis.pendingReceiptsCount)} فیش · ${toPersianDigits(kpis.unfulfilledCount + kpis.inProgressCount)} تحویل · ${toPersianDigits(kpis.openTicketsCount)} تیکت`
+    : 'تمام صف‌های عملیاتی به‌روز هستند';
 ---
 
-<AdminLayout title="Dashboard" active="dashboard">
-  <h1 class="mb-8 font-serif text-3xl tracking-tight">Dashboard</h1>
+<AdminLayout
+  title="داشبورد مدیریت"
+  active="dashboard"
+  requiredPermission="dashboard.view"
+  breadcrumbs={[{ label: 'داشبورد' }]}
+>
+  <AdminPageHeader
+    title="مرکز کنترل عملیات GarGift+"
+    subtitle={`گزارش زنده شاخص‌های فروش، تحویل سفارش‌ها و وضعیت مالی (${timeframeLabel(timeframe)})`}
+    badge="نمای زنده D1"
+  >
+    <div slot="actions" class="flex flex-wrap items-center gap-2">
+      <div class="flex items-center gap-1 rounded-xl border border-line bg-surface p-1 text-xs">
+        {
+          TIMEFRAMES.map((tf) => (
+            <a
+              href={`/admin?tf=${tf.key}&g=${granularity}`}
+              class={`rounded-lg px-3 py-1.5 font-semibold transition ${
+                timeframe === tf.key
+                  ? 'bg-brand text-on-brand shadow-xs'
+                  : 'text-muted hover:text-ink'
+              }`}
+            >
+              {tf.label}
+            </a>
+          ))
+        }
+      </div>
+      <a href="/admin/fulfillment" class="gg-admin-btn-primary text-xs">
+        میز کار تحویل
+      </a>
+      <a href="/admin/reports" class="gg-admin-btn-secondary text-xs">
+        گزارش‌های تحلیلی
+      </a>
+    </div>
+  </AdminPageHeader>
 
-  <div class="mb-12 grid grid-cols-2 gap-4 sm:grid-cols-4">
-    {
-      cards.map((c) => (
-        <div class="rounded-lg border border-line p-5">
-          <p class="text-xs uppercase tracking-widest text-gray-400">{c.label}</p>
-          <p class="mt-2 font-serif text-2xl tabular-nums">{c.value}</p>
-          {c.sub && <p class="mt-1 text-xs tabular-nums text-gray-400">{c.sub}</p>}
+  {/* ردیف KPI اصلی */}
+  <section class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <AdminKpiCard
+      label={`درآمد خالص (${timeframeLabel(timeframe)})`}
+      value={formatPrice(kpis.netRevenue, currency)}
+      hint={netRevenueHint}
+      href="/admin/reports"
+      tone="violet"
+    >
+      <svg slot="icon" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 18 9 11.25l4.306 4.306a11.95 11.95 0 0 1 5.814-5.518l2.74-1.22m0 0-5.94-2.281m5.94 2.28-2.28 5.941" />
+      </svg>
+    </AdminKpiCard>
+
+    <AdminKpiCard
+      label="سفارش‌های تاییدشده"
+      value={`${toPersianDigits(kpis.paidOrdersCount)} سفارش`}
+      hint={aovHint}
+      href="/admin/orders"
+      tone="turquoise"
+    >
+      <svg slot="icon" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5V6a3.75 3.75 0 1 0-7.5 0v4.5m11.356-1.993 1.263 12c.07.665-.45 1.243-1.119 1.243H4.25a1.125 1.125 0 0 1-1.12-1.243l1.264-12A1.125 1.125 0 0 1 5.513 7.5h12.974c.576 0 1.059.435 1.119 1.007Z" />
+      </svg>
+    </AdminKpiCard>
+
+    <AdminKpiCard
+      label="موارد نیازمند بررسی"
+      value={`${toPersianDigits(totalAttention)} مورد`}
+      hint={attentionHint}
+      href={kpis.pendingReceiptsCount > 0 ? '/admin/receipts?status=pending_review' : '/admin/fulfillment'}
+      tone={totalAttention > 0 ? 'amber' : 'turquoise'}
+    >
+      <svg slot="icon" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+      </svg>
+    </AdminKpiCard>
+
+    <AdminKpiCard
+      label="موجودی کل کیف پول‌ها"
+      value={formatPrice(kpis.totalWalletLiability, currency)}
+      hint={`${toPersianDigits(kpis.activeCustomersCount)} مشتری فعال از ${toPersianDigits(kpis.totalCustomersCount)}`}
+      href="/admin/wallets"
+      tone="coral"
+    >
+      <svg slot="icon" class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12v6a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18v-6Zm0 0V8.25A2.25 2.25 0 0 0 18.75 6H5.25A2.25 2.25 0 0 0 3 8.25V12" />
+      </svg>
+    </AdminKpiCard>
+  </section>
+
+  {/* نوار آمار کاتالوگ و سلامت سیستم */}
+  <section class="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <a href="/admin/products" class="gg-admin-card flex items-center justify-between px-4 py-3 hover:border-brand/50">
+      <div>
+        <p class="text-[11px] text-muted">محصولات فعال / کل</p>
+        <p class="mt-0.5 text-sm font-bold text-ink">
+          {toPersianDigits(kpis.activeProductsCount)} / {toPersianDigits(kpis.totalProductsCount)}
+        </p>
+      </div>
+      <span class="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-semibold text-brand-fg">کاتالوگ</span>
+    </a>
+
+    <a href="/admin/receipts?status=pending_review" class="gg-admin-card flex items-center justify-between px-4 py-3 hover:border-amber/50">
+      <div>
+        <p class="text-[11px] text-muted">فیش بانکی منتظر تایید</p>
+        <p class="mt-0.5 text-sm font-bold text-ink">{toPersianDigits(kpis.pendingReceiptsCount)} فیش</p>
+      </div>
+      <span class={`rounded-lg px-2 py-1 text-[11px] font-semibold ${kpis.pendingReceiptsCount > 0 ? 'gg-status-warning' : 'gg-status-success'}`}>
+        مالی
+      </span>
+    </a>
+
+    <a href="/admin/emails?state=dead" class="gg-admin-card flex items-center justify-between px-4 py-3 hover:border-coral/50">
+      <div>
+        <p class="text-[11px] text-muted">خطای ارسال ایمیل</p>
+        <p class="mt-0.5 text-sm font-bold text-ink">{toPersianDigits(kpis.failedEmailsCount)} مورد</p>
+      </div>
+      <span class={`rounded-lg px-2 py-1 text-[11px] font-semibold ${kpis.failedEmailsCount > 0 ? 'gg-status-error' : 'gg-status-success'}`}>
+        صف ایمیل
+      </span>
+    </a>
+
+    <a href="/admin/tickets?status=open" class="gg-admin-card flex items-center justify-between px-4 py-3 hover:border-accent/50">
+      <div>
+        <p class="text-[11px] text-muted">تیکت‌های باز مشتریان</p>
+        <p class="mt-0.5 text-sm font-bold text-ink">{toPersianDigits(kpis.openTicketsCount)} تیکت</p>
+      </div>
+      <span class="rounded-lg bg-brand-soft px-2 py-1 text-[11px] font-semibold text-brand-fg">پشتیبانی</span>
+    </a>
+  </section>
+
+  {/* نمودار فروش + صف‌های عملیاتی */}
+  <div class="mb-6 grid gap-6 xl:grid-cols-12">
+    <div class="min-w-0 xl:col-span-8">
+      <AdminSalesChart
+        points={series}
+        currency={currency}
+        timeframe={timeframe}
+        granularity={granularity}
+      />
+    </div>
+
+    <aside class="gg-admin-card flex min-w-0 flex-col justify-between p-5 xl:col-span-4">
+      <div>
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-base font-bold text-ink">صف‌های عملیاتی زنده</h2>
+          <span class="rounded-full bg-brand-soft px-2.5 py-0.5 text-[11px] font-semibold text-brand-fg">
+            اقدام سریع
+          </span>
         </div>
-      ))
-    }
-  </div>
 
-  <div class="mb-12 rounded-lg border border-line p-5">
-    <RevenueChart data={daily} />
-  </div>
+        <ul class="space-y-2.5 text-sm">
+          <li>
+            <a
+              href="/admin/fulfillment?status=unfulfilled"
+              class="flex items-center justify-between rounded-xl border border-line bg-paper/70 px-3.5 py-2.5 transition hover:border-brand/50"
+            >
+              <span class="font-medium text-ink">در انتظار تحویل دستی</span>
+              <span class={`rounded-lg px-2.5 py-0.5 text-xs font-bold ${kpis.unfulfilledCount > 0 ? 'gg-status-warning' : 'gg-status-success'}`}>
+                {toPersianDigits(kpis.unfulfilledCount)}
+              </span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="/admin/fulfillment?status=processing"
+              class="flex items-center justify-between rounded-xl border border-line bg-paper/70 px-3.5 py-2.5 transition hover:border-brand/50"
+            >
+              <span class="font-medium text-ink">در حال پردازش / آماده‌سازی</span>
+              <span class="gg-status-info rounded-lg px-2.5 py-0.5 text-xs font-bold">
+                {toPersianDigits(kpis.inProgressCount)}
+              </span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="/admin/receipts?status=pending_review"
+              class="flex items-center justify-between rounded-xl border border-line bg-paper/70 px-3.5 py-2.5 transition hover:border-brand/50"
+            >
+              <span class="font-medium text-ink">فیش‌های کارت‌به‌کارت منتظر بررسی</span>
+              <span class={`rounded-lg px-2.5 py-0.5 text-xs font-bold ${kpis.pendingReceiptsCount > 0 ? 'gg-status-warning' : 'gg-status-success'}`}>
+                {toPersianDigits(kpis.pendingReceiptsCount)}
+              </span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="/admin/tickets?status=open"
+              class="flex items-center justify-between rounded-xl border border-line bg-paper/70 px-3.5 py-2.5 transition hover:border-brand/50"
+            >
+              <span class="font-medium text-ink">تیکت‌های منتظر پاسخ</span>
+              <span class="rounded-lg bg-brand-soft px-2.5 py-0.5 text-xs font-bold text-brand-fg">
+                {toPersianDigits(kpis.openTicketsCount)}
+              </span>
+            </a>
+          </li>
+          <li>
+            <a
+              href="/admin/orders#inventory-exceptions"
+              class="flex items-center justify-between rounded-xl border border-line bg-paper/70 px-3.5 py-2.5 transition hover:border-coral/50"
+            >
+              <span class="font-medium text-ink">مغایرت رزرو موجودی</span>
+              <span class={`rounded-lg px-2.5 py-0.5 text-xs font-bold ${kpis.inventoryExceptionsCount > 0 ? 'gg-status-error' : 'gg-status-success'}`}>
+                {toPersianDigits(kpis.inventoryExceptionsCount)}
+              </span>
+            </a>
+          </li>
+        </ul>
+      </div>
 
-  <div class="grid gap-12 lg:grid-cols-2">
-    <section>
-      <div class="mb-3 flex items-baseline justify-between">
-        <h2 class="text-xs uppercase tracking-widest text-gray-400">Recent orders</h2>
-        <a href="/admin/orders" class="text-xs uppercase tracking-widest text-accent hover:underline">
-          View all
+      <div class="mt-4 grid grid-cols-2 gap-2 border-t border-line pt-4 text-xs">
+        <a href="/admin/products/new" class="gg-admin-btn-secondary justify-center">
+          + محصول جدید
+        </a>
+        <a href="/admin/homepage" class="gg-admin-btn-secondary justify-center">
+          مدیریت صفحه اصلی
         </a>
       </div>
-      <table class="w-full text-left text-sm">
-        <tbody>
-          {
-            recent.map((o) => (
-              <tr class="border-b border-line">
-                <td class="py-2 pr-4">
-                  <a
-                    href={`/admin/orders/${o.public_id}`}
-                    class="text-accent tabular-nums hover:underline"
-                  >
-                    #{orderReference(o.public_id, o.id, onCfg)}
-                  </a>
-                </td>
-                <td class="py-2 pr-4 text-gray-500">{o.email ?? '—'}</td>
-                <td class="py-2 text-right tabular-nums">
-                  {formatPrice(o.amount_total_cents, o.currency)}
-                </td>
-              </tr>
-            ))
-          }
-          {
-            recent.length === 0 && (
-              <tr>
-                <td class="py-6 text-center text-gray-400">No orders yet.</td>
-              </tr>
-            )
-          }
-        </tbody>
-      </table>
-    </section>
+    </aside>
+  </div>
 
-    <section>
-      <div class="mb-3 flex items-baseline justify-between">
-        <h2 class="text-xs uppercase tracking-widest text-gray-400">Low stock</h2>
-        <a
-          href="/admin/products?sort=stock&dir=asc"
-          class="text-xs uppercase tracking-widest text-accent hover:underline"
-        >
-          View all
+  {/* ترکیب روش‌های پرداخت + پرفروش‌ترین محصولات */}
+  <div class="mb-6 grid gap-6 lg:grid-cols-2">
+    <section class="gg-admin-card min-w-0 p-5">
+      <div class="mb-4 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-ink">ترکیب روش‌های پرداخت</h2>
+          <p class="text-xs text-muted">بر اساس درآمد خالص تاییدشده در بازه انتخابی</p>
+        </div>
+        <a href="/admin/payments" class="text-xs font-semibold text-brand-fg hover:underline">
+          تراکنش‌ها ←
         </a>
       </div>
-      <table class="w-full text-left text-sm">
-        <tbody>
-          {
-            lowStock.map((p) => (
-              <tr class="border-b border-line">
-                <td class="py-2 pr-4">
-                  <a href={`/admin/products/${p.public_id}/edit`} class="hover:text-brand">
-                    {p.name}
-                  </a>
-                </td>
-                <td class="py-2 text-right tabular-nums">
-                  <span class={0 >= p.stock ? 'text-red-600' : 'text-amber-700'}>
-                    {p.stock} left
-                  </span>
-                </td>
-              </tr>
-            ))
-          }
-          {
-            lowStock.length === 0 && (
-              <tr>
-                <td class="py-6 text-center text-gray-400">Everything's well-stocked.</td>
-              </tr>
-            )
-          }
-        </tbody>
-      </table>
+      {
+        paymentMix.length === 0 ? (
+          <p class="py-8 text-center text-xs text-muted">تراکنش موفقی در این بازه ثبت نشده است.</p>
+        ) : (
+          <div class="space-y-3">
+            {
+              paymentMix.map((pm) => {
+                const share = Math.max(
+                  0,
+                  Math.min(100, Math.round((Math.max(0, pm.net_revenue) / totalMethodRevenue) * 100)),
+                );
+                return (
+                  <div class="space-y-1.5">
+                    <div class="flex items-center justify-between text-xs">
+                      <span class="font-semibold text-ink">
+                        {METHOD_LABELS[pm.method] ?? pm.method}
+                        <span class="ms-1.5 text-faint">({toPersianDigits(pm.orders)} سفارش)</span>
+                      </span>
+                      <span class="font-bold text-ink">
+                        {formatPrice(pm.net_revenue, currency)}
+                        <span class="ms-1.5 text-[11px] text-faint">({toPersianDigits(share)}٪)</span>
+                      </span>
+                    </div>
+                    <div class="h-2 w-full overflow-hidden rounded-full bg-paper">
+                      <div class="h-full rounded-full bg-brand" style={`width: ${share}%`} />
+                    </div>
+                  </div>
+                );
+              })
+            }
+          </div>
+        )
+      }
     </section>
+
+    <section class="gg-admin-card min-w-0 p-5">
+      <div class="mb-4 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-ink">پرفروش‌ترین محصولات</h2>
+          <p class="text-xs text-muted">مرتب‌سازی بر اساس تعداد واحد فروخته‌شده</p>
+        </div>
+        <a href="/admin/products" class="text-xs font-semibold text-brand-fg hover:underline">
+          کاتالوگ محصولات ←
+        </a>
+      </div>
+      {
+        topProducts.length === 0 ? (
+          <p class="py-8 text-center text-xs text-muted">هنوز فروشی در این بازه ثبت نشده است.</p>
+        ) : (
+          <div class="overflow-x-auto">
+            <table class="gg-admin-table">
+              <thead>
+                <tr>
+                  <th>محصول</th>
+                  <th>تعداد</th>
+                  <th>سفارش</th>
+                  <th class="text-end">فروش ناخالص</th>
+                </tr>
+              </thead>
+              <tbody>
+                {
+                  topProducts.map((tp) => (
+                    <tr>
+                      <td>
+                        {tp.product_public_id ? (
+                          <a href={`/admin/products/${tp.product_public_id}/edit`} class="font-semibold text-ink hover:text-brand-fg">
+                            {tp.name}
+                          </a>
+                        ) : (
+                          <span class="font-semibold text-ink">{tp.name}</span>
+                        )}
+                      </td>
+                      <td class="font-semibold text-brand-fg">{toPersianDigits(tp.units_sold)}</td>
+                      <td class="text-muted">{toPersianDigits(tp.order_count)}</td>
+                      <td class="text-end font-semibold text-ink">{formatPrice(tp.revenue_total, currency)}</td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+    </section>
+  </div>
+
+  {/* آخرین سفارش‌ها + گزارش فعالیت و خطاهای ایمیل */}
+  <div class="grid gap-6 xl:grid-cols-12">
+    <section class="gg-admin-card min-w-0 overflow-hidden p-5 xl:col-span-7">
+      <div class="mb-4 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-ink">آخرین سفارش‌های فروشگاه</h2>
+          <p class="text-xs text-muted">ورود سریع به جزئیات و تحویل هر سفارش</p>
+        </div>
+        <a href="/admin/orders" class="text-xs font-semibold text-brand-fg hover:underline">
+          مشاهده همه ←
+        </a>
+      </div>
+
+      {
+        recentOrders.length === 0 ? (
+          <p class="py-8 text-center text-xs text-muted">هنوز سفارشی ثبت نشده است.</p>
+        ) : (
+          <div class="overflow-x-auto">
+            <table class="gg-admin-table">
+              <thead>
+                <tr>
+                  <th>شماره سفارش</th>
+                  <th>مشتری</th>
+                  <th>وضعیت پرداخت</th>
+                  <th>تحویل</th>
+                  <th>زمان</th>
+                  <th class="text-end">مبلغ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {
+                  recentOrders.map((o) => {
+                    const st = STATUS_LABELS[o.status] ?? { label: o.status, cls: 'gg-status-info' };
+                    const ful =
+                      FULFILLMENT_LABELS[o.fulfillment_status] ?? {
+                        label: o.fulfillment_status,
+                        cls: 'gg-status-warning',
+                      };
+                    return (
+                      <tr>
+                        <td>
+                          <a
+                            href={`/admin/orders/${o.public_id}`}
+                            class="ltr-inline font-mono text-xs font-bold text-brand-fg hover:underline"
+                          >
+                            #{orderReference(o.public_id, o.id, onCfg)}
+                          </a>
+                        </td>
+                        <td class="max-w-[10rem] truncate text-xs text-muted">
+                          <span class="ltr-inline">{o.email ?? '—'}</span>
+                        </td>
+                        <td>
+                          <span class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${st.cls}`}>
+                            {st.label}
+                          </span>
+                        </td>
+                        <td>
+                          <span class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${ful.cls}`}>
+                            {ful.label}
+                          </span>
+                        </td>
+                        <td class="whitespace-nowrap text-[11px] text-faint" title={formatJalaliDateTime(o.created_at, { timeZone })}>
+                          {formatRelativeTime(o.created_at, { timeZone })}
+                        </td>
+                        <td class="text-end font-bold text-ink">
+                          {formatPrice(o.amount_total_cents, o.currency)}
+                        </td>
+                      </tr>
+                    );
+                  })
+                }
+              </tbody>
+            </table>
+          </div>
+        )
+      }
+    </section>
+
+    <div class="min-w-0 space-y-6 xl:col-span-5">
+      <section class="gg-admin-card p-5">
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-base font-bold text-ink">آخرین فعالیت‌های مدیران</h2>
+          <a href="/admin/audit-logs" class="text-xs font-semibold text-brand-fg hover:underline">
+            لاگ کامل ←
+          </a>
+        </div>
+        {
+          recentAudits.length === 0 ? (
+            <p class="py-4 text-center text-xs text-muted">هنوز رویداد مدیریتی ثبت نشده است.</p>
+          ) : (
+            <ul class="space-y-2.5 text-xs">
+              {
+                recentAudits.map((log) => (
+                  <li class="flex items-start justify-between gap-2 rounded-xl border border-line bg-paper/60 px-3 py-2">
+                    <div class="min-w-0">
+                      <p class="truncate font-semibold text-ink">{log.action}</p>
+                      <p class="mt-0.5 truncate text-[11px] text-muted">
+                        توسط <span class="font-medium text-ink">{log.actor}</span>
+                        {log.target_id && (
+                          <span class="ltr-inline ms-1 font-mono text-faint">({log.target_id})</span>
+                        )}
+                      </p>
+                    </div>
+                    <span class="shrink-0 text-[11px] text-faint">
+                      {formatRelativeTime(log.created_at, { timeZone })}
+                    </span>
+                  </li>
+                ))
+              }
+            </ul>
+          )
+        }
+      </section>
+
+      {
+        recentEmailFailures.length > 0 && (
+          <section class="gg-admin-card border-coral/40 p-5">
+            <div class="mb-3 flex items-center justify-between">
+              <h2 class="text-sm font-bold text-coral">خطاهای اخیر ارسال ایمیل (Outbox)</h2>
+              <a href="/admin/emails" class="text-xs font-semibold text-brand-fg hover:underline">
+                مدیریت ایمیل ←
+              </a>
+            </div>
+            <ul class="space-y-2 text-xs">
+              {
+                recentEmailFailures.map((em) => (
+                  <li class="rounded-xl border border-line bg-paper/70 px-3 py-2">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="font-semibold text-ink">
+                        {em.kind} — {em.order_public_id ?? `#${em.order_id}`}
+                      </span>
+                      <span class="gg-status-error rounded px-2 py-0.5 text-[10px] font-bold">
+                        {em.state === 'dead' ? 'متوقف' : 'تلاش مجدد'}
+                      </span>
+                    </div>
+                    {em.last_error && <p class="mt-1 truncate text-[11px] text-muted">{em.last_error}</p>}
+                  </li>
+                ))
+              }
+            </ul>
+          </section>
+        )
+      }
+    </div>
   </div>
 </AdminLayout>

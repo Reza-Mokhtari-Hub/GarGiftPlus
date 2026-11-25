@@ -56,16 +56,18 @@ describe('productFilterClause', () => {
 
   it('binds the search term rather than interpolating it', () => {
     const { where, params } = productFilterClause(parse("q=' OR 1=1--"));
-    expect(where).toBe("WHERE p.name LIKE ? ESCAPE '\\' COLLATE NOCASE");
-    expect(params).toEqual(["%' OR 1=1--%"]);
+    expect(where).toBe(
+      "WHERE (p.name LIKE ? ESCAPE '\\' COLLATE NOCASE OR COALESCE(p.brand, '') LIKE ? ESCAPE '\\' COLLATE NOCASE)",
+    );
+    expect(params).toEqual(["%' OR 1=1--%", "%' OR 1=1--%"]);
   });
 
   it('combines filters with AND', () => {
     const { where, params } = productFilterClause(parse('status=active&stock=out&q=tee'));
     expect(where).toBe(
-      "WHERE p.active = 1 AND (p.stock <= 0) AND p.name LIKE ? ESCAPE '\\' COLLATE NOCASE",
+      "WHERE p.active = 1 AND (p.stock <= 0) AND (p.name LIKE ? ESCAPE '\\' COLLATE NOCASE OR COALESCE(p.brand, '') LIKE ? ESCAPE '\\' COLLATE NOCASE)",
     );
-    expect(params).toEqual(['%tee%']);
+    expect(params).toEqual(['%tee%', '%tee%']);
   });
 
   it('uses the same stock boundaries the badges display', () => {

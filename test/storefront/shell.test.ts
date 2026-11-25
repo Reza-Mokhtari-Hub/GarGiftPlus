@@ -6,6 +6,7 @@ import AltHeader from './fixtures/shell/AltHeader.astro';
 import StoreNav from '../../src/features/storefront/controls/StoreNav.astro';
 import { buildShellModel, type ShellInput } from '../../src/features/storefront/shell';
 import type { MenuItem } from '../../src/features/navigation/db';
+import { fa } from '../../src/i18n/fa';
 
 const menuItem = (text: string, href: string): MenuItem =>
   ({ text, href, available: true }) as MenuItem;
@@ -132,7 +133,7 @@ describe('the store-owned header', () => {
     expect(without).not.toContain('data-nav-disclosure');
     expect(withLinks).toContain('data-nav-disclosure');
     expect(withLinks).toContain('<details');
-    expect(withLinks).toContain('aria-label="Menu"');
+    expect(withLinks).toContain(`aria-label="${fa.navigation.menu}"`);
   });
 
   it('keeps navigation usable without JavaScript', async () => {
@@ -158,7 +159,7 @@ describe('the store-owned header', () => {
     expect(html).toContain('name="q"');
     expect(html).toContain('value="tee"');
     expect(html).toContain('role="search"');
-    expect(html).toContain('aria-label="Search products"');
+    expect(html).toContain(`aria-label="${fa.navigation.searchAriaLabel}"`);
   });
 
   it('renders the announcement link only when one is set', async () => {

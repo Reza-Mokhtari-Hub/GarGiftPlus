@@ -3,45 +3,82 @@ import { env } from 'cloudflare:workers';
 import Layout from '../layouts/Layout.astro';
 import { formatPrice } from '../config';
 import { readCart, resolveCart } from '../features/cart/cart';
+import { getCartSession } from '../features/cart/inputsDb';
 import { shippingFor } from '../features/shipping/effective';
 import { shipmentWeightFor } from '../features/shipping/lines';
 import { stripeDestination } from '../features/shipping/destination';
 import ProductImage from '../features/products/ProductImage.astro';
 import { enabledMethods, isMethodAvailable } from '../features/payments';
 import { catalogPath } from '../features/settings/home';
+import { getVerifiedCustomer } from '../features/auth/customer';
+import { getOrCreateWalletByCustomerId } from '../features/wallet/db';
+import { fa } from '../i18n/fa';
 
 // Cart switched off in Settings → browse-only catalog, no cart page.
 if (!(Astro.locals.settings?.cartEnabled ?? true)) return Astro.redirect('/', 302);
 
-// Show only the methods that can actually take a payment right now — the
-// configured real rails plus the always-on demo, minus any the admin disabled.
-// A fresh deploy with no payment secrets therefore offers demo only; adding a
-// rail's keys makes its button appear automatically (no unconfigured "set this
-// up" buttons facing customers). The first method gets the primary styling.
-const settings = Astro.locals.settings;
-const methods = settings ? enabledMethods(settings) : [];
-const ready = (m: string) => m === "demo" || (!!settings && isMethodAvailable(m as never, settings));
-const firstReady = methods.find(ready);
-const methodRows = methods.map((m) => ({ m, ready: ready(m), primary: m === firstReady }));
-const METHOD: Record<string, { label: string; hint: string; setupHint: string }> = {
-  stripe: { label: 'Pay with card', hint: 'Visa, Mastercard, Apple Pay & more', setupHint: 'Set up card payments' },
-  lightning: { label: 'Pay with Lightning ⚡', hint: 'Instant — from any Lightning wallet', setupHint: 'Set up Lightning' },
-  opennode: { label: 'Pay with Bitcoin', hint: 'On-chain or Lightning (OpenNode)', setupHint: 'Set up OpenNode' },
-  demo: { label: 'Demo checkout', hint: 'Simulated — places a real test order, no charge', setupHint: '' },
-};
+const customer = await getVerifiedCustomer(Astro.cookies);
+const wallet = customer ? await getOrCreateWalletByCustomerId(env.DB, customer.id) : null;
 
 const cart = readCart(Astro.cookies);
-const { lines, subtotalCents } = await resolveCart(env.DB, cart);
+const cartSession = getCartSession(Astro.cookies);
+const { lines, subtotalCents } = await resolveCart(env.DB, cart, cartSession);
 const error = Astro.url.searchParams.get('error');
+const lineCurrency = lines[0]?.product.currency;
 
-// Destination pre-selector for Stripe's hosted checkout: Stripe shows a static
-// rate list set before it knows the address, so let the shopper pick the country
-// here (defaulted to the first, editable) → Stripe gets that zone's rates. The
-// in-app rails collect the address on /checkout, so the selector appears exactly
-// when Stripe is offered at all — not only when it happens to be the default.
-// Effective configuration, not `cfg.shipping` — a saved Admin document owns both
-// the zones and the on/off switch. An all-digital cart never needs a destination,
-// so the selector is also gated on some line actually requiring shipping.
+const settings = Astro.locals.settings;
+const methods = settings ? enabledMethods(settings) : [];
+const ready = (m: string) => m === 'demo' || (!!settings && isMethodAvailable(m as never, settings));
+const firstReady = methods.find(ready);
+const methodRows = methods.map((m) => ({ m, ready: ready(m), primary: m === firstReady }));
+
+const walletHint = customer && wallet
+  ? `موجودی فعلی: ${formatPrice(wallet.balance, wallet.currency)}${wallet.balance < subtotalCents ? ' (نیازمند شارژ)' : ''}`
+  : 'پرداخت آنی با موجودی کیف پول (نیازمند ورود به حساب)';
+
+const METHOD: Record<string, { label: string; hint: string; setupHint: string }> = {
+  wallet: {
+    label: fa.checkout.walletMethodLabel,
+    hint: walletHint,
+    setupHint: 'فعال‌سازی کیف پول',
+  },
+  bank_transfer: {
+    label: fa.checkout.bankTransferMethodLabel,
+    hint: fa.checkout.bankTransferMethodHint,
+    setupHint: 'افزودن شماره کارت مقصد',
+  },
+  zarinpal: {
+    label: fa.checkout.zarinpalMethodLabel,
+    hint: fa.checkout.zarinpalMethodHint,
+    setupHint: 'پیکربندی مرچنت زرین‌پال',
+  },
+  zibal: {
+    label: fa.checkout.zibalMethodLabel,
+    hint: fa.checkout.zibalMethodHint,
+    setupHint: 'پیکربندی مرچنت زیبال',
+  },
+  stripe: {
+    label: fa.checkout.stripeMethodLabel,
+    hint: fa.checkout.stripeMethodHint,
+    setupHint: 'پیکربندی درگاه کارت',
+  },
+  lightning: {
+    label: fa.checkout.lightningMethodLabel,
+    hint: fa.checkout.lightningMethodHint,
+    setupHint: 'پیکربندی لایتنینگ',
+  },
+  opennode: {
+    label: fa.checkout.opennodeMethodLabel,
+    hint: fa.checkout.opennodeMethodHint,
+    setupHint: 'پیکربندی OpenNode',
+  },
+  demo: {
+    label: fa.checkout.demoMethodLabel,
+    hint: fa.checkout.demoMethodHint,
+    setupHint: '',
+  },
+};
+
 const effectiveShipping = shippingFor(settings).config;
 const destination = stripeDestination(
   settings,
@@ -49,16 +86,16 @@ const destination = stripeDestination(
   shipmentWeightFor(lines).shippingRequired,
   Astro.request.headers.get('cf-ipcountry'),
 );
-// The catalog is at / until the home page is pointed elsewhere.
 const shopHref = catalogPath(Astro.locals.settings?.homePage);
+const walletInsufficient = Boolean(customer && wallet && subtotalCents > wallet.balance);
 ---
 
-<Layout title="Cart">
-  <h1 class="mb-10 font-serif text-4xl tracking-tight">Your cart</h1>
+<Layout title={fa.cart.title}>
+  <h1 class="gg-h1 mb-8 text-ink">{fa.cart.title}</h1>
 
   {
     error && (
-      <p class="mb-8 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+      <p class="mb-6 rounded-xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
         {error}
       </p>
     )
@@ -66,24 +103,23 @@ const shopHref = catalogPath(Astro.locals.settings?.homePage);
 
   {
     lines.length === 0 ? (
-      <p class="text-muted">
-        Your cart is empty.{' '}
-        <a href={shopHref} class="border-b border-brand text-brand">
-          Continue shopping
+      <div class="rounded-2xl border border-line bg-surface px-6 py-12 text-center">
+        <p class="text-sm text-muted">{fa.cart.empty}</p>
+        <a
+          href={shopHref}
+          class="mt-4 inline-flex items-center justify-center rounded-xl bg-brand px-5 py-2.5 text-sm font-medium text-on-brand transition hover:bg-brand-hover"
+        >
+          {fa.cart.continueShopping}
         </a>
-        .
-      </p>
+      </div>
     ) : (
       <Fragment>
-        {/* Items — a reflowing list (not a rigid table) so it works on mobile:
-            product takes the row, the qty/total/remove controls wrap below on
-            narrow screens. */}
         <ul class="border-t border-line">
           {lines.map((l) => (
-            <li class="flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-line py-4">
+            <li class="flex flex-wrap items-start gap-x-4 gap-y-3 border-b border-line py-4">
               <a
                 href={`/products/${l.product.slug}`}
-                class="flex min-w-0 flex-1 basis-64 items-center gap-4 hover:text-brand"
+                class="flex min-w-0 flex-1 basis-64 items-start gap-4 hover:text-brand"
               >
                 <ProductImage
                   imageKey={l.product.image_key}
@@ -91,31 +127,49 @@ const shopHref = catalogPath(Astro.locals.settings?.homePage);
                   usage="thumbnail"
                   fade
                   sizes="64px"
-                  class="h-16 w-16 shrink-0 rounded object-cover"
+                  class="h-16 w-16 shrink-0 rounded-xl object-cover"
                 />
-                <span class="min-w-0">
-                  <span class="block truncate">{l.product.name}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate font-semibold text-ink">{l.product.name}</span>
                   {(l.variant || l.extras.length > 0) && (
-                    <span class="block truncate text-xs text-muted">
+                    <span class="mt-0.5 block truncate text-xs text-muted">
                       {[l.variant?.label, ...l.extras.map((e) => e.label)].filter(Boolean).join(' · ')}
                     </span>
                   )}
-                  <span class="block text-xs tabular-nums text-muted">
-                    {formatPrice(l.unitPriceCents)} each
+                  {l.customerInputs && l.customerInputs.length > 0 && (
+                    <dl class="mt-2 space-y-1 rounded-xl border border-line bg-surface/60 px-3 py-2 text-xs">
+                      {l.customerInputs.map((ci) => (
+                        <div class="flex flex-wrap items-baseline gap-2">
+                          <dt class="text-muted">{ci.label}:</dt>
+                          <dd
+                            class={
+                              ci.type === 'email' || ci.type === 'number'
+                                ? 'ltr-inline font-medium text-ink'
+                                : 'font-medium text-ink'
+                            }
+                          >
+                            {ci.value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  <span class="mt-1 block text-xs tabular-nums text-muted">
+                    {formatPrice(l.unitPriceCents, l.product.currency)} · {fa.cart.each}
                   </span>
-                  {l.availableStock <= 0 ? (
-                    <span class="mt-1 block text-xs uppercase tracking-widest text-red-600">
-                      Out of stock
+                  {l.product.requires_shipping === 1 && l.availableStock <= 0 ? (
+                    <span class="mt-1 block text-xs font-medium text-red-500">
+                      {fa.product.unavailable}
                     </span>
-                  ) : l.qty > l.availableStock ? (
-                    <span class="mt-1 block text-xs text-amber-700">
-                      Only {l.availableStock} available
+                  ) : l.product.requires_shipping === 1 && l.qty > l.availableStock ? (
+                    <span class="mt-1 block text-xs font-medium text-amber-600 dark:text-amber-400">
+                      تنها {l.availableStock} عدد موجود است
                     </span>
                   ) : null}
                 </span>
               </a>
 
-              <div class="ml-auto flex items-center gap-4">
+              <div class="ms-auto flex items-center gap-4">
                 <form method="POST" action="/api/cart" class="flex items-center gap-2">
                   <input type="hidden" name="_action" value="update" />
                   <input type="hidden" name="key" value={l.key} />
@@ -125,26 +179,28 @@ const shopHref = catalogPath(Astro.locals.settings?.homePage);
                     min="0"
                     max="99"
                     value={l.qty}
-                    aria-label="Quantity"
-                    class="w-14 border-b border-line bg-transparent py-1 text-center tabular-nums focus:border-brand focus:outline-none"
+                    aria-label={fa.cart.quantity}
+                    class="w-14 rounded-lg border border-line bg-surface py-1 text-center tabular-nums focus:border-brand focus:outline-none"
                   />
                   <button
                     type="submit"
-                    class="text-xs uppercase tracking-widest text-faint hover:text-brand"
+                    class="text-xs font-medium text-faint hover:text-brand"
                   >
-                    Update
+                    {fa.cart.update}
                   </button>
                 </form>
-                <span class="w-20 text-right tabular-nums">{formatPrice(l.lineTotalCents)}</span>
+                <span class="min-w-[5.5rem] text-end font-semibold tabular-nums text-ink">
+                  {formatPrice(l.lineTotalCents, l.product.currency)}
+                </span>
                 <form method="POST" action="/api/cart" class="flex items-center">
                   <input type="hidden" name="_action" value="remove" />
                   <input type="hidden" name="key" value={l.key} />
                   <button
                     type="submit"
-                    aria-label="Remove"
-                    class="text-xs uppercase tracking-widest text-faint hover:text-red-600"
+                    aria-label={fa.cart.remove}
+                    class="text-xs font-medium text-faint hover:text-red-500"
                   >
-                    Remove
+                    {fa.cart.remove}
                   </button>
                 </form>
               </div>
@@ -152,28 +208,35 @@ const shopHref = catalogPath(Astro.locals.settings?.homePage);
           ))}
         </ul>
 
-        {/* Checkout panel — full-width on mobile, right-aligned card on desktop.
-            Subtotal on top, payment methods stacked beneath it. */}
         <div class="mt-10 flex justify-end">
-          <div class="w-full sm:max-w-sm">
+          <div class="w-full rounded-2xl border border-line bg-surface p-5 sm:max-w-sm">
             <div class="flex items-center justify-between">
-              <span class="text-xs uppercase tracking-widest text-muted">Subtotal</span>
-              <span class="text-lg tabular-nums">{formatPrice(subtotalCents)}</span>
+              <span class="text-xs font-medium text-muted">{fa.cart.subtotal}</span>
+              <span class="text-lg font-bold tabular-nums text-ink">{formatPrice(subtotalCents, lineCurrency)}</span>
             </div>
 
+            {walletInsufficient && (
+              <div class="mt-3 flex items-center justify-between rounded-xl border border-brand/30 bg-brand/10 px-3 py-2 text-xs">
+                <span class="text-muted">موجودی کیف پول برای این سبد کافی نیست.</span>
+                <a href="/account/wallet" class="font-bold text-brand hover:underline">
+                  + شارژ کیف پول
+                </a>
+              </div>
+            )}
+
             {methods.length === 0 ? (
-              <p class="mt-4 rounded-lg border border-dashed border-line px-5 py-4 text-center text-sm text-muted">
-                Checkout is currently unavailable.
+              <p class="mt-4 rounded-xl border border-dashed border-line px-5 py-4 text-center text-sm text-muted">
+                {fa.checkout.unavailable}
               </p>
             ) : (
-            <form method="POST" action="/api/checkout" class="mt-4 space-y-2">
+            <form method="POST" action="/api/checkout" class="mt-4 space-y-2.5">
               <input type="hidden" name="source" value="cart" />
               {destination.showSelect && (
-                <label class="mb-2 flex items-center justify-between gap-2 text-xs uppercase tracking-widest text-muted">
-                  Ship to
+                <label class="mb-2 flex items-center justify-between gap-2 text-xs text-muted">
+                  مقصد ارسال
                   <select
                     name="country"
-                    class="rounded-md border border-line px-2 py-1.5 text-sm normal-case tracking-normal text-ink"
+                    class="rounded-lg border border-line bg-paper px-2.5 py-1.5 text-sm text-ink"
                   >
                     {destination.countries.map((c) => (
                       <option value={c} selected={c === destination.defaultCountry}>
@@ -183,48 +246,42 @@ const shopHref = catalogPath(Astro.locals.settings?.homePage);
                   </select>
                 </label>
               )}
-              {/* One choice must STILL be submitted: with the field absent the
-                  server falls back to the raw first zone, which may be exactly the
-                  Stripe-unsupported country the filter removed. */}
               {destination.hiddenOnly && (
                 <input type="hidden" name="country" value={destination.countries[0]} />
               )}
 
-              {/* One control per offered method. Ready (configured/demo) → a submit
-                  whose name/value sends method=<rail>. Unconfigured real rails → a
-                  link to setup instructions (a dashed, muted "set this up" tile). */}
               {methodRows.map(({ m, ready, primary }) =>
                 ready ? (
                   <button
                     type="submit"
                     name="method"
                     value={m}
-                    class={`flex w-full items-center justify-between gap-3 rounded-lg px-5 py-3 text-left transition ${
+                    class={`flex w-full items-center justify-between gap-3 rounded-xl px-5 py-3.5 text-start transition ${
                       primary
                         ? 'bg-brand text-on-brand hover:bg-brand-hover'
-                        : 'border border-line text-muted hover:border-brand'
+                        : 'border border-line text-ink hover:border-brand'
                     }`}
                   >
                     <span>
-                      <span class="block text-sm font-medium">{METHOD[m]?.label ?? m}</span>
-                      <span class={`block text-xs ${primary ? 'text-on-brand/70' : 'text-muted'}`}>
+                      <span class="block text-sm font-semibold">{METHOD[m]?.label ?? m}</span>
+                      <span class={`block text-xs ${primary ? 'text-on-brand/80' : 'text-muted'}`}>
                         {METHOD[m]?.hint ?? ''}
                       </span>
                     </span>
                     <span aria-hidden="true" class={primary ? 'text-on-brand/80' : 'text-faint'}>
-                      &rarr;
+                      &larr;
                     </span>
                   </button>
                 ) : (
                   <a
                     href={`/payment-setup?method=${m}`}
-                    class="flex w-full items-center justify-between gap-3 rounded-lg border border-dashed border-line px-5 py-3 text-left text-faint transition hover:border-brand hover:text-brand"
+                    class="flex w-full items-center justify-between gap-3 rounded-xl border border-dashed border-line px-5 py-3 text-start text-faint transition hover:border-brand hover:text-brand"
                   >
                     <span>
                       <span class="block text-sm font-medium">{METHOD[m]?.label ?? m}</span>
-                      <span class="block text-xs">{METHOD[m]?.setupHint ?? 'Set up'}</span>
+                      <span class="block text-xs">{METHOD[m]?.setupHint ?? ''}</span>
                     </span>
-                    <span aria-hidden="true">&rarr;</span>
+                    <span aria-hidden="true">&larr;</span>
                   </a>
                 ),
               )}

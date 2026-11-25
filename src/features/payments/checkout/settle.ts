@@ -23,8 +23,8 @@ export interface DemoSettleResult {
 }
 
 const DECLINE: Record<string, string> = {
-  insufficient: 'Payment declined — insufficient funds. (Simulated)',
-  decline: 'Payment declined — your card was declined. (Simulated)',
+  insufficient: 'پرداخت رد شد — موجودی کافی نیست. (شبیه‌سازی‌شده)',
+  decline: 'پرداخت توسط کارت رد شد. (شبیه‌سازی‌شده)',
 };
 
 /**
@@ -42,11 +42,11 @@ export async function settleDemoCheckout(
 ): Promise<DemoSettleResult> {
   // Fail closed after the demo window even if a POST slips past the page guard.
   if (pending.expires_at != null && Date.parse(pending.expires_at) <= Date.now()) {
-    return { declined: 'This demo checkout has expired.' };
+    return { declined: 'مهلت پرداخت آزمایشی به پایان رسیده است.' };
   }
   const outcome = String(form.get('outcome') ?? 'approve');
   const email = resolveRequiredOrderEmail(String(form.get('email') ?? ''), pending.email);
-  if (!email) return { declined: 'A valid email is required.' };
+  if (!email) return { declined: 'وارد کردن ایمیل معتبر الزامی است.' };
   if (outcome === 'approve') {
     const order = { ...pendingToPaidOrder(pending), email };
     // pendingToPaidOrder carries settlePaymentHash, so the pending row settles

@@ -15,4 +15,12 @@ import type { DeepPartial, SiteConfig } from './config';
  *
  * Operational switches and integrations belong in Admin → Settings.
  */
-export const storeOverrides: DeepPartial<SiteConfig> = {};
+export const storeOverrides: DeepPartial<SiteConfig> = {
+  storeName: 'GarGift+',
+  currency: 'irt',
+  timeZone: 'Asia/Tehran',
+  features: {
+    accounts: true,
+  },
+};
+

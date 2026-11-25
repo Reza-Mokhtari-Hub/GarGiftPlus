@@ -1,0 +1,368 @@
+---
+import { env } from 'cloudflare:workers';
+import { formatPrice } from '../../../config';
+import { listBankAccounts } from '../bankAccountsDb';
+import { formatCardNumber } from '../bankTransfer';
+import type { PendingPayment } from '../lightning/pending';
+import { listReceiptsForTarget } from '../receiptsDb';
+import { PAYMENT_TX_STATUS_LABELS } from '../transactions';
+import { getLatestPaymentTxForTarget } from '../transactionsDb';
+import { formatJalaliDateTime, toPersianDigits } from '../../../lib/format';
+
+interface Props {
+  pending: PendingPayment;
+  guestToken: string;
+  expired?: boolean;
+  errorMsg?: string | null;
+  successMsg?: string | null;
+}
+
+const {
+  pending,
+  guestToken,
+  expired = false,
+  errorMsg = null,
+  successMsg = null,
+} = Astro.props;
+
+const activeAccounts = await listBankAccounts(env.DB, true);
+const paymentTx = await getLatestPaymentTxForTarget(env.DB, 'order', pending.public_id);
+const receipts = await listReceiptsForTarget(env.DB, 'order', pending.public_id);
+const latestReceipt = receipts[0] ?? null;
+
+type Snap = { id: number; q: number; n: string; p: number };
+let items: Snap[] = [];
+try {
+  items = pending.items ? (JSON.parse(pending.items) as Snap[]) : [];
+} catch {
+  items = [];
+}
+
+const totalFormatted = formatPrice(pending.amount_total_cents, pending.currency);
+const shippingFormatted = pending.shipping_cents
+  ? formatPrice(pending.shipping_cents, pending.currency)
+  : null;
+
+const txStatus = paymentTx?.status ?? 'INITIATED';
+const isUnderReview = txStatus === 'PAYMENT_REVIEW';
+const isRejected = txStatus === 'FAILED' && latestReceipt?.status === 'rejected';
+const canUploadReceipt =
+  !expired && (txStatus === 'INITIATED' || txStatus === 'CREATED' || txStatus === 'FAILED');
+const statusLabel = PAYMENT_TX_STATUS_LABELS[txStatus] ?? txStatus;
+---
+
+<div class="mx-auto max-w-2xl space-y-6">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <p class="text-xs font-semibold text-brand">پرداخت کارت‌به‌کارت و واریز بانکی</p>
+      <h1 class="gg-h1 mt-1 text-ink">تکمیل پرداخت سفارش</h1>
+    </div>
+    <span
+      class={`rounded-lg px-3 py-1.5 text-xs font-semibold ${
+        isUnderReview
+          ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+          : isRejected
+            ? 'bg-red-500/15 text-red-600 dark:text-red-300'
+            : 'bg-brand/15 text-brand'
+      }`}
+    >
+      {statusLabel}
+    </span>
+  </div>
+
+  {
+    errorMsg && (
+      <div class="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-300">
+        {errorMsg}
+      </div>
+    )
+  }
+
+  {
+    successMsg === 'receipt_submitted' && (
+      <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+        فیش واریزی شما با موفقیت بارگذاری شد و در صف بررسی واحد مالی قرار گرفت. پس از تایید کارشناس، سفارش شما وارد مرحله تحویل می‌شود.
+      </div>
+    )
+  }
+
+  {
+    isRejected && latestReceipt?.review_note && (
+      <div class="rounded-xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
+        <p class="font-bold">فیش واریزی قبلی شما تایید نشد:</p>
+        <p class="mt-1">{latestReceipt.review_note}</p>
+        <p class="mt-2 text-xs opacity-90">
+          می‌توانید تصویر واضح‌تر یا فیش واریزی صحیح را مجدداً از طریق فرم زیر ارسال نمایید.
+        </p>
+      </div>
+    )
+  }
+
+  {/* Order summary card */}
+  <section class="rounded-2xl border border-line bg-surface p-5">
+    <div class="flex items-center justify-between border-b border-line pb-3">
+      <h2 class="text-sm font-bold text-ink">خلاصه اقلام سفارش</h2>
+      {paymentTx && (
+        <span class="ltr-inline font-mono text-xs text-muted">{paymentTx.public_id}</span>
+      )}
+    </div>
+    <ul class="divide-y divide-line text-sm">
+      {
+        items.map((it) => (
+          <li class="flex items-center justify-between gap-3 py-3">
+            <span class="min-w-0 truncate font-medium text-ink">
+              {it.n} <span class="text-muted">× {toPersianDigits(it.q)}</span>
+            </span>
+            <span class="shrink-0 font-semibold tabular-nums text-ink">
+              {formatPrice(it.p * it.q, pending.currency)}
+            </span>
+          </li>
+        ))
+      }
+    </ul>
+    {
+      shippingFormatted && (
+        <div class="flex items-center justify-between border-t border-line pt-3 text-xs text-muted">
+          <span>هزینه ارسال</span>
+          <span class="tabular-nums">{shippingFormatted}</span>
+        </div>
+      )
+    }
+    <div class="mt-3 flex items-center justify-between rounded-xl bg-brand/10 px-4 py-3">
+      <span class="text-sm font-bold text-ink">مبلغ قابل واریز دقیق:</span>
+      <span class="text-lg font-extrabold tabular-nums text-brand">{totalFormatted}</span>
+    </div>
+  </section>
+
+  {
+    expired ? (
+      <section class="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-6 text-center">
+        <h2 class="text-base font-bold text-amber-700 dark:text-amber-300">
+          مهلت پرداخت این سفارش به پایان رسیده است
+        </h2>
+        <p class="mt-2 text-sm text-muted">
+          لطفاً به سبد خرید بازگردید و سفارش جدیدی ثبت نمایید.
+        </p>
+        <a
+          href="/cart"
+          class="mt-4 inline-flex items-center justify-center rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand"
+        >
+          بازگشت به سبد خرید
+        </a>
+      </section>
+    ) : (
+      <Fragment>
+        {/* Active Destination Bank Accounts */}
+        <section class="rounded-2xl border border-line bg-surface p-5">
+          <h2 class="text-base font-bold text-ink">۱. واریز وجه به یکی از حساب‌های رسمی GarGift+</h2>
+          <p class="mt-1 text-xs text-muted">
+            مبلغ دقیق <strong class="text-ink">{totalFormatted}</strong> را از طریق کارت‌به‌کارت یا پایا/ساتنا به یکی از حساب‌های زیر واریز نمایید:
+          </p>
+
+          {activeAccounts.length === 0 ? (
+            <p class="mt-4 rounded-xl border border-dashed border-line p-4 text-center text-sm text-muted">
+              در حال حاضر حساب بانکی فعالی ثبت نشده است. لطفاً با پشتیبانی تماس بگیرید.
+            </p>
+          ) : (
+            <div class="mt-4 grid gap-3">
+              {activeAccounts.map((acc) => (
+                <div class="rounded-xl border border-line bg-paper p-4">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span class="text-sm font-bold text-brand">{acc.bank_name}</span>
+                    <span class="text-xs font-semibold text-ink">به نام: {acc.account_holder}</span>
+                  </div>
+                  <div class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface px-3 py-2">
+                    <span class="text-xs text-muted">شماره کارت:</span>
+                    <div class="flex items-center gap-2">
+                      <code class="ltr-inline font-mono text-sm font-bold tracking-wider text-ink">
+                        {formatCardNumber(acc.card_number)}
+                      </code>
+                      <button
+                        type="button"
+                        data-copy-value={acc.card_number}
+                        class="rounded-md border border-line bg-paper px-2 py-1 text-[11px] font-medium text-muted transition hover:border-brand hover:text-brand"
+                      >
+                        کپی
+                      </button>
+                    </div>
+                  </div>
+                  {acc.iban && (
+                    <div class="mt-2 flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
+                      <span class="text-muted">شماره شبا:</span>
+                      <span class="ltr-inline font-mono text-ink">{acc.iban}</span>
+                    </div>
+                  )}
+                  {acc.instructions && (
+                    <p class="mt-2 border-t border-line/60 pt-2 text-xs text-muted">
+                      {acc.instructions}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Step 2: Upload Receipt or Review Status */}
+        {isUnderReview ? (
+          <section class="rounded-2xl border border-amber-500/40 bg-amber-500/10 p-6">
+            <div class="flex items-start gap-3">
+              <span class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/20 text-amber-600 dark:text-amber-300">
+                ⏳
+              </span>
+              <div class="min-w-0 flex-1">
+                <h2 class="text-base font-bold text-ink">
+                  فیش واریزی شما در انتظار بررسی و تایید کارشناس است
+                </h2>
+                <p class="mt-1 text-xs leading-6 text-muted">
+                  تراکنش شما در وضعیت <strong>«در انتظار تایید فیش واریزی» (PAYMENT_REVIEW)</strong> قرار دارد. توجه داشته باشید که صرف ارسال فیش به منزله تایید نهایی پرداخت نیست؛ به محض بررسی و تایید واریز توسط واحد مالی، سفارش شما نهایی و تحویل می‌شود.
+                </p>
+                {latestReceipt && (
+                  <div class="mt-4 rounded-xl border border-line bg-surface p-3 text-xs">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <span class="font-medium text-ink">
+                        زمان ثبت فیش: {formatJalaliDateTime(latestReceipt.created_at)}
+                      </span>
+                      {latestReceipt.tracking_code && (
+                        <span class="ltr-inline font-mono text-muted">
+                          کد پیگیری: {latestReceipt.tracking_code}
+                        </span>
+                      )}
+                    </div>
+                    <div class="mt-2">
+                      <a
+                        href={`/api/account/receipts/${latestReceipt.public_id}/image?token=${encodeURIComponent(guestToken)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-1 font-semibold text-brand hover:underline"
+                      >
+                        مشاهده تصویر فیش ارسالی &larr;
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : (
+          canUploadReceipt &&
+          paymentTx && (
+            <section class="rounded-2xl border border-line bg-surface p-5">
+              <h2 class="text-base font-bold text-ink">۲. بارگذاری تصویر فیش واریزی</h2>
+              <p class="mt-1 text-xs text-muted">
+                پس از انجام واریز، تصویر واضح رسید بانکی یا اسکرین‌شات همراه بانک را بارگذاری نمایید. (فرمت‌های مجاز: JPG، PNG، WebP یا GIF — حداکثر ۵ مگابایت)
+              </p>
+
+              <form
+                method="POST"
+                action={`/pay/${guestToken}`}
+                enctype="multipart/form-data"
+                class="mt-4 space-y-4"
+              >
+                <input type="hidden" name="payment_tx_id" value={paymentTx.public_id} />
+                <input type="hidden" name="order_token" value={guestToken} />
+                <input type="hidden" name="return_url" value={`/pay/${guestToken}`} />
+
+                <div class="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      for="bt-bank-account"
+                      class="mb-1.5 block text-xs font-semibold text-ink"
+                    >
+                      حساب مقصد واریزشده
+                    </label>
+                    <select
+                      id="bt-bank-account"
+                      name="bank_account_id"
+                      class="w-full rounded-xl border border-line bg-paper px-3.5 py-2.5 text-sm text-ink focus:border-brand focus:outline-none"
+                    >
+                      {activeAccounts.map((acc) => (
+                        <option value={acc.public_id}>
+                          {acc.bank_name} — {acc.account_holder}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      for="bt-tracking-code"
+                      class="mb-1.5 block text-xs font-semibold text-ink"
+                    >
+                      شماره پیگیری / ارجاع بانکی (اختیاری)
+                    </label>
+                    <input
+                      id="bt-tracking-code"
+                      name="tracking_code"
+                      type="text"
+                      dir="ltr"
+                      maxlength="80"
+                      placeholder="123456789"
+                      class="ltr-inline w-full rounded-xl border border-line bg-paper px-3.5 py-2.5 font-mono text-sm text-ink focus:border-brand focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label for="bt-receipt-file" class="mb-1.5 block text-xs font-semibold text-ink">
+                    تصویر فیش واریزی <span class="text-red-500">*</span>
+                  </label>
+                  <input
+                    id="bt-receipt-file"
+                    name="receipt"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,image/gif"
+                    required
+                    class="w-full rounded-xl border border-dashed border-line bg-paper px-3.5 py-3 text-xs text-ink file:me-3 file:rounded-lg file:border-0 file:bg-brand/15 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-brand"
+                  />
+                </div>
+
+                <div>
+                  <label for="bt-note" class="mb-1.5 block text-xs font-semibold text-ink">
+                    توضیحات تکمیلی یا چهار رقم آخر کارت مبدا (اختیاری)
+                  </label>
+                  <input
+                    id="bt-note"
+                    name="customer_note"
+                    type="text"
+                    maxlength="250"
+                    placeholder="مثال: واریز از کارت ۶۰۳۷ به نام علی محمدی"
+                    class="w-full rounded-xl border border-line bg-paper px-3.5 py-2.5 text-sm text-ink focus:border-brand focus:outline-none"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  class="inline-flex w-full items-center justify-center rounded-xl bg-brand px-6 py-3.5 text-sm font-bold text-on-brand transition hover:bg-brand-hover"
+                >
+                  ثبت و ارسال فیش واریزی برای بررسی
+                </button>
+              </form>
+            </section>
+          )
+        )}
+      </Fragment>
+    )
+  }
+</div>
+
+<script is:inline>
+  (() => {
+    document.querySelectorAll('[data-copy-value]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const val = btn.getAttribute('data-copy-value') || '';
+        if (!val || !navigator.clipboard) return;
+        try {
+          await navigator.clipboard.writeText(val);
+          const prev = btn.textContent;
+          btn.textContent = 'کپی شد ✓';
+          setTimeout(() => {
+            btn.textContent = prev;
+          }, 1600);
+        } catch {
+          // ignore
+        }
+      });
+    });
+  })();
+</script>

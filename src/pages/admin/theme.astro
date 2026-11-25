@@ -1,0 +1,282 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import { getStoreSettings } from '../../features/settings/db';
+import {
+  CURATED_COLOR_SWATCHES,
+  DEFAULT_THEME_APPEARANCE,
+  parseThemeAppearanceConfig,
+} from '../../features/theme/appearance';
+
+const settings = await getStoreSettings(env.DB);
+const cfg = parseThemeAppearanceConfig(settings.themeAppearanceConfig);
+const msg = Astro.url.searchParams.get('msg');
+const err = Astro.url.searchParams.get('error');
+---
+
+<AdminLayout
+  title="ظاهر و تم فروشگاه"
+  active="theme"
+  requiredPermission="theme.manage"
+  breadcrumbs={[{ label: 'محتوا، ارتباطات و ظاهر' }, { label: 'ظاهر و تم فروشگاه' }]}
+>
+  <AdminPageHeader
+    title="شخصی‌سازی ظاهر، رنگ‌بندی و حالت تاریک/روشن فروشگاه"
+    subtitle="تغییرات با اعتبارسنجی دقیق رنگ‌ها و بدون تولید کد ناامن بلافاصله در قالب فروشگاه (Layout.astro) اعمال می‌شوند"
+    badge={settings.themeAppearanceConfig ? 'سفارشی‌شده' : 'پالت پیش‌فرض GarGift+'}
+  >
+    <a slot="actions" href="/" target="_blank" rel="noopener noreferrer" class="gg-admin-btn-secondary text-xs">
+      مشاهده پیش‌نمایش در فروشگاه ←
+    </a>
+  </AdminPageHeader>
+
+  {msg && <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{msg}</div>}
+  {err && <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{err}</div>}
+
+  <div class="grid gap-6 xl:grid-cols-12">
+    {/* فرم تنظیمات */}
+    <form method="POST" action="/api/admin/theme" class="space-y-6 xl:col-span-7" data-theme-form>
+      <section class="gg-admin-card p-5 space-y-4">
+        <h2 class="text-sm font-bold text-ink">۱. پالت رنگ پیشنهادی و رنگ‌های برند</h2>
+        <div class="grid gap-2.5 sm:grid-cols-2">
+          {CURATED_COLOR_SWATCHES.map((sw) => (
+            <button
+              type="button"
+              data-swatch
+              data-primary={sw.primary}
+              data-secondary={sw.secondary}
+              data-accent={sw.accent}
+              class="flex items-center justify-between rounded-xl border border-line bg-paper px-3.5 py-2.5 text-start text-xs transition hover:border-brand"
+            >
+              <span class="font-semibold text-ink">{sw.label}</span>
+              <span class="flex items-center gap-1">
+                <span class="h-4 w-4 rounded-full border border-black/10" style={`background:${sw.primary}`} />
+                <span class="h-4 w-4 rounded-full border border-black/10" style={`background:${sw.secondary}`} />
+                <span class="h-4 w-4 rounded-full border border-black/10" style={`background:${sw.accent}`} />
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div class="grid gap-4 pt-2 sm:grid-cols-3">
+          <div>
+            <label for="primary-color" class="mb-1 block text-xs font-medium text-muted">رنگ اصلی برند (Primary)</label>
+            <div class="flex items-center gap-2">
+              <input id="primary-color" type="color" name="primary_color" value={cfg.primaryColor} class="h-10 w-12 cursor-pointer rounded-lg border border-line bg-paper p-1" data-color-input="primary" />
+              <span class="ltr-inline font-mono text-xs font-semibold text-ink" data-color-code="primary">{cfg.primaryColor}</span>
+            </div>
+          </div>
+          <div>
+            <label for="secondary-color" class="mb-1 block text-xs font-medium text-muted">رنگ مکمل (Turquoise / Accent)</label>
+            <div class="flex items-center gap-2">
+              <input id="secondary-color" type="color" name="secondary_color" value={cfg.secondaryColor} class="h-10 w-12 cursor-pointer rounded-lg border border-line bg-paper p-1" data-color-input="secondary" />
+              <span class="ltr-inline font-mono text-xs font-semibold text-ink" data-color-code="secondary">{cfg.secondaryColor}</span>
+            </div>
+          </div>
+          <div>
+            <label for="accent-color" class="mb-1 block text-xs font-medium text-muted">رنگ تاکیدی (Coral / Badge)</label>
+            <div class="flex items-center gap-2">
+              <input id="accent-color" type="color" name="accent_color" value={cfg.accentColor} class="h-10 w-12 cursor-pointer rounded-lg border border-line bg-paper p-1" data-color-input="accent" />
+              <span class="ltr-inline font-mono text-xs font-semibold text-ink" data-color-code="accent">{cfg.accentColor}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="gg-admin-card p-5 space-y-4">
+        <h2 class="text-sm font-bold text-ink">۲. تایپوگرافی، انحنای گوشه‌ها و سبک المان‌ها</h2>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label for="font-preset" class="mb-1 block text-xs font-medium text-muted">تنظیم قلم فارسی</label>
+            <select id="font-preset" name="font_preset" class="gg-admin-input text-xs">
+              <option value="vazirmatn" selected={cfg.fontPreset === 'vazirmatn'}>وزیرمتن استاندارد (پیشنهادی)</option>
+              <option value="vazirmatn_tight" selected={cfg.fontPreset === 'vazirmatn_tight'}>وزیرمتن فشرده و مدرن</option>
+              <option value="vazirmatn_mono" selected={cfg.fontPreset === 'vazirmatn_mono'}>وزیرمتن + اعداد مونو فنی</option>
+            </select>
+          </div>
+          <div>
+            <label for="radius-preset" class="mb-1 block text-xs font-medium text-muted">انحنای گوشه کارت‌ها و دکمه‌ها</label>
+            <select id="radius-preset" name="radius_preset" class="gg-admin-input text-xs" data-radius-select>
+              <option value="rounded" selected={cfg.radiusPreset === 'rounded'}>گرد متعادل (پیشنهادی)</option>
+              <option value="balanced" selected={cfg.radiusPreset === 'balanced'}>متوسط کلاسیک</option>
+              <option value="sharp" selected={cfg.radiusPreset === 'sharp'}>کمی تیزتر و رسمی</option>
+              <option value="pill_soft" selected={cfg.radiusPreset === 'pill_soft'}>کپسولی نرم</option>
+            </select>
+          </div>
+          <div>
+            <label for="button-style" class="mb-1 block text-xs font-medium text-muted">سبک دکمه‌های اصلی</label>
+            <select id="button-style" name="button_style" class="gg-admin-input text-xs">
+              <option value="solid_soft" selected={cfg.buttonStyle === 'solid_soft'}>توپر با سایه ملایم</option>
+              <option value="vibrant_gradient" selected={cfg.buttonStyle === 'vibrant_gradient'}>گرادیانت پویا</option>
+              <option value="crisp_outline" selected={cfg.buttonStyle === 'crisp_outline'}>حاشیه‌دار مدرن</option>
+            </select>
+          </div>
+          <div>
+            <label for="card-style" class="mb-1 block text-xs font-medium text-muted">سبک کارت‌های محصول</label>
+            <select id="card-style" name="card_style" class="gg-admin-input text-xs">
+              <option value="elevated" selected={cfg.cardStyle === 'elevated'}>برجسته با سایه نرم</option>
+              <option value="bordered" selected={cfg.cardStyle === 'bordered'}>خط‌کشی‌شده تمیز</option>
+              <option value="glass_soft" selected={cfg.cardStyle === 'glass_soft'}>شیشه‌ای ملایم</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="gg-admin-card p-5 space-y-4">
+        <h2 class="text-sm font-bold text-ink">۳. حالت روشن، تاریک و پیش‌فرض سیستم</h2>
+        <div class="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label for="default-mode" class="mb-1 block text-xs font-medium text-muted">حالت پیش‌فرض بازدیدکننده</label>
+            <select id="default-mode" name="default_mode" class="gg-admin-input text-xs">
+              <option value="system" selected={cfg.defaultMode === 'system'}>هماهنگ با تنظیمات سیستم (System)</option>
+              <option value="light" selected={cfg.defaultMode === 'light'}>حالت روشن (Light)</option>
+              <option value="dark" selected={cfg.defaultMode === 'dark'}>حالت تاریک (Dark)</option>
+            </select>
+          </div>
+          <div class="space-y-2 pt-1 text-xs text-ink">
+            <label class="flex items-center gap-2">
+              <input type="checkbox" name="allow_light_mode" value="1" checked={cfg.allowLightMode} class="accent-brand" />
+              <span>اجازه انتخاب حالت روشن</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" name="allow_dark_mode" value="1" checked={cfg.allowDarkMode} class="accent-brand" />
+              <span>اجازه انتخاب حالت تاریک</span>
+            </label>
+            <label class="flex items-center gap-2">
+              <input type="checkbox" name="allow_system_mode" value="1" checked={cfg.allowSystemMode} class="accent-brand" />
+              <span>اجازه انتخاب حالت خودکار سیستم</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <button type="submit" name="_action" value="save" class="gg-admin-btn-primary text-xs">
+          ذخیره و اعمال در فروشگاه
+        </button>
+        <button
+          type="submit"
+          name="_action"
+          value="reset"
+          data-confirm-message="آیا مطمئن هستید که می‌خواهید تنظیمات ظاهر را به پالت اصلی گرگیفت+ بازگردانید؟"
+          class="gg-admin-btn-secondary text-xs"
+        >
+          بازنشانی به پالت اصلی ({DEFAULT_THEME_APPEARANCE.primaryColor})
+        </button>
+      </div>
+    </form>
+
+    {/* پیش‌نمایش زنده ایزوله */}
+    <aside class="xl:col-span-5">
+      <div class="gg-admin-card sticky top-20 p-5 space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-ink">پیش‌نمایش زنده المان‌های فروشگاه</h2>
+          <div class="flex gap-1 rounded-lg border border-line bg-paper p-0.5 text-[11px]">
+            <button type="button" data-preview-mode="light" class="rounded-md bg-brand px-2.5 py-1 font-semibold text-on-brand">روشن</button>
+            <button type="button" data-preview-mode="dark" class="rounded-md px-2.5 py-1 font-semibold text-muted">تاریک</button>
+          </div>
+        </div>
+
+        <div
+          id="gg-theme-preview"
+          class="rounded-2xl border p-5 transition-colors"
+          style={`--pv-brand:${cfg.primaryColor};--pv-secondary:${cfg.secondaryColor};--pv-accent:${cfg.accentColor};--pv-radius:1rem;background:#f7f5fe;border-color:#e5dff2;color:#30204d;`}
+        >
+          <div class="flex items-center justify-between pb-4">
+            <span class="font-extrabold text-sm">GarGift+ Storefront</span>
+            <span class="rounded-full px-2.5 py-0.5 text-[10px] font-bold text-white" style="background:var(--pv-accent)">
+              پیشنهاد ویژه
+            </span>
+          </div>
+
+          <div
+            data-preview-card
+            class="border p-4 space-y-3"
+            style="border-radius:var(--pv-radius);background:#ffffff;border-color:#e5dff2;"
+          >
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <p class="text-xs opacity-70">اشتراک هوش مصنوعی</p>
+                <h3 class="text-sm font-extrabold">اشتراک یک‌ماهه <span class="ltr-inline">ChatGPT Plus</span></h3>
+              </div>
+              <span class="rounded-lg px-2 py-1 text-[11px] font-bold" style="background:color-mix(in srgb, var(--pv-secondary) 16%, transparent);color:var(--pv-secondary)">
+                تحویل اختصاصی
+              </span>
+            </div>
+            <p class="text-xs opacity-75">فعال‌سازی سریع و قانونی روی ایمیل شخصی شما با پشتیبانی کامل.</p>
+            <div class="flex items-center justify-between pt-2">
+              <span class="text-sm font-black">۱٬۴۵۰٬۰۰۰ تومان</span>
+              <span
+                data-preview-btn
+                class="inline-flex items-center px-4 py-2 text-xs font-bold text-white"
+                style="background:var(--pv-brand);border-radius:calc(var(--pv-radius) - 0.2rem)"
+              >
+                افزودن به سبد خرید
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script is:inline>
+    (() => {
+      const preview = document.getElementById('gg-theme-preview');
+      const card = preview?.querySelector('[data-preview-card]');
+      const form = document.querySelector('[data-theme-form]');
+      if (!preview || !form) return;
+
+      const setColor = (kind, hex) => {
+        if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return;
+        const upper = hex.toUpperCase();
+        const codeEl = form.querySelector(`[data-color-code="${kind}"]`);
+        const inputEl = form.querySelector(`[data-color-input="${kind}"]`);
+        if (codeEl) codeEl.textContent = upper;
+        if (inputEl && inputEl.value.toUpperCase() !== upper) inputEl.value = upper;
+        const cssVar = kind === 'primary' ? '--pv-brand' : kind === 'secondary' ? '--pv-secondary' : '--pv-accent';
+        preview.style.setProperty(cssVar, upper);
+      };
+
+      form.querySelectorAll('[data-color-input]').forEach((input) => {
+        input.addEventListener('input', () => {
+          setColor(input.getAttribute('data-color-input'), input.value);
+        });
+      });
+
+      form.querySelectorAll('[data-swatch]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          setColor('primary', btn.getAttribute('data-primary'));
+          setColor('secondary', btn.getAttribute('data-secondary'));
+          setColor('accent', btn.getAttribute('data-accent'));
+        });
+      });
+
+      const radiusSel = form.querySelector('[data-radius-select]');
+      radiusSel?.addEventListener('change', () => {
+        const map = { sharp: '0.6rem', balanced: '0.9rem', rounded: '1.125rem', pill_soft: '1.5rem' };
+        preview.style.setProperty('--pv-radius', map[radiusSel.value] || '1rem');
+      });
+
+      document.querySelectorAll('[data-preview-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const isDark = btn.getAttribute('data-preview-mode') === 'dark';
+          preview.style.background = isDark ? '#17142b' : '#f7f5fe';
+          preview.style.borderColor = isDark ? '#393253' : '#e5dff2';
+          preview.style.color = isDark ? '#f8f6ff' : '#30204d';
+          if (card) {
+            card.style.background = isDark ? '#252044' : '#ffffff';
+            card.style.borderColor = isDark ? '#393253' : '#e5dff2';
+          }
+          document.querySelectorAll('[data-preview-mode]').forEach((other) => {
+            const active = other === btn;
+            other.classList.toggle('bg-brand', active);
+            other.classList.toggle('text-on-brand', active);
+            other.classList.toggle('text-muted', !active);
+          });
+        });
+      });
+    })();
+  </script>
+</AdminLayout>

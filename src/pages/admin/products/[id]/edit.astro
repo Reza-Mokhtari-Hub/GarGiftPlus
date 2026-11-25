@@ -4,6 +4,7 @@ import AdminLayout from '../../../../layouts/AdminLayout.astro';
 import MediaPicker from '../../../../features/media/MediaPicker.astro';
 import ProductForm from '../../../../features/products/ProductForm.astro';
 import { getProductByPublicId, listProductImages } from '../../../../features/products/db';
+import { listProductCheckoutFields } from '../../../../features/products/customFieldsDb';
 import { parsePublicId } from '../../../../features/ids/publicId';
 import { listVariants, listExtras } from '../../../../features/products/variants';
 import {
@@ -12,13 +13,14 @@ import {
   flattenTree,
   categoriesForProduct,
 } from '../../../../features/categories/db';
-import { toMajorUnits, minorUnitsPerMajor, getConfig } from '../../../../config';
+import { toMajorUnits, minorUnitsPerMajor, getConfig, currencyDecimals } from '../../../../config';
 import { productImageSources } from '../../../../features/products/image';
 import { zonesRequireWeight } from '../../../../features/shipping/calculator';
 import { formatWeightValue } from '../../../../features/shipping/weight';
 import { shippingFor } from '../../../../features/shipping/effective';
+import { fa } from '../../../../i18n/fa';
+import { toPersianDigits } from '../../../../lib/format';
 
-// The route param is the prod_ public ID; numeric row ids are not accepted.
 const publicId = parsePublicId(Astro.params.id, 'product');
 const product = publicId ? await getProductByPublicId(env.DB, publicId) : null;
 
@@ -29,13 +31,13 @@ if (!product) {
 const categoryOptions = flattenTree(buildTree(await listCategories(env.DB)));
 const selectedCategoryIds = (await categoriesForProduct(env.DB, product.id)).map((c) => c.id);
 const images = await listProductImages(env.DB, product.id);
+const checkoutFields = await listProductCheckoutFields(env.DB, product.id, true);
 const error = Astro.url.searchParams.get('error');
+const notice = Astro.url.searchParams.get('notice');
 
-// Variants + extras (show all, including any inactive, so the admin sees everything).
 const variants = await listVariants(env.DB, product.id, true);
 const extras = await listExtras(env.DB, product.id, true);
-// The product's main photo — a variant with no specific image falls back to this
-// (so new variants default to showing it rather than an empty box).
+
 const imgBase = getConfig().images.baseUrl;
 const imageDelivery = Astro.locals.settings?.imageDelivery;
 const thumbnailSources = (imageKey: string | null, sizes = '64px') =>
@@ -49,35 +51,64 @@ const imageViews = images.map((image) => ({
   ...image,
   sources: thumbnailSources(image.image_key, '56px'),
 }));
-// Look up a gallery image by id (to render a variant's currently-chosen photo).
 const imageById = new Map(imageViews.map((image) => [image.id, image]));
 const mainPhoto = product.image_key ? thumbnailSources(product.image_key).src : null;
-// Price inputs are major units; step to the currency's smallest unit (0.01 USD, 1 JPY).
+
+const decimals = currencyDecimals(product.currency);
 const priceStep = 1 / minorUnitsPerMajor(product.currency);
-const major = (cents: number) => toMajorUnits(cents, product.currency);
+const major = (cents: number) => toMajorUnits(cents, product.currency).toFixed(decimals);
+const currencyCode = product.currency.toUpperCase();
+const currencyLabel =
+  currencyCode === 'IRT' ? fa.common.toman : currencyCode === 'IRR' ? fa.common.rial : currencyCode;
 const weightUnit = Astro.locals.settings?.weightUnit ?? 'g';
 const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).config);
+const inputFieldCls =
+  'rounded-md border border-line bg-paper px-2.5 py-1.5 text-sm text-ink placeholder:text-faint focus:border-brand focus:outline-none';
 ---
 
-<AdminLayout title={`Edit ${product.name}`} active="products">
-  <a href="/admin/products" class="text-sm text-gray-500 hover:text-brand">&larr; Back to products</a>
-  <div class="mt-4 mb-6 flex items-center justify-between gap-4">
-    <h1 class="text-2xl font-bold">Edit product</h1>
-    <a
-      href={`/products/${product.slug}`}
-      target="_blank"
-      rel="noopener"
-      class="text-sm text-accent hover:underline"
-    >
-      View on store ↗
-    </a>
+<AdminLayout title={`${fa.common.edit}: ${product.name}`} active="products" requiredPermission="products.manage">
+  <a href="/admin/products" class="text-sm font-medium text-faint hover:text-brand-fg">
+    &rarr; {fa.admin.products.backToList}
+  </a>
+
+  <div class="mt-4 mb-6 flex flex-wrap items-center justify-between gap-4">
+    <h1 class="text-2xl font-extrabold text-ink">{fa.admin.products.editTitle}: {product.name}</h1>
+    <div class="flex flex-wrap items-center gap-3">
+      <form method="POST" action={`/api/admin/products/${product.public_id}`}>
+        <input type="hidden" name="_action" value="duplicate" />
+        <button
+          type="submit"
+          class="rounded-lg border border-line bg-surface px-3.5 py-1.5 text-xs font-semibold text-ink hover:border-brand hover:text-brand-fg"
+        >
+          {fa.admin.products.duplicateBtn}
+        </button>
+      </form>
+      <a
+        href={`/products/${product.slug}`}
+        target="_blank"
+        rel="noopener"
+        class="rounded-lg border border-line bg-surface px-3.5 py-1.5 text-xs font-semibold text-brand-fg hover:border-brand"
+      >
+        {fa.admin.products.viewInStore} ↗
+      </a>
+    </div>
   </div>
+
+  {
+    notice && (
+      <div class="gg-status-success mb-6 rounded-lg border px-4 py-3 text-sm font-medium">
+        {notice}
+      </div>
+    )
+  }
+
   <ProductForm
     action={`/api/admin/products/${product.public_id}`}
-    submitLabel="Save changes"
+    submitLabel={fa.admin.products.saveProduct}
     product={product}
     categoryOptions={categoryOptions}
     selectedCategoryIds={selectedCategoryIds}
+    checkoutFields={checkoutFields}
     error={error}
     showImage={false}
     formId="product-form"
@@ -85,17 +116,18 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
     weightRequired={weightRequired}
   />
 
-  <section id="gallery" class="mt-12 scroll-mt-20 border-t border-line pt-8">
+  {/* گالری تصاویر محصول */}
+  <section id="gallery" class="mt-12 max-w-3xl scroll-mt-20 rounded-xl border border-line bg-surface p-5">
     <div class="mb-4 flex items-baseline justify-between gap-3">
-      <h2 class="text-xs uppercase tracking-widest text-gray-400">Images</h2>
-      <span class="text-xs text-gray-400">Changes here save automatically</span>
+      <h2 class="text-sm font-bold text-ink">{fa.admin.products.sectionMedia}</h2>
+      <span class="text-xs text-faint">تغییرات گالری به‌صورت آنی ذخیره می‌شوند</span>
     </div>
 
     <form
       method="POST"
       action={`/api/admin/products/${product.public_id}/images`}
       enctype="multipart/form-data"
-      class="mb-6 flex flex-wrap items-center gap-3"
+      class="mb-5 flex flex-wrap items-center gap-3"
     >
       <input type="hidden" name="_action" value="add" />
       <input
@@ -103,21 +135,18 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
         name="images"
         accept="image/*"
         multiple
-        class="block w-full text-sm text-gray-600 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-brand file:px-4 file:py-2 file:text-xs file:font-medium file:uppercase file:tracking-wider file:text-white hover:file:bg-brand-hover sm:w-auto"
+        class="block w-full text-sm text-muted file:me-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-brand file:px-4 file:py-2 file:text-xs file:font-semibold file:text-on-brand hover:file:bg-brand-hover sm:w-auto"
       />
       <button
         type="submit"
-        class="rounded-md border border-line px-4 py-2 text-xs font-medium uppercase tracking-wider text-gray-700 hover:border-brand hover:text-brand"
+        class="rounded-lg border border-line bg-paper px-4 py-2 text-xs font-semibold text-ink hover:border-brand hover:text-brand-fg"
       >
-        Add images
+        افزودن تصویر
       </button>
     </form>
 
-    {/* Reuse a file already in the library. The picker is outside the upload
-        form above — it posts its own attach request, and a nested form would be
-        invalid HTML. */}
-    <div class="mb-6">
-      <MediaPicker id="product-gallery" label="Choose from Media" />
+    <div class="mb-5">
+      <MediaPicker id="product-gallery" label="انتخاب از کتابخانه رسانه" />
       <form
         method="POST"
         action={`/api/admin/products/${product.public_id}/images`}
@@ -131,14 +160,13 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
 
     {
       images.length > 0 && (
-        <ul data-gallery data-action={`/api/admin/products/${product.public_id}/images`} class="mb-6">
+        <ul data-gallery data-action={`/api/admin/products/${product.public_id}/images`} class="divide-y divide-line">
           {imageViews.map((img) => (
-            <li data-image-id={img.public_id} class="flex items-center gap-4 py-3">
-              {/* Drag handle — the grip icon + grab cursor signal the row is draggable. */}
+            <li data-image-id={img.public_id} class="flex flex-wrap items-center gap-3 py-3 sm:flex-nowrap">
               <span
                 data-handle
                 aria-hidden="true"
-                class="shrink-0 cursor-grab text-gray-300 hover:text-gray-500"
+                class="shrink-0 cursor-grab text-faint hover:text-ink"
               >
                 <svg width="12" height="20" viewBox="0 0 12 20" fill="currentColor">
                   <circle cx="3" cy="4" r="1.5" />
@@ -150,14 +178,12 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
                 </svg>
               </span>
 
-              {/* ↑/↓ stacked vertically in a fixed slot — a hidden arrow keeps its
-                  space (visibility, not display) so the stack stays aligned on every row. */}
-              <div class="flex shrink-0 flex-col text-base leading-none text-gray-400">
+              <div class="flex shrink-0 flex-col text-base leading-none text-faint">
                 <form data-js-action="up" method="POST" action={`/api/admin/products/${product.public_id}/images`}>
                   <input type="hidden" name="_action" value="move" />
                   <input type="hidden" name="direction" value="up" />
                   <input type="hidden" name="image_id" value={img.public_id} />
-                  <button type="submit" data-up aria-label="Move up" class="block px-1 hover:text-brand">
+                  <button type="submit" data-up aria-label="انتقال به بالا" class="block px-1 hover:text-brand-fg">
                     ↑
                   </button>
                 </form>
@@ -165,26 +191,24 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
                   <input type="hidden" name="_action" value="move" />
                   <input type="hidden" name="direction" value="down" />
                   <input type="hidden" name="image_id" value={img.public_id} />
-                  <button type="submit" data-down aria-label="Move down" class="block px-1 hover:text-brand">
+                  <button type="submit" data-down aria-label="انتقال به پایین" class="block px-1 hover:text-brand-fg">
                     ↓
                   </button>
                 </form>
               </div>
 
-              {/* Thumbnail with the Primary badge overlaid, so the badge never shifts
-                  the alt fields out of horizontal alignment. */}
               <div class="relative shrink-0">
                 <img
                   src={img.sources.src}
                   srcset={img.sources.srcset}
                   sizes={img.sources.sizes}
                   alt={img.alt ?? ''}
-                  class="h-14 w-14 rounded object-cover"
+                  class="h-14 w-14 rounded-md object-cover"
                 />
                 <span
                   data-primary-badge
-                  title="Primary image"
-                  class="absolute -left-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-brand text-[11px] text-white ring-2 ring-paper"
+                  title="تصویر اصلی"
+                  class="absolute -top-1.5 -end-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-brand text-[11px] text-on-brand ring-2 ring-surface"
                 >
                   ★
                 </span>
@@ -203,30 +227,30 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
                   name="alt"
                   value={img.alt ?? ''}
                   draggable="false"
-                  placeholder="Alt text — describe the image"
-                  class="w-full border-b border-line bg-transparent py-1 text-sm focus:border-brand focus:outline-none"
+                  placeholder="متن جایگزین تصویر (Alt)"
+                  class="w-full border-b border-line bg-transparent py-1 text-sm text-ink focus:border-brand focus:outline-none"
                 />
                 <button
                   type="submit"
-                  class="shrink-0 text-xs uppercase tracking-widest text-gray-400 hover:text-brand"
+                  class="shrink-0 text-xs font-medium text-faint hover:text-brand-fg"
                 >
-                  Save
+                  {fa.common.save}
                 </button>
               </form>
 
-              <div class="flex shrink-0 items-center gap-3 text-xs uppercase tracking-widest">
+              <div class="flex shrink-0 items-center gap-3 text-xs font-medium">
                 <form data-js-action="primary" method="POST" action={`/api/admin/products/${product.public_id}/images`}>
                   <input type="hidden" name="_action" value="primary" />
                   <input type="hidden" name="image_id" value={img.public_id} />
-                  <button type="submit" data-make-primary class="text-accent hover:underline">
-                    Make primary
+                  <button type="submit" data-make-primary class="text-brand-fg hover:underline">
+                    تصویر اصلی
                   </button>
                 </form>
                 <form data-js-action="delete" method="POST" action={`/api/admin/products/${product.public_id}/images`}>
                   <input type="hidden" name="_action" value="delete" />
                   <input type="hidden" name="image_id" value={img.public_id} />
-                  <button type="submit" class="text-red-600 hover:underline">
-                    Delete
+                  <button type="submit" class="text-red-500 hover:underline">
+                    {fa.common.delete}
                   </button>
                 </form>
               </div>
@@ -237,195 +261,266 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
     }
   </section>
 
-  <section id="options" class="mt-12 scroll-mt-20 border-t border-line pt-8">
+  {/* تنوع‌ها و افزودنی‌ها */}
+  <section id="options" class="mt-10 max-w-3xl scroll-mt-20 rounded-xl border border-line bg-surface p-5">
     <div class="mb-5">
-      <h2 class="text-xs uppercase tracking-widest text-gray-400">Variants &amp; add-ons</h2>
-      <p class="mt-1 max-w-prose text-xs text-gray-500">
-        Optional. <strong class="font-medium text-gray-700">Variants</strong> are pickable options
-        with their own price &amp; stock (e.g. Size) — the buyer chooses one, and the variant becomes
-        the inventory unit. <strong class="font-medium text-gray-700">Add-ons</strong> are checkbox
-        extras that add to the line price (e.g. Gift wrap), with no stock of their own. Everything
-        here saves together with the <strong class="font-medium text-gray-700">Save changes</strong>
-        button at the top.
+      <h2 class="text-sm font-bold text-ink">{fa.admin.products.sectionVariants}</h2>
+      <p class="mt-1 text-xs text-muted">
+        اختیاری. <strong>تنوع‌ها</strong> گزینه‌های قابل انتخاب با قیمت، ریجن، مقدار یا مدت زمان مجزا هستند و
+        <strong>افزودنی‌ها</strong> امکانات اضافی قابل تیک زدن با مابه‌التفاوت قیمت‌اند. همه موارد با دکمه «ذخیره تغییرات» ذخیره می‌شوند.
       </p>
     </div>
 
-    {/* Variant group label (e.g. "Size") — submits with the product form. */}
-    <label class="mb-8 flex max-w-xs flex-col gap-1 text-xs uppercase tracking-widest text-gray-400">
-      Variant group label
+    <label class="mb-6 flex max-w-xs flex-col gap-1 text-xs font-medium text-muted">
+      عنوان گروه تنوع
       <input
         form="product-form"
         type="text"
         name="variant_group_label"
         value={product.variant_label ?? ''}
-        placeholder="e.g. Size, Color"
-        class="w-48 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
+        placeholder="مثال: ریجن و اعتبار، پلن اشتراک"
+        class={inputFieldCls}
       />
     </label>
 
-    {/* Variants — one inline blank row is always present (no-JS can add one per
-        save); "+ Add variant" clones it for adding several at once. All inputs use
-        form="product-form" so they submit with the product's Save changes. */}
-    <h3 class="mb-3 text-sm font-medium">Variants</h3>
-    <div data-variant-rows data-default-price={major(product.price_cents)} class="space-y-3">
+    <h3 class="mb-3 text-sm font-semibold text-ink">تنوع‌های محصول</h3>
+    <div data-variant-rows data-default-price={major(product.price_cents)} class="space-y-4">
       {
         [...variants, null].map((v) => (
-          <div data-variant-row data-blank={v ? undefined : ''} class="flex flex-wrap items-end gap-3 border-b border-line pb-3">
+          <div
+            data-variant-row
+            data-blank={v ? undefined : ''}
+            class="rounded-xl border border-line bg-paper p-3.5 space-y-3"
+          >
             <input form="product-form" type="hidden" name="v_id" value={v?.public_id ?? ''} />
-            {/* Photo (left): a thumbnail button that opens a palette of gallery
-                images. The hidden field carries the chosen id (array-aligned). */}
-            {(() => {
-              const sel = v?.image_id ? imageById.get(v.image_id) : null;
-              return (
-                <div class="relative">
-                  {/* pimg_ public ID of the chosen gallery photo ('' = main). */}
-                  <input form="product-form" type="hidden" name="v_image" value={sel?.public_id ?? ''} data-image-input />
-                  <button
-                    type="button"
-                    data-photo-trigger
-                    aria-label="Choose variant photo"
-                    class="relative block h-14 w-14 shrink-0 overflow-hidden rounded border border-line hover:border-brand"
-                  >
-                    <img
-                      data-photo-preview
-                      src={sel ? sel.sources.src : (mainPhoto ?? undefined)}
-                      alt=""
-                      class:list={['h-full w-full object-cover', !sel && !mainPhoto && 'hidden']}
-                    />
-                    <span
-                      data-photo-empty
-                      class:list={[
-                        'flex h-full w-full items-center justify-center text-center text-[8px] uppercase leading-tight tracking-widest text-gray-400',
-                        (sel || mainPhoto) && 'hidden',
-                      ]}
-                    >
-                      Add photo
-                    </span>
-                  </button>
+            <input form="product-form" type="hidden" name="v_stock" value={String(v?.stock ?? 0)} />
+            <input
+              form="product-form"
+              type="hidden"
+              name="v_active"
+              value={v ? (v.active === 1 ? '1' : '0') : '1'}
+              data-v-active-value
+            />
 
-                  <div
-                    data-palette
-                    class="absolute left-0 top-full z-20 mt-1 hidden w-max max-w-[16rem] rounded-md border border-line bg-paper p-2 shadow-lg"
-                  >
-                    <div class="flex flex-wrap gap-1.5">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-2">
+              <div class="flex items-center gap-2">
+                {(() => {
+                  const sel = v?.image_id ? imageById.get(v.image_id) : null;
+                  return (
+                    <div class="relative">
+                      <input form="product-form" type="hidden" name="v_image" value={sel?.public_id ?? ''} data-image-input />
                       <button
                         type="button"
-                        data-thumb=""
-                        data-src={mainPhoto ?? ''}
-                        aria-pressed={!v?.image_id ? 'true' : 'false'}
-                        title="Use the main product photo"
-                        class:list={[
-                          'relative flex h-12 w-12 items-center justify-center overflow-hidden rounded border border-line text-center text-[8px] uppercase leading-tight tracking-widest text-gray-400 hover:border-brand',
-                          !v?.image_id && 'ring-2 ring-brand',
-                        ]}
+                        data-photo-trigger
+                        aria-label="انتخاب تصویر تنوع"
+                        class="relative block h-11 w-11 shrink-0 overflow-hidden rounded-md border border-line hover:border-brand"
                       >
-                        {mainPhoto ? (
-                          <img src={mainPhoto} alt="" class="h-full w-full object-cover opacity-70" />
-                        ) : null}
-                        <span class="absolute inset-0 flex items-center justify-center bg-white/60">Main</span>
-                      </button>
-                      {imageViews.map((img, idx) => (
-                        <button
-                          type="button"
-                          data-thumb={img.public_id}
-                          data-src={img.sources.src}
-                          aria-pressed={!!v && img.id === v.image_id ? 'true' : 'false'}
-                          title={img.alt?.trim() || `Image ${idx + 1}`}
+                        <img
+                          data-photo-preview
+                          src={sel ? sel.sources.src : (mainPhoto ?? undefined)}
+                          alt=""
+                          class:list={['h-full w-full object-cover', !sel && !mainPhoto && 'hidden']}
+                        />
+                        <span
+                          data-photo-empty
                           class:list={[
-                            'h-12 w-12 overflow-hidden rounded border border-line hover:border-brand',
-                            !!v && img.id === v.image_id && 'ring-2 ring-brand',
+                            'flex h-full w-full items-center justify-center text-center text-[9px] text-faint',
+                            (sel || mainPhoto) && 'hidden',
                           ]}
                         >
-                          <img src={img.sources.src} alt="" class="h-full w-full object-cover" />
-                        </button>
-                      ))}
-                      {images.length === 0 && (
-                        <span class="px-1 py-2 text-[10px] normal-case text-gray-400">
-                          Add gallery images first
+                          تصویر
                         </span>
-                      )}
+                      </button>
+
+                      <div
+                        data-palette
+                        class="absolute start-0 top-full z-20 mt-1 hidden w-max max-w-[16rem] rounded-lg border border-line bg-surface p-2 shadow-lg"
+                      >
+                        <div class="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            data-thumb=""
+                            data-src={mainPhoto ?? ''}
+                            aria-pressed={!v?.image_id ? 'true' : 'false'}
+                            title="تصویر اصلی محصول"
+                            class:list={[
+                              'relative flex h-11 w-11 items-center justify-center overflow-hidden rounded border border-line text-[9px] text-ink hover:border-brand',
+                              !v?.image_id && 'ring-2 ring-brand',
+                            ]}
+                          >
+                            {mainPhoto ? (
+                              <img src={mainPhoto} alt="" class="h-full w-full object-cover opacity-70" />
+                            ) : null}
+                            <span class="absolute inset-0 flex items-center justify-center bg-paper/60 font-semibold">اصلی</span>
+                          </button>
+                          {imageViews.map((img, idx) => (
+                            <button
+                              type="button"
+                              data-thumb={img.public_id}
+                              data-src={img.sources.src}
+                              aria-pressed={!!v && img.id === v.image_id ? 'true' : 'false'}
+                              title={img.alt?.trim() || `تصویر ${toPersianDigits(idx + 1)}`}
+                              class:list={[
+                                'h-11 w-11 overflow-hidden rounded border border-line hover:border-brand',
+                                !!v && img.id === v.image_id && 'ring-2 ring-brand',
+                              ]}
+                            >
+                              <img src={img.sources.src} alt="" class="h-full w-full object-cover" />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              );
-            })()}
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              Label
-              <input
-                form="product-form"
-                type="text"
-                name="v_label"
-                value={v?.label ?? ''}
-                placeholder="e.g. Large"
-                class="w-40 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
-              />
-            </label>
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              Price ({product.currency.toUpperCase()})
-              <input
-                form="product-form"
-                type="number"
-                name="v_price"
-                min="0"
-                step={priceStep}
-                value={v ? major(v.price_cents) : major(product.price_cents)}
-                placeholder="0.00"
-                class="w-28 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm tracking-normal text-gray-900 focus:border-brand focus:outline-none"
-              />
-            </label>
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              Stock
-              <input
-                form="product-form"
-                type="number"
-                name="v_stock"
-                min="0"
-                step="1"
-                value={v ? v.stock : 0}
-                class="w-20 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm tracking-normal text-gray-900 focus:border-brand focus:outline-none"
-              />
-            </label>
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              SKU
-              <input
-                form="product-form"
-                type="text"
-                name="v_sku"
-                value={v?.sku ?? ''}
-                placeholder="optional"
-                class="w-32 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
-              />
-            </label>
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              Weight ({weightUnit})
-              <input
-                form="product-form"
-                type="text"
-                name="v_weight"
-                inputmode="decimal"
-                value={v?.weight_grams != null ? formatWeightValue(v.weight_grams, weightUnit) : ''}
-                placeholder={
-                  product.weight_grams != null
-                    ? formatWeightValue(product.weight_grams, weightUnit)
-                    : 'inherits'
-                }
-                title="Blank inherits the product weight. Enter 0 for a weightless variant."
-                class="w-24 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
-              />
-            </label>
-            {/* Remove: a text link for both new and existing rows. Existing rows
-                carry a hidden checkbox the link checks (→ deleted on save); new
-                rows are just dropped from the DOM. */}
-            {v && (
-              <input form="product-form" type="checkbox" name="v_remove" value={v.public_id} class="hidden" data-remove-mark />
-            )}
-            <button
-              type="button"
-              data-remove-row
-              class="hidden pb-1.5 text-xs uppercase tracking-widest text-red-600 hover:underline"
-            >
-              Remove
-            </button>
+                  );
+                })()}
+                <span class="text-xs font-semibold text-muted">
+                  {v ? v.label : 'تنوع جدید'}
+                </span>
+              </div>
+
+              <div class="flex items-center gap-2 text-xs">
+                <label class="flex items-center gap-1.5 font-medium text-ink">
+                  <input
+                    type="checkbox"
+                    checked={v ? v.active === 1 : true}
+                    data-v-active-toggle
+                    class="h-4 w-4 accent-[var(--gg-brand)]"
+                  />
+                  فعال
+                </label>
+                <button
+                  type="button"
+                  data-v-up
+                  class="rounded border border-line px-2 py-1 text-muted hover:text-ink"
+                  title="انتقال به بالا"
+                >
+                  ▲
+                </button>
+                <button
+                  type="button"
+                  data-v-down
+                  class="rounded border border-line px-2 py-1 text-muted hover:text-ink"
+                  title="انتقال به پایین"
+                >
+                  ▼
+                </button>
+                {v && (
+                  <input form="product-form" type="checkbox" name="v_remove" value={v.public_id} class="hidden" data-remove-mark />
+                )}
+                <button
+                  type="button"
+                  data-remove-row
+                  class="hidden px-2 py-1 text-xs font-medium text-red-500 hover:underline"
+                >
+                  {fa.common.delete}
+                </button>
+              </div>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-4">
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted sm:col-span-2">
+                عنوان تنوع *
+                <input
+                  form="product-form"
+                  type="text"
+                  name="v_label"
+                  value={v?.label ?? ''}
+                  placeholder="مثال: ۱۰ دلاری آمریکا"
+                  class={inputFieldCls}
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                قیمت ({currencyLabel}) *
+                <input
+                  form="product-form"
+                  type="number"
+                  name="v_price"
+                  min="0"
+                  step={priceStep}
+                  value={v ? major(v.price_cents) : major(product.price_cents)}
+                  placeholder="0"
+                  class={`${inputFieldCls} ltr-inline tabular-nums`}
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                قیمت قبلی ({currencyLabel})
+                <input
+                  form="product-form"
+                  type="number"
+                  name="v_compare_price"
+                  min="0"
+                  step={priceStep}
+                  value={v?.compare_price_cents != null && v.compare_price_cents > 0 ? major(v.compare_price_cents) : ''}
+                  placeholder="اختیاری"
+                  class={`${inputFieldCls} ltr-inline tabular-nums`}
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                ریجن / سرور
+                <input
+                  form="product-form"
+                  type="text"
+                  name="v_region"
+                  value={v?.region ?? ''}
+                  placeholder="مثال: آمریکا / گلوبال"
+                  class={inputFieldCls}
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                مقدار / اعتبار
+                <input
+                  form="product-form"
+                  type="text"
+                  name="v_amount"
+                  value={v?.amount_label ?? ''}
+                  placeholder="مثال: 660 UC یا 10$"
+                  class={inputFieldCls}
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                مدت اعتبار / پلن
+                <input
+                  form="product-form"
+                  type="text"
+                  name="v_duration"
+                  value={v?.duration_label ?? ''}
+                  placeholder="مثال: ۱ ماهه"
+                  class={inputFieldCls}
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                کد اختصاصی (SKU)
+                <input
+                  form="product-form"
+                  type="text"
+                  name="v_sku"
+                  value={v?.sku ?? ''}
+                  placeholder="اختیاری"
+                  class={`${inputFieldCls} ltr-inline font-mono`}
+                />
+              </label>
+
+              {product.requires_shipping === 1 && (
+                <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+                  وزن ({weightUnit})
+                  <input
+                    form="product-form"
+                    type="text"
+                    name="v_weight"
+                    inputmode="decimal"
+                    value={v?.weight_grams != null ? formatWeightValue(v.weight_grams, weightUnit) : ''}
+                    placeholder="پیش‌فرض محصول"
+                    class={`${inputFieldCls} ltr-inline`}
+                  />
+                </label>
+              )}
+            </div>
           </div>
         ))
       }
@@ -433,31 +528,30 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
     <button
       type="button"
       data-add-variant
-      class="mt-3 mb-8 hidden rounded-md border border-line px-4 py-2 text-xs font-medium uppercase tracking-wider text-gray-700 hover:border-brand hover:text-brand"
+      class="mt-3 mb-8 hidden rounded-lg border border-line bg-paper px-4 py-2 text-xs font-semibold text-ink hover:border-brand hover:text-brand-fg"
     >
-      + Add variant
+      + افزودن تنوع جدید
     </button>
 
-    {/* Add-ons — same single-save pattern as variants. */}
-    <h3 class="mb-3 text-sm font-medium">Add-ons</h3>
+    <h3 class="mb-3 text-sm font-semibold text-ink">{fa.product.addons}</h3>
     <div data-extra-rows class="space-y-3">
       {
         [...extras, null].map((ex) => (
-          <div data-extra-row data-blank={ex ? undefined : ''} class="flex flex-wrap items-end gap-3 border-b border-line pb-3">
+          <div data-extra-row data-blank={ex ? undefined : ''} class="flex flex-wrap items-end gap-3 rounded-lg border border-line bg-paper p-3">
             <input form="product-form" type="hidden" name="e_id" value={ex?.public_id ?? ''} />
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              Label
+            <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+              عنوان افزودنی
               <input
                 form="product-form"
                 type="text"
                 name="e_label"
                 value={ex?.label ?? ''}
-                placeholder="e.g. Gift wrap"
-                class="w-48 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm normal-case tracking-normal text-gray-900 focus:border-brand focus:outline-none"
+                placeholder="مثال: تحویل فوق‌سریع یا فعال‌سازی کامل"
+                class={`${inputFieldCls} w-56`}
               />
             </label>
-            <label class="flex flex-col gap-1 text-[10px] uppercase tracking-widest text-gray-400">
-              Price delta ({product.currency.toUpperCase()})
+            <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+              مابه‌التفاوت قیمت ({currencyLabel})
               <input
                 form="product-form"
                 type="number"
@@ -465,8 +559,8 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
                 min="0"
                 step={priceStep}
                 value={ex ? major(ex.price_delta_cents) : ''}
-                placeholder="0.00"
-                class="w-28 rounded-md border border-line bg-transparent px-3 py-1.5 text-sm tracking-normal text-gray-900 focus:border-brand focus:outline-none"
+                placeholder="0"
+                class={`${inputFieldCls} w-32 ltr-inline tabular-nums`}
               />
             </label>
             {ex && (
@@ -475,9 +569,9 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
             <button
               type="button"
               data-remove-row
-              class="hidden pb-1.5 text-xs uppercase tracking-widest text-red-600 hover:underline"
+              class="hidden pb-1.5 text-xs font-medium text-red-500 hover:underline"
             >
-              Remove
+              {fa.common.delete}
             </button>
           </div>
         ))
@@ -486,30 +580,25 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
     <button
       type="button"
       data-add-extra
-      class="mt-3 hidden rounded-md border border-line px-4 py-2 text-xs font-medium uppercase tracking-wider text-gray-700 hover:border-brand hover:text-brand"
+      class="mt-3 hidden rounded-lg border border-line bg-paper px-4 py-2 text-xs font-semibold text-ink hover:border-brand hover:text-brand-fg"
     >
-      + Add add-on
+      + افزودن گزینه اضافی
     </button>
 
-    {/* Submits the product form too (via form="product-form"), so changes here can
-        be saved without scrolling back to the top. */}
     <div class="mt-8 border-t border-line pt-5">
       <button
         type="submit"
         form="product-form"
-        class="rounded-md bg-brand px-5 py-2 font-medium text-white hover:bg-brand-hover"
+        class="rounded-lg bg-brand px-6 py-2.5 text-sm font-semibold text-on-brand hover:bg-brand-hover"
       >
-        Save changes
+        {fa.admin.products.saveProduct}
       </button>
     </div>
   </section>
 
-  {/* Progressive enhancement: every gallery action runs via fetch (no reload, no
-      jump). The plain form POSTs are the no-JS fallback (they redirect to
-      #gallery). Primary badge + ↑/↓ visibility are CSS-driven, so they
-      auto-update as rows reorder. */}
+  {/* اسکریپت گالری */}
   <script>
-    // @ts-nocheck -- plain-JS client script (annotations would ship to the browser)
+    // @ts-nocheck
     const list = document.querySelector('[data-gallery]');
     if (list instanceof HTMLElement) {
       const action = list.dataset.action || '';
@@ -569,7 +658,7 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
           list.insertBefore(li, list.firstElementChild);
           await persistOrder();
         } else if (type === 'delete') {
-          if (!confirm('Delete this image?')) return;
+          if (!confirm('این تصویر حذف شود؟')) return;
           await send({ _action: 'delete', image_id: li.dataset.imageId });
           li.remove();
         } else if (type === 'alt') {
@@ -577,7 +666,7 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
           const btn = form.querySelector('button[type="submit"]');
           if (btn) {
             const original = btn.textContent;
-            btn.textContent = 'Saved';
+            btn.textContent = 'ذخیره شد';
             setTimeout(() => {
               btn.textContent = original;
             }, 1200);
@@ -587,17 +676,13 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
     }
   </script>
 
-  {/* Variants/extras editor: reveal the JS-only "+ Add"/"Remove" controls and let
-      one blank row be cloned for adding several. With JS off, the single inline
-      blank row still allows adding one variant/add-on per save. */}
+  {/* اسکریپت تنوع‌ها و افزودنی‌ها */}
   <script>
-    // @ts-nocheck -- plain-JS client script (annotations would ship to the browser)
+    // @ts-nocheck
     const closeAllPalettes = () => {
       for (const p of document.querySelectorAll('[data-palette]')) p.classList.add('hidden');
     };
 
-    // Apply a photo choice to a row: store the id, update the left preview, and
-    // highlight the chosen tile in the palette.
     const selectThumb = (row, value) => {
       const input = row.querySelector('[data-image-input]');
       if (input instanceof HTMLInputElement) input.value = value;
@@ -609,8 +694,6 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
         if (on) src = b.getAttribute('data-src') || '';
       }
-      // The preview shows whatever the chosen tile points at — a specific image, or
-      // the main product photo for the "Main" tile (its data-src is the main photo).
       const preview = row.querySelector('[data-photo-preview]');
       const empty = row.querySelector('[data-photo-empty]');
       if (preview instanceof HTMLImageElement && empty instanceof HTMLElement) {
@@ -618,10 +701,12 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
           preview.src = src;
           preview.classList.remove('hidden');
           empty.classList.add('hidden');
+          empty.classList.remove('flex');
         } else {
           preview.removeAttribute('src');
           preview.classList.add('hidden');
           empty.classList.remove('hidden');
+          empty.classList.add('flex');
         }
       }
     };
@@ -633,20 +718,42 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
       const blank = rows.querySelector('[data-blank]');
       if (!(blank instanceof HTMLElement)) return;
       addBtn.classList.remove('hidden');
-
-      // With JS, pull the inline blank row out and use it as the template — so
-      // "Add" appends a fresh row at the END (no second, lingering blank row).
-      // No-JS keeps the blank row in place (it was never removed).
       blank.remove();
 
-      // Reveal the JS-only Remove links on the existing rows.
       for (const b of rows.querySelectorAll('[data-remove-row]')) b.classList.remove('hidden');
 
-      // Delegated clicks (so appended rows work too): photo trigger toggles its
-      // palette; a tile applies the choice; a Remove link drops/marks its row.
+      rows.addEventListener('change', (e) => {
+        const el = e.target;
+        if (el instanceof HTMLInputElement && el.hasAttribute('data-v-active-toggle')) {
+          const row = el.closest('[data-variant-row]');
+          const hiddenVal = row?.querySelector('[data-v-active-value]');
+          if (hiddenVal instanceof HTMLInputElement) {
+            hiddenVal.value = el.checked ? '1' : '0';
+          }
+        }
+      });
+
       rows.addEventListener('click', (e) => {
         const el = e.target instanceof Element ? e.target : null;
         if (!el) return;
+
+        const upBtn = el.closest('[data-v-up]');
+        if (upBtn) {
+          const row = upBtn.closest('[data-variant-row]');
+          if (row && row.previousElementSibling) {
+            rows.insertBefore(row, row.previousElementSibling);
+          }
+          return;
+        }
+        const downBtn = el.closest('[data-v-down]');
+        if (downBtn) {
+          const row = downBtn.closest('[data-variant-row]');
+          if (row && row.nextElementSibling) {
+            rows.insertBefore(row.nextElementSibling, row);
+          }
+          return;
+        }
+
         const trigger = el.closest('[data-photo-trigger]');
         if (trigger) {
           const palette = trigger.parentElement?.querySelector('[data-palette]');
@@ -666,8 +773,6 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
         if (rm) {
           const row = rm.closest('[data-variant-row], [data-extra-row]');
           if (!row) return;
-          // Existing rows: check the hidden flag and hide (deleted on save).
-          // New rows: just drop them.
           const mark = row.querySelector('[data-remove-mark]');
           if (mark instanceof HTMLInputElement) {
             mark.checked = true;
@@ -685,21 +790,28 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
         for (const el of clone.querySelectorAll('input, select')) {
           if (el instanceof HTMLSelectElement) el.selectedIndex = 0;
           else if (el instanceof HTMLInputElement) {
-            // New variants default their price to the main product price.
-            el.value =
-              el.name.endsWith('_stock') ? '0' : el.name === 'v_price' ? defaultPrice : '';
+            if (el.hasAttribute('data-v-active-toggle')) {
+              el.checked = true;
+            } else if (el.hasAttribute('data-v-active-value')) {
+              el.value = '1';
+            } else if (el.name.endsWith('_stock')) {
+              el.value = '0';
+            } else if (el.name === 'v_price') {
+              el.value = defaultPrice;
+            } else {
+              el.value = '';
+            }
           }
         }
-        selectThumb(clone, ''); // new variants default to the main product photo
+        selectThumb(clone, '');
         clone.querySelector('[data-remove-row]')?.classList.remove('hidden');
-        rows.appendChild(clone); // append at the end
+        rows.appendChild(clone);
         clone.querySelector('input[name$="_label"]')?.focus();
       });
     };
     setupRows('[data-variant-rows]', '[data-add-variant]');
     setupRows('[data-extra-rows]', '[data-add-extra]');
 
-    // Click outside any photo trigger/palette closes the open palette.
     document.addEventListener('click', (e) => {
       const el = e.target instanceof Element ? e.target : null;
       if (el && el.closest('[data-palette], [data-photo-trigger]')) return;
@@ -709,9 +821,6 @@ const weightRequired = zonesRequireWeight(shippingFor(Astro.locals.settings).con
 </AdminLayout>
 
 <script>
-  // Picker selection → submit the hidden attach form. Kept out of MediaPicker
-  // itself so the same dialog can serve the logo and the Markdown editor, which
-  // do something different with the same event.
   document.addEventListener('media:selected', (event) => {
     const detail = (event as CustomEvent).detail as { id: string };
     const form = document.querySelector<HTMLFormElement>('[data-attach-form]');

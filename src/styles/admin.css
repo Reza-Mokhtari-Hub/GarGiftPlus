@@ -1,51 +1,312 @@
 /*
  * The Admin stylesheet entry. Deliberately NOT the storefront's.
  *
- * Admin is upstream chrome: it must stay readable no matter what design the
- * store ships. When it shared global.css it inherited the active theme's
- * tokens and base-layer body rules — under Studio that meant near-black
- * paper, bone ink, and a film-grain texture behind order tables, with core
- * Admin text hardcoded dark on top (about 1.1:1). So Admin gets its own
- * Tailwind compilation with its own stable tokens, and imports no theme tokens
- * and no merchant override. Rebranding a store changes the storefront;
- * Admin looks the same in every store.
+ * Admin is upstream chrome: it stays isolated from storefront themes and imports
+ * no storefront theme tokens or overrides.css. Visual design tokens below implement
+ * GarGift+'s dual Light & Dark operational control center aesthetic.
  */
-/* source(none) + explicit src: same reasoning as global.css — without it,
-   Tailwind scans test baselines and docs for class names. */
 @import "tailwindcss" source(none);
 @source "../../src";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, .dark, .dark *));
 
-/* Exclude every theme from THIS compilation's source scan (generated;
-   covers all themes, unlike the per-theme files which keep their own). Theme
-   templates never render inside Admin, so their utilities would be dead
-   weight here — and no theme may restyle Admin by accident. */
+/* Exclude every storefront theme from THIS compilation's source scan. */
 @import "./themes/_admin.css";
 
-/* Admin's own tokens: the upstream light palette, frozen. These match the
-   default theme's values today, but they are Admin's, not the default theme's —
-   the default theme can evolve without dragging Admin along. */
+/* GarGift+ Admin Dual-Theme Token System (Light default, Dark override below). */
 @theme {
-  --color-brand: #111827;
-  --color-brand-hover: #374151;
-  --color-ink: #111827;
-  --color-accent: #2563eb;
-  --color-paper: #faf8f4;
-  --color-line: #e7e2d9;
+  --color-brand: #7043e8;
+  --color-brand-hover: #5e36ca;
+  --color-brand-fg: #7043e8;
+  --color-brand-soft: #efeafd;
+  --color-ink: #30204d;
+  --color-accent: #118f89;
+  --color-accent-fg: #0e7c77;
+  --color-coral: #e94f7f;
+  --color-amber: #a96700;
+  --color-paper: #f6f4fe;
+  --color-line: #e5dff2;
   --color-surface: #ffffff;
-  --color-muted: #4b5563;
-  --color-faint: #6b7280;
+  --color-surface-secondary: #ffffff;
+  --color-surface-elevated: #eeebfd;
+  --color-muted: #655b78;
+  --color-faint: #6b6280;
   --color-on-brand: #ffffff;
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
-    Helvetica, Arial, sans-serif;
-  --font-serif: 'Hoefler Text', 'Iowan Old Style', 'Palatino Linotype', Palatino,
-    Georgia, 'Times New Roman', serif;
+  --font-sans: 'Vazirmatn', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Tahoma, Arial,
+    sans-serif;
+  --font-serif: 'Vazirmatn', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Tahoma, Arial,
+    sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 
-  --radius-md: 0.375rem;
-  --radius-lg: 0.5rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.25rem;
+}
+
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-success: #0f766e;
+  --color-success-bg: #ecfdf5;
+  --color-success-border: #99f6e4;
+  --color-warning: #a96700;
+  --color-warning-bg: #fffbeb;
+  --color-warning-border: #fcd34d;
+  --color-error: #be123c;
+  --color-error-bg: #fff1f2;
+  --color-error-border: #fecdd3;
+  --color-info: #0369a1;
+  --color-info-bg: #f0f9ff;
+  --color-info-border: #bae6fd;
+  --color-pending: #b45309;
+  --color-pending-bg: #fef3c7;
+  --color-pending-border: #fde68a;
+  --color-completed: #047857;
+  --color-completed-bg: #d1fae5;
+  --color-completed-border: #6ee7b7;
+  --color-disabled-bg: #ece8f6;
+  --color-disabled-text: #736b88;
+  --shadow-card: 0 1px 2px rgb(48 32 77 / 0.04), 0 8px 24px rgb(112 67 232 / 0.04);
+  --shadow-elevated: 0 12px 30px rgb(48 32 77 / 0.1);
+  --gg-admin-ambient: radial-gradient(900px 420px at 15% -10%, rgb(112 67 232 / 0.08), transparent 65%),
+    radial-gradient(760px 360px at 85% 0%, rgb(53 217 204 / 0.08), transparent 60%);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-brand: #7043e8;
+  --color-brand-hover: #6237d8;
+  --color-brand-fg: #a98bff;
+  --color-brand-soft: #2a2150;
+  --color-ink: #f8f6ff;
+  --color-accent: #35d9cc;
+  --color-accent-fg: #35d9cc;
+  --color-coral: #ff6c9b;
+  --color-amber: #ffbc55;
+  --color-paper: #17142b;
+  --color-line: #393253;
+  --color-surface: #252044;
+  --color-surface-secondary: #1e1a38;
+  --color-surface-elevated: #302950;
+  --color-muted: #c1b9d7;
+  --color-faint: #9e95ba;
+  --color-on-brand: #ffffff;
+
+  --color-success: #35d9cc;
+  --color-success-bg: #13383b;
+  --color-success-border: #226668;
+  --color-warning: #ffbc55;
+  --color-warning-bg: #362918;
+  --color-warning-border: #7a5822;
+  --color-error: #ff85ad;
+  --color-error-bg: #3b1c2d;
+  --color-error-border: #7f2e53;
+  --color-info: #7dd3fc;
+  --color-info-bg: #172d44;
+  --color-info-border: #27537d;
+  --color-pending: #ffbc55;
+  --color-pending-bg: #332717;
+  --color-pending-border: #72521e;
+  --color-completed: #4ade80;
+  --color-completed-bg: #153528;
+  --color-completed-border: #25684c;
+  --color-disabled-bg: #2a2448;
+  --color-disabled-text: #8c83a9;
+  --shadow-card: 0 2px 6px rgb(9 7 20 / 0.38), 0 10px 26px rgb(9 7 20 / 0.28);
+  --shadow-elevated: 0 16px 36px rgb(6 5 16 / 0.62);
+  --gg-admin-ambient: radial-gradient(880px 420px at 18% -5%, rgb(112 67 232 / 0.22), transparent 65%),
+    radial-gradient(700px 380px at 85% 5%, rgb(53 217 204 / 0.14), transparent 60%);
+}
+
+/* Dark-mode compatibility bridge for legacy utility classes across subpages */
+:root[data-theme='dark'] .bg-white,
+:root[data-theme='dark'] .bg-white\/60 {
+  background-color: var(--color-surface);
+}
+:root[data-theme='dark'] .bg-gray-50,
+:root[data-theme='dark'] .bg-gray-100 {
+  background-color: var(--color-surface-elevated);
+}
+:root[data-theme='dark'] .border-gray-200,
+:root[data-theme='dark'] .border-gray-300 {
+  border-color: var(--color-line);
+}
+:root[data-theme='dark'] .text-gray-900,
+:root[data-theme='dark'] .text-gray-800 {
+  color: var(--color-ink);
+}
+:root[data-theme='dark'] .text-gray-700,
+:root[data-theme='dark'] .text-gray-600,
+:root[data-theme='dark'] .text-gray-500 {
+  color: var(--color-muted);
+}
+:root[data-theme='dark'] .text-gray-400 {
+  color: var(--color-faint);
 }
 
 @import "./base.css";
+
+/* Phase 5 GarGift+ Admin Component Primitives */
+.gg-admin-body {
+  background-color: var(--color-paper);
+  background-image: var(--gg-admin-ambient);
+  background-attachment: fixed;
+}
+
+.gg-admin-card {
+  border-radius: 1rem;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.gg-admin-card-soft {
+  border-radius: 1rem;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-surface-secondary);
+}
+
+.gg-admin-sidebar {
+  background-color: var(--color-surface);
+  border-inline-end: 1px solid var(--color-line);
+  box-shadow: var(--shadow-card);
+}
+
+.gg-admin-topbar {
+  background-color: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.gg-admin-input {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.gg-admin-input:focus {
+  outline: none;
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 3px rgb(112 67 232 / 0.16);
+}
+
+.gg-admin-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.75rem;
+  background-color: var(--color-brand);
+  color: var(--color-on-brand);
+  padding: 0.55rem 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  transition: background-color 150ms ease, transform 150ms ease;
+}
+.gg-admin-btn-primary:hover {
+  background-color: var(--color-brand-hover);
+}
+
+.gg-admin-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+.gg-admin-btn-secondary:hover {
+  border-color: var(--color-brand);
+  background-color: var(--color-surface-elevated);
+}
+
+.gg-admin-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--color-error-border);
+  background-color: var(--color-error-bg);
+  color: var(--color-error);
+  padding: 0.45rem 0.85rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: opacity 150ms ease;
+}
+.gg-admin-btn-danger:hover {
+  opacity: 0.9;
+}
+
+.gg-admin-table-wrap {
+  overflow-x: auto;
+  border-radius: 1rem;
+  border: 1px solid var(--color-line);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.gg-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: start;
+  font-size: 0.8125rem;
+}
+
+.gg-admin-table thead {
+  background-color: var(--color-surface-elevated);
+  color: var(--color-muted);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.gg-admin-table th {
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.gg-admin-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-line);
+  vertical-align: middle;
+}
+
+.gg-admin-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.gg-admin-table tbody tr:hover {
+  background-color: color-mix(in srgb, var(--color-surface-elevated) 55%, transparent);
+}
+
+/* Desktop sidebar collapsed mode (state toggled on <html> or shell) */
+@media (min-width: 1024px) {
+  .gg-admin-shell[data-collapsed='true'] .gg-admin-sidebar {
+    width: 5.25rem;
+  }
+  .gg-admin-shell[data-collapsed='true'] .gg-sidebar-label,
+  .gg-admin-shell[data-collapsed='true'] .gg-sidebar-group-title,
+  .gg-admin-shell[data-collapsed='true'] .gg-sidebar-brand-text,
+  .gg-admin-shell[data-collapsed='true'] .gg-sidebar-badge {
+    display: none;
+  }
+  .gg-admin-shell[data-collapsed='true'] .gg-sidebar-link {
+    justify-content: center;
+    padding-inline: 0.5rem;
+  }
+}
 
 /* Entry marker — see the note in global.css. */
 :root {

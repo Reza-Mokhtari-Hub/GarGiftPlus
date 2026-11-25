@@ -161,15 +161,24 @@ async function gate(context: APIContext, next: MiddlewareNext): Promise<Response
   if (import.meta.env.DEV) return next();
 
   // 2. Steady state: an admin password is set (via the setup wizard) → require a
-  //    valid signed session. Checked before the Access header so it can't be
-  //    bypassed by forging it.
+  //    valid signed session (primary admin_session OR multi-admin admin_actor).
   const cred = await adminCredential(env.DB);
   if (cred.enabled) {
     // The login page itself must be reachable unauthenticated (to log in).
     if (path === '/admin/login') return next();
     const session = context.cookies.get('admin_session')?.value ?? null;
+    const actorCookie = context.cookies.get('admin_actor')?.value ?? null;
     // Sign/verify with AUTH_SECRET (high-entropy key); the credential is the bound tag.
     const signingKey = env.AUTH_SECRET || cred.tagSource;
+    if (actorCookie) {
+      const { verifyAdminActorCookie } = await import('./features/auth/rbac');
+      const actor = await verifyAdminActorCookie(env.DB, actorCookie, signingKey, Date.now() / 1000);
+      if (actor) {
+        context.locals.adminActor = actor;
+        if (actor.email) context.locals.adminEmail = actor.email;
+        return next();
+      }
+    }
     if (await verifySession(session, signingKey, cred.tagSource, Date.now() / 1000)) return next();
     // Not authenticated: humans go to the login form, API callers get 401.
     if (path.startsWith('/api/')) {
@@ -225,7 +234,13 @@ async function route(context: APIContext, next: MiddlewareNext): Promise<Respons
   const path = context.url.pathname;
   const productError = path.startsWith('/products/') && context.url.searchParams.has('error');
 
-  let response = isForbiddenFormOrigin(context.request, context.url)
+  const effectiveUrl = new URL(context.url);
+  const fwdProto = context.request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const fwdHost = context.request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+  if (fwdProto) effectiveUrl.protocol = `${fwdProto.replace(/:$/, '')}:`;
+  if (fwdHost) effectiveUrl.host = fwdHost;
+
+  let response = isForbiddenFormOrigin(context.request, effectiveUrl)
     ? new Response(`Cross-site ${context.request.method} form submissions are forbidden`, {
         status: 403,
       })
@@ -275,7 +290,6 @@ async function route(context: APIContext, next: MiddlewareNext): Promise<Respons
 // Response hardening for a store on a real domain. Applied to EVERY response.
 const SECURITY_HEADERS: Record<string, string> = {
   'x-content-type-options': 'nosniff', // don't MIME-sniff responses
-  'x-frame-options': 'DENY', // block framing (clickjacking) — nothing here is meant to be embedded
   'strict-transport-security': 'max-age=31536000; includeSubDomains', // force HTTPS for a year
 };
 

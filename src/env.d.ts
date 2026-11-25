@@ -33,6 +33,7 @@ type CloudflareRuntime = import('@astrojs/cloudflare').Runtime;
 declare namespace App {
   interface Locals extends CloudflareRuntime {
     adminEmail?: string;
+    adminActor?: import('./features/fulfillment/permissions').AdminActor;
     /** Runtime settings overlay (store name etc.), loaded once per request. */
     settings?: import('./features/settings/db').StoreSettings;
     /** Resolved header/footer navigation, batched with settings so uncached

@@ -21,10 +21,20 @@ export const NOTIFICATION_KINDS = ['customer-receipt', 'owner-notification', 'or
 export const GUEST_LINK_REISSUE_PREFIX = 'guest-link-reissue:';
 export type GuestLinkReissueKind = `${typeof GUEST_LINK_REISSUE_PREFIX}${number}`;
 
-export type NotificationKind = (typeof NOTIFICATION_KINDS)[number] | GuestLinkReissueKind;
+export const FULFILLMENT_NOTIFICATION_PREFIX = 'fulfillment-';
+export type FulfillmentNotificationKind = `${typeof FULFILLMENT_NOTIFICATION_PREFIX}${string}`;
+
+export type NotificationKind =
+  | (typeof NOTIFICATION_KINDS)[number]
+  | GuestLinkReissueKind
+  | FulfillmentNotificationKind;
 
 export function isGuestLinkReissueKind(kind: string): kind is GuestLinkReissueKind {
   return kind.startsWith(GUEST_LINK_REISSUE_PREFIX) && reissueGeneration(kind) !== null;
+}
+
+export function isFulfillmentNotificationKind(kind: string): kind is FulfillmentNotificationKind {
+  return kind.startsWith(FULFILLMENT_NOTIFICATION_PREFIX) && kind.length > FULFILLMENT_NOTIFICATION_PREFIX.length;
 }
 
 /** The <generation> a reissue kind carries, or null for a malformed kind. */

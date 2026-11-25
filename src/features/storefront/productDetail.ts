@@ -1,7 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { StoreSettings } from '../settings/db';
 import { getProductBySlug, listProductImages, type Product } from '../products/db';
-import { listVariants, listExtras } from '../products/variants';
+import { listVariants, listExtras, type ProductVariant } from '../products/variants';
+import { listProductCheckoutFields } from '../products/customFieldsDb';
+import { parseFaqJson, parseFieldOptions } from '../products/customFields';
 import { categoriesForProduct, relatedProducts } from '../categories/db';
 import { getRelatedStored, storeRelatedIds } from '../search';
 import { enabledMethods } from '../payments';
@@ -11,6 +13,7 @@ import { stockState } from '../products/stock';
 import { catalogPath } from '../settings/home';
 import { formatMoney, toMajorUnits, currencyDecimals } from '../../money';
 import { requirePublicId } from '../catalog/serialize';
+import { fa } from '../../i18n/fa';
 import { buildProductCard } from './productCard';
 import type {
   ProductDetailModel,
@@ -23,14 +26,8 @@ import type {
 /**
  * The product-detail loader.
  *
- * This route was the densest in the storefront: parallel graph reads, a
- * background backfill, cache tagging, variant and extra availability, gallery
- * derivation, SEO, runtime payment toggles, and two different purchase forms.
- * All of it lives here, so the template receives three finished models and
- * decides only composition.
- *
- * The route keeps what is not presentation: the 404, the metadata tags, the
- * JSON-LD script, and cache tagging.
+ * Parallel graph reads, custom checkout fields, variants/extras availability,
+ * gallery derivation, SEO, runtime payment toggles, and purchase form models.
  */
 
 const RELATED_TARGET = 4;
@@ -45,10 +42,7 @@ export type LoadedProductDetail =
       model: ProductDetailModel;
       seo: ProductSeoModel;
       purchase: ProductPurchaseModel;
-      /** Cache tags for the response; the route attaches them. */
       cacheTagIds: (string | null)[];
-      /** Set when the semantic-neighbour column was empty and should be
-       *  backfilled after the response is sent. */
       backfillRelated: (() => Promise<void>) | null;
     };
 
@@ -59,15 +53,11 @@ export interface ProductDetailOptions {
   imageBaseUrl: string;
   delivery: ImageDelivery | undefined;
   currency: string;
-  /** Absolute origin for SEO URLs. */
   origin: string;
   pathname: string;
 }
 
-function heroImage(
-  product: Product,
-  options: ProductDetailOptions,
-): StorefrontImage {
+function heroImage(product: Product, options: ProductDetailOptions): StorefrontImage {
   const sources = productImageSources(product.image_key, {
     baseUrl: options.imageBaseUrl,
     delivery: options.delivery,
@@ -79,7 +69,6 @@ function heroImage(
     ...(sources.srcset ? { srcset: sources.srcset } : {}),
     ...(sources.sizes ? { sizes: sources.sizes } : {}),
     alt: product.name,
-    // The product hero is the page's LCP candidate.
     priority: true,
   };
 }
@@ -91,14 +80,13 @@ export async function loadProductDetail(
   const product = options.slug ? await getProductBySlug(db, options.slug) : null;
   if (!product) return { status: 'not_found' };
 
-  // Independent once the product is known. Run together so an uncached render
-  // pays one concurrent wait instead of a serial chain.
-  const [categories, storedRelated, variants, extras, gallery] = await Promise.all([
+  const [categories, storedRelated, variants, extras, gallery, checkoutFields] = await Promise.all([
     categoriesForProduct(db, product.id),
     getRelatedStored(product, RELATED_TARGET),
-    listVariants(db, product.id),
+    listVariants(db, product.id, true),
     listExtras(db, product.id),
     listProductImages(db, product.id),
+    listProductCheckoutFields(db, product.id),
   ]);
 
   const semantic = storedRelated ?? [];
@@ -110,25 +98,44 @@ export async function loadProductDetail(
   }
 
   const hasVariants = variants.length > 0;
+  const isDigital = product.requires_shipping !== 1;
   const state = stockState(product.stock);
-  // With variants the inventory unit is the variant, so availability comes from
-  // them; otherwise from the product's own stock.
-  const soldOut = hasVariants ? variants.every((v) => v.stock <= 0) : state === 'out';
+
+  const isVariantUnavailable = (v: ProductVariant) =>
+    v.active !== 1 || (!isDigital && v.stock <= 0);
+
+  // Availability is governed by active flags for digital services; legacy stock applies only to physical items.
+  const soldOut =
+    product.active !== 1 ||
+    (hasVariants ? variants.every(isVariantUnavailable) : !isDigital && state === 'out');
+
+  const firstAvailableIndex = variants.findIndex((v) => !isVariantUnavailable(v));
+  const defaultVariant = firstAvailableIndex >= 0 ? variants[firstAvailableIndex] : variants[0] ?? null;
 
   const variantPrices = variants.map((v) => v.price_cents);
   const displayPriceCents = hasVariants ? Math.min(...variantPrices) : product.price_cents;
   const priceVaries = hasVariants && Math.min(...variantPrices) !== Math.max(...variantPrices);
 
-  // A variant's linked image reaches the markup as the gallery anchor — a pimg_
-  // public ID, never the row FK and never the storage key. The old image_key
-  // fallback published R2 object names into DOM ids and data-image-id, which is
-  // the same boundary violation as leaking a row ID: a public page should say
-  // nothing about how the store names its objects.
+  const effectiveCompareCents = defaultVariant
+    ? defaultVariant.compare_price_cents ?? null
+    : product.compare_price_cents ?? null;
+  const effectiveBasePrice = defaultVariant ? defaultVariant.price_cents : product.price_cents;
+  const hasCompare =
+    effectiveCompareCents != null &&
+    effectiveCompareCents > effectiveBasePrice &&
+    effectiveCompareCents > 0;
+  const effectiveCurrency = product.currency?.trim() || options.currency;
+  const formattedComparePrice = hasCompare
+    ? formatMoney(effectiveCompareCents!, effectiveCurrency)
+    : null;
+  const discountPercent = hasCompare
+    ? Math.round(((effectiveCompareCents! - effectiveBasePrice) / effectiveCompareCents!) * 100)
+    : null;
+
   const galleryAnchor = (imageId: number | null): string => {
     const image = imageId == null ? undefined : gallery.find((g) => g.id === imageId);
     return image ? requirePublicId(image.public_id, image.id, 'product image') : '';
   };
-  const firstInStockIndex = variants.findIndex((v) => v.stock > 0);
 
   const images: StorefrontGalleryImage[] = gallery.map((image, index) => {
     const hero = productImageSources(image.image_key, {
@@ -145,9 +152,6 @@ export async function loadProductDetail(
     });
     return {
       anchor: requirePublicId(image.public_id, image.id, 'product image'),
-      // The first frame is what a shopper sees before scrolling, so it is the
-      // page's LCP candidate. Saying so on the model keeps the rendered
-      // attributes and the fade decision from drifting apart.
       hero: { ...hero, alt: image.alt || product.name, priority: index === 0 },
       thumbnail: { ...thumbnail, alt: '', priority: false },
     };
@@ -158,29 +162,48 @@ export async function loadProductDetail(
   const cartEnabled = options.settings?.cartEnabled ?? true;
   const buyNowEnabled = options.settings?.buyNowEnabled ?? true;
 
+  const activeCustomFields = (checkoutFields ?? [])
+    .filter((f) => f.is_active === 1)
+    .map((f) => ({
+      id: requirePublicId(f.public_id, f.id, 'checkout field'),
+      key: f.field_key,
+      label: f.label,
+      type: f.field_type,
+      placeholder: f.placeholder,
+      helpText: f.help_text,
+      options: parseFieldOptions(f.options_json),
+      required: f.is_required === 1,
+      minLength: f.min_length,
+      maxLength: f.max_length,
+    }));
+
+  const faq = parseFaqJson(product.faq_json);
+  const seoTitle = product.seo_title?.trim() || product.name;
+  const seoDescription =
+    product.seo_description?.trim() ||
+    product.short_description?.trim() ||
+    (product.description ? markdownExcerpt(product.description, 160) : null);
+
   const imagePath = productImageUrl(product.image_key, options.imageBaseUrl);
   const jsonLd = {
     '@context': 'https://schema.org',
     '@type': 'Product',
     name: product.name,
-    // Structured data wants prose, not Markdown syntax characters.
-    ...(product.description ? { description: markdownExcerpt(product.description, 5000) } : {}),
+    ...(product.brand ? { brand: { '@type': 'Brand', name: product.brand } } : {}),
+    ...(seoDescription ? { description: seoDescription } : {}),
     image: new URL(imagePath, options.origin).href,
     offers: {
       '@type': 'Offer',
-      // The SAME currency the page displays. These previously disagreed: the
-      // header formatted in the store currency while JSON-LD and the live-price
-      // script announced the product row's, so a legacy row advertised one
-      // currency and rendered another, and picking a variant switched between
-      // them mid-page.
-      price: toMajorUnits(displayPriceCents, options.currency).toFixed(
-        currencyDecimals(options.currency),
+      price: toMajorUnits(displayPriceCents, effectiveCurrency).toFixed(
+        currencyDecimals(effectiveCurrency),
       ),
-      priceCurrency: options.currency.toUpperCase(),
+      priceCurrency: effectiveCurrency.toUpperCase(),
       availability: soldOut ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock',
       url: new URL(options.pathname, options.origin).href,
     },
   };
+
+  const errorMessage = options.searchParams.get('error');
 
   return {
     status: 'ok',
@@ -188,11 +211,9 @@ export async function loadProductDetail(
     backfillRelated:
       storedRelated === null ? () => storeRelatedIds(product.id, RELATED_TARGET) : null,
     seo: {
-      title: product.name,
-      // Meta/og description: plain text, truncated on a word boundary.
-      description: product.description ? markdownExcerpt(product.description, 160) : null,
+      title: seoTitle,
+      description: seoDescription,
       imagePath,
-      // Escape "<" so a product name can't break out of the <script> tag.
       jsonLd: JSON.stringify(jsonLd).replace(/</g, '\\u003c'),
     },
     model: {
@@ -202,15 +223,14 @@ export async function loadProductDetail(
       descriptionHtml: product.description
         ? renderMarkdown(product.description, { baseUrl: options.imageBaseUrl })
         : null,
-      formattedPrice: formatMoney(displayPriceCents, options.currency),
+      formattedPrice: formatMoney(displayPriceCents, effectiveCurrency),
       priceCents: product.price_cents,
-      currency: options.currency,
+      currency: effectiveCurrency,
       priceVaries,
       soldOut,
-      // Deliberately never shown for a product with variants: the product-level
-      // count means nothing when the variant is the inventory unit.
-      lowStock: !hasVariants && state === 'low',
-      digitalDelivery: Boolean(product.file_key),
+      // Digital services never surface low-stock scarcity nudges.
+      lowStock: !isDigital && !hasVariants && state === 'low',
+      digitalDelivery: isDigital || Boolean(product.file_key),
       categories: categories.map((category) => ({
         text: category.name,
         href: `/categories/${category.slug}`,
@@ -226,34 +246,57 @@ export async function loadProductDetail(
         }),
       ),
       backHref: catalogPath(options.settings?.homePage),
-      error: options.searchParams.get('error'),
+      error: errorMessage,
+      brand: product.brand ?? null,
+      region: product.region ?? null,
+      badge: product.badge ?? null,
+      shortDescription: product.short_description ?? null,
+      formattedComparePrice,
+      comparePriceCents: hasCompare ? effectiveCompareCents : null,
+      discountPercent: discountPercent && discountPercent > 0 ? discountPercent : null,
+      estimatedDelivery: product.estimated_delivery ?? null,
+      instructions: product.instructions ?? null,
+      instructionsHtml: product.instructions
+        ? renderMarkdown(product.instructions, { baseUrl: options.imageBaseUrl })
+        : null,
+      faq,
+      availabilityLabel: soldOut ? fa.product.inactive : fa.product.available,
     },
     purchase: {
       productId: requirePublicId(product.public_id, product.id, 'product'),
       cartAction: '/api/cart',
       expressAction: '/express',
-      hasOptions: hasVariants || extras.length > 0,
+      hasOptions: hasVariants || extras.length > 0 || activeCustomFields.length > 0,
       soldOut,
       showAddToCart: cartEnabled,
-      // Buy now is express (it skips the cart), so it survives the cart being
-      // switched off — but not the absence of any rail that can take money.
       showBuyNow: buyNowEnabled && canCheckout,
       variantLabel: product.variant_label,
-      variants: variants.map((variant, index) => ({
-        id: requirePublicId(variant.public_id, variant.id, 'variant'),
-        label: variant.label,
-        formattedPrice: formatMoney(variant.price_cents, options.currency),
-        priceCents: variant.price_cents,
-        soldOut: variant.stock <= 0,
-        defaultSelected: index === firstInStockIndex,
-        imageAnchor: galleryAnchor(variant.image_id),
-      })),
+      variants: variants.map((variant, index) => {
+        const vCompare = variant.compare_price_cents ?? null;
+        const vHasCmp = vCompare != null && vCompare > variant.price_cents && vCompare > 0;
+        return {
+          id: requirePublicId(variant.public_id, variant.id, 'variant'),
+          label: variant.label,
+          formattedPrice: formatMoney(variant.price_cents, effectiveCurrency),
+          priceCents: variant.price_cents,
+          soldOut: isVariantUnavailable(variant),
+          defaultSelected: index === firstAvailableIndex,
+          imageAnchor: galleryAnchor(variant.image_id),
+          region: variant.region ?? null,
+          amountLabel: variant.amount_label ?? null,
+          durationLabel: variant.duration_label ?? null,
+          formattedComparePrice: vHasCmp ? formatMoney(vCompare!, effectiveCurrency) : null,
+          comparePriceCents: vHasCmp ? vCompare : null,
+        };
+      }),
       extras: extras.map((extra) => ({
         id: requirePublicId(extra.public_id, extra.id, 'extra'),
         label: extra.label,
-        formattedPriceDelta: formatMoney(extra.price_delta_cents, options.currency),
+        formattedPriceDelta: formatMoney(extra.price_delta_cents, effectiveCurrency),
         priceDeltaCents: extra.price_delta_cents,
       })),
+      customFields: activeCustomFields,
+      error: errorMessage,
     },
   };
 }

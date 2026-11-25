@@ -1,0 +1,202 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../config';
+import { orderReference } from '../../features/orders/number';
+import { listUnmatchedRefundEvents } from '../../features/refunds/db';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const onCfg = getConfig().orderNumber;
+const error = Astro.url.searchParams.get('error');
+const msg = Astro.url.searchParams.get('msg');
+
+const [summaryRow, unmatchedEvents, refundsRes] = await Promise.all([
+  env.DB
+    .prepare(
+      `SELECT COUNT(*) AS refund_count,
+              COALESCE(SUM(CASE WHEN status = 'succeeded' THEN amount_cents ELSE 0 END), 0) AS total_refunded
+         FROM refunds`,
+    )
+    .first<{ refund_count: number; total_refunded: number }>(),
+  listUnmatchedRefundEvents(env.DB, 30),
+  env.DB
+    .prepare(
+      `SELECT r.*, o.public_id AS order_public_id, o.email AS customer_email, o.currency
+         FROM refunds r
+         JOIN orders o ON o.id = r.order_id
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT 80`,
+    )
+    .all<{
+      public_id: string;
+      order_id: number;
+      order_public_id: string | null;
+      customer_email: string | null;
+      currency: string;
+      kind: string;
+      status: string;
+      amount_cents: number;
+      reason: string | null;
+      created_by: string | null;
+      created_at: string;
+    }>(),
+]);
+
+const refunds = refundsRes.results ?? [];
+const KIND_LABELS: Record<string, string> = {
+  provider_api: 'بازگشت از طریق درگاه',
+  provider_sync: 'همگام‌سازی وب‌هوک',
+  manual_external: 'بازگشت وجه دستی',
+  manual_reversal: 'اصلاح / ابطال',
+  demo: 'آزمایشی',
+  legacy: 'قبلی',
+};
+---
+
+<AdminLayout
+  title="بازگشت وجه و مغایرت‌ها"
+  active="refunds"
+  requiredPermission="orders.refund"
+  breadcrumbs={[{ label: 'مشتریان و مالی' }, { label: 'بازگشت وجه' }]}
+>
+  <AdminPageHeader
+    title="مرکز مدیریت بازگشت وجه (Refunds)"
+    subtitle="پیگیری بازگشت وجه‌ها، مغایرت‌های همگام‌سازی درگاه و دسترسی سریع به سفارش‌های مستردشده"
+    badge={`${toPersianDigits(unmatchedEvents.length)} رویداد نیازمند بررسی`}
+  >
+    <a slot="actions" href="/admin/orders?status=refunded" class="gg-admin-btn-secondary text-xs">
+      مشاهده سفارش‌های مستردشده ←
+    </a>
+  </AdminPageHeader>
+
+  {error && <div class="gg-status-error mb-6 rounded-xl px-4 py-3 text-sm">{error}</div>}
+  {msg && <div class="gg-status-success mb-6 rounded-xl px-4 py-3 text-sm">{msg}</div>}
+
+  <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <AdminKpiCard
+      label="مجموع مبالغ مستردشده"
+      value={formatPrice(summaryRow?.total_refunded ?? 0)}
+      hint={`${toPersianDigits(summaryRow?.refund_count ?? 0)} رکورد بازگشت وجه`}
+      tone="coral"
+    />
+    <AdminKpiCard
+      label="رویدادهای مغایرت / در صف"
+      value={toPersianDigits(unmatchedEvents.length)}
+      hint="Webhookهای تطبیق‌نیافته یا متناقض"
+      tone="amber"
+    />
+    <AdminKpiCard
+      label="نحوه ثبت استرداد جدید"
+      value="صفحه جزئیات سفارش"
+      hint="برای امنیت مالی، بازگشت وجه از داخل هر سفارش انجام می‌شود"
+      href="/admin/orders"
+      tone="violet"
+    />
+  </div>
+
+  {/* رویدادهای در انتظار بررسی */}
+  {
+    unmatchedEvents.length > 0 && (
+      <section class="gg-admin-card mb-8 p-5">
+        <h2 class="mb-4 text-sm font-bold text-ink">رویدادهای بازگشت وجه تطبیق‌نیافته / متناقض</h2>
+        <div class="space-y-3">
+          {unmatchedEvents.map((ev) => (
+            <div class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-line bg-surface-2 p-4">
+              <div class="space-y-1 text-xs">
+                <p class="font-bold text-ink">
+                  <span class="ltr-inline font-mono">{ev.provider_event_id}</span>
+                  <span class="ms-2 rounded bg-surface px-2 py-0.5 text-[11px]">{ev.provider}</span>
+                </p>
+                <p class="text-muted">
+                  مبلغ تجمعی: {formatPrice(ev.cumulative_refunded_cents, ev.currency || 'irt')}
+                  {ev.last_error && ` · خطا: ${ev.last_error}`}
+                </p>
+              </div>
+              <div class="flex items-center gap-2">
+                <form method="POST" action="/api/admin/refunds">
+                  <input type="hidden" name="_action" value="retry_refund_event" />
+                  <input type="hidden" name="event_id" value={ev.provider_event_id} />
+                  <input type="hidden" name="_redirect" value="/admin/refunds" />
+                  <button type="submit" class="gg-admin-btn-primary py-1.5 text-xs">
+                    تلاش مجدد تطبیق
+                  </button>
+                </form>
+                {ev.status === 'failed' && (
+                  <form
+                    method="POST"
+                    action="/api/admin/refunds"
+                    data-confirm-message="آیا این رویداد خطادار پس از بررسی دستی بسته شود؟"
+                  >
+                    <input type="hidden" name="_action" value="dismiss_refund_event" />
+                    <input type="hidden" name="event_id" value={ev.provider_event_id} />
+                    <input type="hidden" name="_redirect" value="/admin/refunds" />
+                    <button type="submit" class="gg-admin-btn-danger py-1.5 text-xs">
+                      بستن رویداد
+                    </button>
+                  </form>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    )
+  }
+
+  {/* تاریخچه بازگشت وجه‌ها */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-base font-bold text-ink">دفتر کل بازگشت وجه‌ها</h2>
+    {
+      refunds.length === 0 ? (
+        <AdminEmptyState
+          title="هنوز هیچ بازگشت وجهی ثبت نشده است"
+          description="کلیه استردادهای انجام‌شده از داخل سفارش‌ها یا درگاه‌های پرداخت در این جدول ثبت می‌شوند."
+        />
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>شناسه</th>
+                <th>سفارش</th>
+                <th>مشتری</th>
+                <th>نوع</th>
+                <th>مبلغ</th>
+                <th>دلیل / اپراتور</th>
+                <th class="text-end">تاریخ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {refunds.map((r) => (
+                <tr>
+                  <td><span class="ltr-inline font-mono text-xs text-muted">{r.public_id}</span></td>
+                  <td>
+                    <a href={`/admin/orders/${r.order_public_id}`} class="ltr-inline font-mono text-xs font-semibold text-brand-fg hover:underline">
+                      #{orderReference(r.order_public_id, r.order_id, onCfg)}
+                    </a>
+                  </td>
+                  <td><span class="ltr-inline font-mono text-xs text-muted">{r.customer_email || '—'}</span></td>
+                  <td class="text-xs font-medium text-ink">{KIND_LABELS[r.kind] ?? r.kind}</td>
+                  <td class={`font-bold ${r.amount_cents < 0 ? 'text-accent' : 'text-coral'}`}>
+                    {formatPrice(r.amount_cents, r.currency)}
+                  </td>
+                  <td class="text-xs text-muted">
+                    {r.reason || '—'}
+                    {r.created_by && <span class="ms-1 text-[11px] text-faint">({r.created_by})</span>}
+                  </td>
+                  <td class="text-end text-xs text-muted">
+                    {formatJalaliDateTime(r.created_at, { timeZone })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
+</AdminLayout>

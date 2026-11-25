@@ -1,5 +1,7 @@
 import type { APIRoute } from 'astro';
 import { env } from 'cloudflare:workers';
+import { guardAdminApi } from '../../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../../features/audit/db';
 import {
   addMenuItem,
   moveMenuItem,
@@ -26,16 +28,12 @@ export const prerender = false;
 
 const FAILURE_MESSAGES = {
   full: (location: string) =>
-    `The ${location} menu is full (${MENU_CAPS[location as 'header' | 'footer']} items). Remove one first.`,
-  duplicate: (location: string, what: string) => `${what} is already in the ${location} menu.`,
-  unavailable: () => 'That page, product, or category is no longer available.',
+    `منوی ${location === 'header' ? 'سربرگ (Header)' : 'پاورقی (Footer)'} پر شده است (حداکثر ${MENU_CAPS[location as 'header' | 'footer']} آیتم). ابتدا یک مورد را حذف کنید.`,
+  duplicate: (location: string, what: string) =>
+    `آیتم «${what}» قبلاً در منوی ${location === 'header' ? 'سربرگ' : 'پاورقی'} ثبت شده است.`,
+  unavailable: () => 'این صفحه، محصول یا دسته‌بندی دیگر در دسترس نیست.',
 };
 
-/**
- * Resolve a submitted target public ID (page_/prod_/cat_) to the internal row
- * id. Resolution happens once, here at the boundary; the guarded insert keeps
- * re-checking availability with integer ids. Numeric ids are never accepted.
- */
 async function resolveTargetId(
   targetType: MenuTargetType,
   raw: unknown,
@@ -55,39 +53,18 @@ async function resolveTargetId(
   return null;
 }
 
-// POST /api/admin/navigation — manage the header and footer menus.
-// Items are addressed by their nav_ public IDs; targets by page_/prod_/cat_.
-//   _action=add     → append an item to a menu
-//   _action=move    → swap an item with its neighbour (direction=up|down)
-//   _action=reorder → set the whole order of one menu (drag-and-drop)
-//   _action=remove  → delete an item
-//   _action=label   → set or clear the label override
-export const POST: APIRoute = async ({ request, redirect }) => {
+export const POST: APIRoute = async ({ request, redirect, locals, cookies }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'content.manage');
+  if (!guard.ok) return guard.response;
+
   const form = await request.formData();
   const action = String(form.get('_action'));
-
-  /**
-   * Redirect back to the page the merchant was on, in the state they left it.
-   *
-   * Adding several items to the footer is the normal case, and a bare redirect
-   * reset the "Add to" selector to Header every time — so the second and third
-   * add silently went to the wrong menu unless the merchant re-picked it.
-   *
-   * The submitted form wins for the fields it carries (the merchant may have
-   * changed the type or destination without reloading); the referer supplies the
-   * rest, so row actions like move/remove keep the picker where it was without
-   * every row form having to carry hidden copies of it.
-   */
-  // The Up/Down buttons post via fetch when JS is available, purely to skip the
-  // page reload. A 303 there would make fetch follow the redirect and download
-  // the whole admin page for every click, so answer those with no body at all.
-  // Same handler, same guarantees — only the response shape differs.
   const wantsNoContent = request.headers.get('x-partial') === '1';
 
   const back = (msg?: string) => {
     if (wantsNoContent) {
       return msg
-        ? new Response(msg, { status: 400, headers: { 'content-type': 'text/plain' } })
+        ? new Response(msg, { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } })
         : new Response(null, { status: 204 });
     }
     const params = new URLSearchParams();
@@ -100,7 +77,7 @@ export const POST: APIRoute = async ({ request, redirect }) => {
           if (value) params.set(key, value);
         }
       } catch {
-        // Malformed referer — fall back to whatever the form supplied.
+        // ignore malformed referer
       }
     }
     for (const key of ['location', 'target_type']) {
@@ -111,7 +88,14 @@ export const POST: APIRoute = async ({ request, redirect }) => {
     else params.set('saved', '1');
     return redirect(`/admin/navigation?${params}`, 303);
   };
-  const saved = async () => {
+  const saved = async (targetId: string) => {
+    await recordAdminAuditLog(env.DB, {
+      action: `navigation.${action}`,
+      module: 'content',
+      targetType: 'navigation',
+      targetId,
+      actor: guard.actor.id,
+    });
     await purgeCacheTags([CACHE_TAG.shell]);
     return back();
   };
@@ -119,19 +103,14 @@ export const POST: APIRoute = async ({ request, redirect }) => {
   if (action === 'add') {
     const location = form.get('location');
     const targetType = form.get('target_type');
-    if (!isMenuLocation(location)) return new Response('Invalid location', { status: 400 });
-    if (!isMenuTargetType(targetType)) return new Response('Invalid target type', { status: 400 });
+    if (!isMenuLocation(location)) return new Response('موقعیت منو نامعتبر است', { status: 400 });
+    if (!isMenuTargetType(targetType)) return new Response('نوع مقصد نامعتبر است', { status: 400 });
 
-    // Singletons carry no target; the rest submit a public ID that must resolve.
     let targetId: number | null = null;
     if (!isSingleton(targetType)) {
-      // The admin form renders one picker per type and hides all but the chosen
-      // one — hidden controls still submit, so the field is namespaced and only
-      // the one matching target_type is read. `target_id` stays accepted so a
-      // direct API caller does not have to know that detail.
       const raw = form.get(`target_id_${targetType}`) ?? form.get('target_id');
       targetId = await resolveTargetId(targetType, raw);
-      if (targetId === null) return back('Choose a target first.');
+      if (targetId === null) return back('لطفاً ابتدا یک مقصد انتخاب کنید.');
     }
 
     const result = await addMenuItem(env.DB, {
@@ -140,9 +119,9 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       targetId,
       label: normalizeLabel(form.get('label')),
     });
-    if (result.ok) return saved();
+    if (result.ok) return saved(`${location}:${targetType}`);
 
-    const what = targetType === 'home' ? 'Home' : 'Catalog';
+    const what = targetType === 'home' ? 'صفحه اصلی' : 'فروشگاه';
     return back(
       result.reason === 'full'
         ? FAILURE_MESSAGES.full(location)
@@ -152,12 +131,9 @@ export const POST: APIRoute = async ({ request, redirect }) => {
     );
   }
 
-  // Drag-and-drop sends the whole order for one menu, as nav_ public IDs.
-  // Resolved through one location-scoped map, so ids from the other menu (or
-  // a tampered payload) simply drop out and fail the permutation check below.
   if (action === 'reorder') {
     const location = form.get('location');
-    if (!isMenuLocation(location)) return new Response('Invalid location', { status: 400 });
+    if (!isMenuLocation(location)) return new Response('موقعیت منو نامعتبر است', { status: 400 });
     const byPublicId = await menuItemIdsByPublicId(env.DB, location);
     const ids = form
       .getAll('order')
@@ -165,34 +141,29 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       .map((pid) => (pid ? byPublicId.get(pid) : undefined))
       .filter((n): n is number => n !== undefined)
       .slice(0, MENU_CAPS[location]);
-    // Rejected rather than partially applied: a list that is not a complete,
-    // duplicate-free permutation of this menu would leave rows sharing a
-    // position. The client reloads on a non-OK response, so the merchant sees
-    // the real order rather than an optimistic one.
     const applied = await reorderMenuItems(env.DB, location, ids);
-    if (!applied) return back('That reorder did not match the menu. Reloading.');
-    return saved();
+    if (!applied) return back('ترتیب ارسال‌شده با منو مطابقت نداشت؛ صفحه بازخوانی می‌شود.');
+    return saved(location);
   }
 
-  // Row actions address the item by its nav_ public ID.
   const itemPublicId = parsePublicId(form.get('id'), 'navItem');
   const id = itemPublicId ? await getMenuItemIdByPublicId(env.DB, itemPublicId) : null;
-  if (id === null) return new Response('Invalid id', { status: 400 });
+  if (id === null) return new Response('شناسه آیتم نامعتبر است', { status: 400 });
 
   if (action === 'move') {
     await moveMenuItem(env.DB, id, form.get('direction') === 'up' ? 'up' : 'down');
-    return saved();
+    return saved(itemPublicId!);
   }
 
   if (action === 'remove') {
     await removeMenuItem(env.DB, id);
-    return saved();
+    return saved(itemPublicId!);
   }
 
   if (action === 'label') {
     await setMenuItemLabel(env.DB, id, normalizeLabel(form.get('label')));
-    return saved();
+    return saved(itemPublicId!);
   }
 
-  return back('Unknown action.');
+  return back('عملیات نامعتبر است.');
 };

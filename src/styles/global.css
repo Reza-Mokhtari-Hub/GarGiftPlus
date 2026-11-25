@@ -7,6 +7,7 @@
    in src/ alone; scan exactly that, minus the per-theme exclusions below. */
 @import "tailwindcss" source(none);
 @source "../../src";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, .dark, .dark *));
 
 /* The active theme's Tailwind scope and design tokens. The alias resolves to
    a per-theme generated stylesheet (src/styles/themes/<theme>.css), so which

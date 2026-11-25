@@ -1,11 +1,9 @@
 ---
 import type { StorefrontSortModel } from '../models';
+import { fa } from '../../../i18n/fa';
 
 /**
- * Sort controls. The hrefs arrive already built — including the direction flip
- * on the active field and the deliberate omission of `page` — so a template can
- * restyle these without changing which URLs the catalog exposes to crawlers or
- * to the cache.
+ * Sort controls. Preserves server-built hrefs and aria-current contract.
  */
 interface Props {
   model: StorefrontSortModel;
@@ -14,21 +12,32 @@ interface Props {
 
 const {
   model,
-  class: className =
-    'mb-8 flex flex-wrap items-baseline gap-x-5 gap-y-1 text-xs uppercase tracking-widest text-muted',
+  class: className = 'mb-8 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted',
 } = Astro.props;
+
+const localizedSortLabel = (label: string) => {
+  const lower = label.trim().toLowerCase();
+  if (lower === 'newest') return fa.catalog.sortNewest;
+  if (lower === 'price') return fa.catalog.sortPrice;
+  if (lower === 'name') return fa.catalog.sortName;
+  if (lower === 'popular' || lower === 'popularity') return fa.catalog.sortPopular;
+  if (lower === 'featured') return fa.catalog.sortFeatured;
+  return label;
+};
 ---
 
 <div class={className}>
-  <span>Sort</span>
+  <span class="font-medium text-faint">{fa.catalog.sortLabel}:</span>
   {
     model.options.map((option) => (
       <a
         href={option.href}
         aria-current={option.current ? 'true' : undefined}
-        class={`hover:text-brand ${option.current ? 'text-brand' : ''}`}
+        class={`rounded-md px-2.5 py-1 font-medium transition-colors hover:text-brand-fg ${
+          option.current ? 'bg-brand-soft text-brand-fg' : 'hover:bg-surface-elevated'
+        }`}
       >
-        {option.label}
+        {localizedSortLabel(option.label)}
         {option.direction === 'asc' ? ' ↑' : option.direction === 'desc' ? ' ↓' : ''}
       </a>
     ))

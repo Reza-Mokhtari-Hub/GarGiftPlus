@@ -13,16 +13,20 @@ import { getSecret } from '../../features/secrets/store';
 import Turnstile from '../../features/auth/Turnstile.astro';
 
 if (!(await accountsEnabled())) return Astro.redirect('/', 303);
-// Already signed in → account.
 if (await getCustomerEmail(Astro.cookies)) return Astro.redirect('/account', 303);
 
 let sent = false;
-let error = Astro.url.searchParams.get('error') === 'expired' ? 'That link expired — request a new one.' : '';
+let sentEmail = '';
+let sentViaEmail = false;
+let devVerifyUrl: string | null = null;
+let error =
+  Astro.url.searchParams.get('error') === 'expired'
+    ? 'لینک ورود منقضی شده یا نامعتبر است. لطفاً مجدداً درخواست دهید.'
+    : '';
 
 if (Astro.request.method === 'POST') {
   const form = await Astro.request.formData();
-  const email = String(form.get('email') ?? '');
-  // Bot challenge (if enabled in Settings → Bot protection): verify with the vault secret.
+  const email = String(form.get('email') ?? '').trim();
   const turnstileEnabled = Astro.locals.settings?.turnstileEnabled === true;
   const tsSecret = turnstileEnabled
     ? await getSecret(env.DB, 'turnstile_secret_key')
@@ -34,58 +38,132 @@ if (Astro.request.method === 'POST') {
     Astro.request.headers.get('CF-Connecting-IP'),
   );
   if (!tsOk) {
-    error = 'Verification failed — please try again.';
+    error = 'تایید امنیتی انجام نشد. لطفاً دوباره تلاش کنید.';
   } else if (!isValidEmail(email)) {
-    error = 'Enter a valid email address.';
+    error = 'لطفاً یک آدرس ایمیل معتبر وارد کنید.';
   } else {
-    await requestLogin(email, Astro.url.origin);
+    const res = await requestLogin(email, Astro.url.origin);
     sent = true;
+    sentEmail = email.toLowerCase();
+    sentViaEmail = res.sentViaEmail;
+    if (import.meta.env.DEV && !res.sentViaEmail && res.verifyUrl) {
+      devVerifyUrl = res.verifyUrl;
+    }
   }
 }
 ---
 
-<Layout title="Sign in">
-  <div class="mx-auto max-w-sm py-10">
-    <h1 class="mb-2 font-serif text-3xl tracking-tight sm:text-4xl">Sign in</h1>
+<Layout title="ورود به حساب کاربری">
+  <div class="mx-auto max-w-md py-8 sm:py-12">
+    <div class="rounded-xl border border-line bg-surface p-6 sm:p-8 shadow-sm">
+      <div class="mb-6 flex items-center gap-3">
+        <span
+          class="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-brand/15 text-brand-fg"
+          aria-hidden="true"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+        </span>
+        <div>
+          <h1 class="gg-h2 text-ink">ورود / ثبت‌نام در GarGift+</h1>
+          <p class="mt-0.5 text-xs text-muted">ورود امن و بدون رمز عبور از طریق لینک یک‌بارمصرف ایمیل</p>
+        </div>
+      </div>
 
-    {
-      sent ? (
-        <p class="rounded-md border border-line bg-surface px-4 py-3 text-sm text-muted">
-          Check your email — we sent a one-time sign-in link. It expires in 15 minutes.
-        </p>
-      ) : (
-        <Fragment>
-          <p class="mb-5 text-sm text-muted">
-            Enter your email and we'll send a sign-in link — no password needed. Use the address
-            from your orders to see your order history.
-          </p>
-          {error && (
-            <p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              {error}
-            </p>
-          )}
-          <form method="POST" class="space-y-3">
-            <input
-              type="email"
-              name="email"
-              required
-              autofocus
-              autocomplete="email"
-              placeholder="you@example.com"
-              class="w-full rounded-md border border-line px-3 py-2"
-            />
-            <div class="flex justify-center">
-              <Turnstile />
+      {
+        sent ? (
+          <div class="space-y-4">
+            <div class="rounded-xl border border-accent/40 bg-paper p-4 text-sm text-ink">
+              <p class="font-bold text-accent-fg">
+                {sentViaEmail
+                  ? 'لینک ورود یک‌بارمصرف ارسال شد'
+                  : devVerifyUrl
+                    ? 'لینک ورود یک‌بارمصرف آماده شد'
+                    : 'ارسال ایمیل ورود در حال حاضر ممکن نیست'}
+              </p>
+              <p class="mt-1.5 text-xs leading-relaxed text-muted">
+                {sentViaEmail
+                  ? `لینک ورود به آدرس ${sentEmail} ارسال شد. این لینک تا ۱۵ دقیقه معتبر است.`
+                  : devVerifyUrl
+                    ? `درخواست ورود برای ${sentEmail} ثبت شد.`
+                    : 'سرویس ارسال ایمیل فروشگاه هنوز پیکربندی یا فعال نشده است. لطفاً با پشتیبانی فروشگاه تماس بگیرید.'}
+              </p>
             </div>
-            <button
-              type="submit"
-              class="w-full rounded-md bg-brand px-4 py-2.5 font-medium text-on-brand hover:bg-brand-hover"
+
+            {import.meta.env.DEV && devVerifyUrl && (
+              <div
+                data-dev-magic-link-box
+                class="rounded-xl border border-brand/35 bg-brand/10 p-4 text-xs text-ink"
+              >
+                <p class="font-bold text-brand-fg">
+                  ورود مستقیم (فقط در محیط توسعه محلی)
+                </p>
+                <p class="mt-1 text-muted">
+                  برای تکمیل فوری ورود به حساب کاربری و دسترسی به کیف پول، روی دکمه زیر کلیک کنید:
+                </p>
+                <a
+                  href={devVerifyUrl}
+                  data-dev-magic-link
+                  class="mt-3 inline-flex w-full items-center justify-center rounded-lg bg-brand px-4 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                >
+                  تایید و ورود به حساب کاربری &larr;
+                </a>
+              </div>
+            )}
+
+            <a
+              href="/account/login"
+              class="block text-center text-xs font-medium text-muted hover:text-brand-fg"
             >
-              Send sign-in link
-            </button>
-          </form>
-        </Fragment>
-      )
-    }
+              تغییر آدرس ایمیل
+            </a>
+          </div>
+        ) : (
+          <Fragment>
+            <p class="mb-5 text-xs leading-relaxed text-muted">
+              آدرس ایمیل خود را وارد کنید تا لینک ورود امن برایتان صادر شود. با ورود به حساب می‌توانید موجودی کیف پول خود را شارژ کنید، وضعیت فیش‌های کارت‌به‌کارت را ببینید و سوابق سفارش‌هایتان را پیگیری نمایید.
+            </p>
+
+            {error && (
+              <div
+                role="alert"
+                class="mb-4 rounded-lg border border-danger/40 bg-danger/10 px-3.5 py-2.5 text-xs font-semibold text-danger"
+              >
+                {error}
+              </div>
+            )}
+
+            <form method="POST" class="space-y-4">
+              <label class="block space-y-1.5 text-xs font-semibold text-ink">
+                <span>آدرس ایمیل شما</span>
+                <input
+                  type="email"
+                  name="email"
+                  required
+                  autofocus
+                  dir="ltr"
+                  autocomplete="email"
+                  placeholder="you@example.com"
+                  class="ltr-inline w-full rounded-lg border border-line bg-paper px-3.5 py-2.5 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+                />
+              </label>
+
+              <div class="flex justify-center">
+                <Turnstile />
+              </div>
+
+              <button
+                type="submit"
+                class="w-full rounded-lg bg-brand px-4 py-3 text-sm font-bold text-on-brand transition-colors hover:bg-brand-hover"
+              >
+                دریافت لینک ورود به حساب
+              </button>
+            </form>
+          </Fragment>
+        )
+      }
+    </div>
   </div>
 </Layout>

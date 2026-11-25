@@ -1,7 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="6" fill="#111827" />
-  <path d="M10 12h12l-1 11a2 2 0 0 1-2 1.8H13a2 2 0 0 1-2-1.8L10 12Z"
-        fill="none" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" />
-  <path d="M13 13v-2a3 3 0 0 1 6 0v2"
-        fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="gg-fav-bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8657FF" />
+      <stop offset="100%" stop-color="#5E36CA" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#gg-fav-bg)" />
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="15.25" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="1.5" />
+  <!-- Stylized Gift Lid + Box -->
+  <rect x="16" y="26" width="32" height="7" rx="2.5" fill="#F8F6FF" />
+  <path d="M19 35.5h26v10.5a4 4 0 0 1-4 4H23a4 4 0 0 1-4-4V35.5Z" fill="#F8F6FF" fill-opacity="0.92" />
+  <!-- Vertical Digital Ribbon -->
+  <rect x="29.5" y="26" width="5" height="24" rx="1.5" fill="#35D9CC" />
+  <!-- Digital Ribbon Loops -->
+  <path d="M31.5 26h-6.2a4.3 4.3 0 1 1 2.7-7.6L32 21.8l4-3.4a4.3 4.3 0 1 1 2.7 7.6h-7.2Z" stroke="#35D9CC" stroke-width="3" stroke-linejoin="round" />
+  <!-- Tech Spark / Plus -->
+  <path d="M49 12v7M45.5 15.5h7" stroke="#35D9CC" stroke-width="2.75" stroke-linecap="round" />
 </svg>

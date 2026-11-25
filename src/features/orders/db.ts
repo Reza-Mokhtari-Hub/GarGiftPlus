@@ -4,6 +4,7 @@ import {
   type StockTransitionPurger,
 } from '../products/stock.ts';
 import { generatePublicId } from '../ids/publicId.ts';
+import type { NormalizedCustomerInput } from '../products/customFields.ts';
 
 export interface ShippingAddress {
   name: string | null;
@@ -45,6 +46,12 @@ export interface Order {
   /** 'pickup' | 'shipping' | NULL (pre-0035 or no shipping). Unknown = shipping. */
   delivery_method: string | null;
   ship_address: string | null; // JSON snapshot (ShippingAddress) or null
+  customer_id?: number | null;
+  payment_status?: string | null;
+  assigned_admin?: string | null;
+  internal_notes?: string | null;
+  processing_started_at?: string | null;
+  ready_for_delivery_at?: string | null;
   created_at: string;
 }
 
@@ -59,6 +66,8 @@ export interface OrderItemInput {
   fileName?: string | null;
   fileMime?: string | null;
   fileSizeBytes?: number | null;
+  customerInputs?: NormalizedCustomerInput[];
+  trackInventory?: boolean;
 }
 
 /** A persisted order_items row. */
@@ -76,6 +85,10 @@ export interface OrderItem {
   file_mime: string | null;
   file_size_bytes: number | null;
   downloads: number;
+  customer_inputs_json: string | null;
+  fulfillment_status?: string;
+  fulfilled_at?: string | null;
+  fulfilled_by?: string | null;
 }
 
 export interface InventoryException {
@@ -193,9 +206,20 @@ export interface PaidOrderInput {
  */
 export interface OrderFilter {
   where: string;
-  params: string[];
+  params: (string | number)[];
 }
 const EMPTY_FILTER: OrderFilter = { where: '', params: [] };
+
+export async function updateOrderInternalNotes(
+  db: D1Database,
+  orderId: number,
+  internalNotes: string | null,
+): Promise<void> {
+  await db
+    .prepare('UPDATE orders SET internal_notes = ? WHERE id = ?')
+    .bind(internalNotes, orderId)
+    .run();
+}
 
 /** Recent orders for the admin view, newest first. */
 export async function listOrders(
@@ -576,13 +600,17 @@ export async function recordPaidOrder(
           .bind(it.publicId, publicId, o.providerSessionId, settlementToken),
       );
     }
+    const customerInputsJson =
+      it.customerInputs && it.customerInputs.length > 0
+        ? JSON.stringify(it.customerInputs)
+        : null;
     stmts.push(
       db
         .prepare(
           `INSERT INTO order_items
              (order_id, product_id, variant_id, name, price_cents, quantity,
-              public_id, file_key, file_name, file_mime, file_size_bytes)
-           SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM orders
+              public_id, file_key, file_name, file_mime, file_size_bytes, customer_inputs_json)
+           SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM orders
             WHERE provider_session_id = ? AND settlement_token = ?`,
         )
         .bind(
@@ -596,12 +624,14 @@ export async function recordPaidOrder(
           it.fileName ?? null,
           it.fileMime ?? null,
           it.fileSizeBytes ?? null,
+          customerInputsJson,
           o.providerSessionId,
           settlementToken,
         ),
     );
-    // A reservation already consumed this inventory before provider handoff.
-    if (skipStock) continue;
+    // A reservation already consumed this inventory before provider handoff,
+    // and digital items (trackInventory === false) do not consume stock.
+    if (skipStock || it.trackInventory === false) continue;
     const exceptionPublicId = await mintInventoryExceptionId();
     if (variantId != null) {
       stmts.push(

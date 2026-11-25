@@ -28,6 +28,8 @@ export interface ShellInput {
   searchQuery: string;
   cartEnabled: boolean;
   accountsEnabled: boolean;
+  categoryLinks?: StorefrontLink[];
+  footerInfo?: StorefrontShellModel['footerInfo'];
 }
 
 const toLink = (item: MenuItem): StorefrontLink => ({ text: item.text, href: item.href });
@@ -50,8 +52,10 @@ export function buildShellModel(input: ShellInput): StorefrontShellModel {
       : null,
     headerLinks: input.headerItems.map(toLink),
     footerLinks: input.footerItems.map(toLink),
+    ...(input.categoryLinks ? { categoryLinks: input.categoryLinks } : {}),
     search: { action: '/search', query: input.searchQuery },
     cart: { enabled: input.cartEnabled, href: '/cart' },
     account: { enabled: input.accountsEnabled, href: '/account' },
+    ...(input.footerInfo ? { footerInfo: input.footerInfo } : {}),
   };
 }

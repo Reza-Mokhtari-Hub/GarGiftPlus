@@ -1,0 +1,339 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { formatPrice } from '../../config';
+import { toPersianDigits } from '../../lib/format';
+import { fieldOptionsOf } from '../../features/products/customFields';
+import { resolveAdminActor } from '../../features/fulfillment/actor';
+import { hasAdminPermission } from '../../features/fulfillment/permissions';
+
+const actor = await resolveAdminActor(env.DB, Astro);
+const canManage = hasAdminPermission(actor, 'attributes.manage');
+
+const q = (Astro.url.searchParams.get('q') ?? '').trim().toLowerCase();
+const tab = Astro.url.searchParams.get('tab') === 'variants' ? 'variants' : 'fields';
+const saved = Astro.url.searchParams.get('saved') === '1';
+const error = Astro.url.searchParams.get('error');
+
+const [fieldsRes, variantsRes] = await Promise.all([
+  env.DB
+    .prepare(
+      `SELECT f.*, p.name AS product_name, p.public_id AS product_public_id, p.slug AS product_slug
+         FROM product_checkout_fields f
+         JOIN products p ON p.id = f.product_id
+        ORDER BY p.name ASC, f.sort_order ASC`,
+    )
+    .all<{
+      id: number;
+      public_id: string | null;
+      product_id: number;
+      field_key: string;
+      label: string;
+      field_type: 'text' | 'email' | 'number' | 'select' | 'textarea';
+      options_json: string | null;
+      is_required: number;
+      is_active: number;
+      product_name: string;
+      product_public_id: string | null;
+      product_slug: string;
+    }>(),
+  env.DB
+    .prepare(
+      `SELECT v.public_id, v.label, v.region, v.amount_label, v.duration_label, v.price_cents, v.stock, v.active,
+              p.name AS product_name, p.public_id AS product_public_id, p.currency
+         FROM product_variants v
+         JOIN products p ON p.id = v.product_id
+        ORDER BY p.name ASC, v.position ASC`,
+    )
+    .all<{
+      public_id: string | null;
+      label: string;
+      region: string | null;
+      amount_label: string | null;
+      duration_label: string | null;
+      price_cents: number;
+      stock: number;
+      active: number;
+      product_name: string;
+      product_public_id: string | null;
+      currency: string;
+    }>(),
+]);
+
+const allFields = fieldsRes.results ?? [];
+const allVariants = variantsRes.results ?? [];
+
+const fields = q
+  ? allFields.filter(
+      (f) =>
+        f.label.toLowerCase().includes(q) ||
+        f.field_key.toLowerCase().includes(q) ||
+        f.product_name.toLowerCase().includes(q),
+    )
+  : allFields;
+
+const variants = q
+  ? allVariants.filter(
+      (v) =>
+        v.label.toLowerCase().includes(q) ||
+        v.product_name.toLowerCase().includes(q) ||
+        (v.region ?? '').toLowerCase().includes(q) ||
+        (v.amount_label ?? '').toLowerCase().includes(q) ||
+        (v.duration_label ?? '').toLowerCase().includes(q),
+    )
+  : allVariants;
+
+const TYPE_LABELS: Record<string, string> = {
+  text: 'متن کوتاه',
+  email: 'ایمیل',
+  number: 'عدد',
+  select: 'لیست انتخابی',
+  textarea: 'متن چندخطی',
+};
+
+const activeFieldsCount = allFields.filter((f) => f.is_active === 1).length;
+const activeVariantsCount = allVariants.filter((v) => v.active === 1).length;
+---
+
+<AdminLayout
+  title="ویژگی‌ها و فیلدهای سفارشی"
+  active="attributes"
+  requiredPermission="attributes.manage"
+  breadcrumbs={[{ label: 'فروشگاه و کاتالوگ' }, { label: 'ویژگی‌ها و فیلدهای خرید' }]}
+>
+  <AdminPageHeader
+    title="ویژگی‌ها، تنوع‌ها و فیلدهای سفارشی محصولات"
+    subtitle="پایش متمرکز تمام فیلدهای دریافت اطلاعات مشتری هنگام خرید (اکانت، ایمیل، آیدی، ریجن) و تنوع‌های تعریف‌شده روی محصولات"
+  >
+    <a slot="actions" href="/admin/products" class="gg-admin-btn-secondary text-xs">
+      ← بازگشت به محصولات
+    </a>
+  </AdminPageHeader>
+
+  <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <AdminKpiCard
+      label="کل فیلدهای سفارشی محصولات"
+      value={`${toPersianDigits(allFields.length)} فیلد`}
+      hint={`${toPersianDigits(activeFieldsCount)} فیلد فعال`}
+      tone="violet"
+    />
+    <AdminKpiCard
+      label="کل تنوع‌ها / پلن‌های محصول"
+      value={`${toPersianDigits(allVariants.length)} تنوع`}
+      hint={`${toPersianDigits(activeVariantsCount)} تنوع فعال`}
+      tone="turquoise"
+    />
+    <AdminKpiCard
+      label="سیاست امنیتی فیلدها"
+      value="محافظت‌شده"
+      hint="فیلد رمز عبور (password) در کل سامانه مسدود است"
+      tone="amber"
+    />
+  </div>
+
+  {
+    saved && (
+      <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-sm font-medium">
+        وضعیت فیلد سفارشی با موفقیت به‌روزرسانی شد.
+      </div>
+    )
+  }
+  {
+    error && (
+      <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-sm font-medium">
+        {error}
+      </div>
+    )
+  }
+
+  <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-1 rounded-xl border border-line bg-surface p-1 text-xs">
+      <a
+        href={`/admin/attributes?tab=fields${q ? `&q=${encodeURIComponent(q)}` : ''}`}
+        class={`rounded-lg px-3.5 py-2 font-semibold transition ${tab === 'fields' ? 'bg-brand text-on-brand' : 'text-muted hover:text-ink'}`}
+      >
+        فیلدهای سفارشی خرید ({toPersianDigits(fields.length)})
+      </a>
+      <a
+        href={`/admin/attributes?tab=variants${q ? `&q=${encodeURIComponent(q)}` : ''}`}
+        class={`rounded-lg px-3.5 py-2 font-semibold transition ${tab === 'variants' ? 'bg-brand text-on-brand' : 'text-muted hover:text-ink'}`}
+      >
+        تنوع‌ها و پلن‌ها ({toPersianDigits(variants.length)})
+      </a>
+    </div>
+
+    <form method="GET" action="/admin/attributes" class="flex items-center gap-2">
+      <input type="hidden" name="tab" value={tab} />
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder="جستجو بر اساس محصول یا نام فیلد..."
+        class="gg-admin-input w-64 py-2 text-xs"
+      />
+      <button type="submit" class="gg-admin-btn-secondary py-2 text-xs">
+        جستجو
+      </button>
+    </form>
+  </div>
+
+  {
+    tab === 'fields' ? (
+      fields.length === 0 ? (
+        <AdminEmptyState
+          title="فیلد سفارشی‌ای یافت نشد"
+          description="فیلدهای سفارشی خرید از صفحه ویرایش هر محصول تعریف می‌شوند و در این بخش قابل پایش و مدیریت سریع هستند."
+          actionLabel="مشاهده محصولات"
+          actionHref="/admin/products"
+        />
+      ) : (
+        <div class="gg-admin-card overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="gg-admin-table">
+              <thead>
+                <tr>
+                  <th>عنوان فیلد</th>
+                  <th>کلید فنی</th>
+                  <th>محصول مرتبط</th>
+                  <th>نوع</th>
+                  <th>گزینه‌ها</th>
+                  <th>الزامی</th>
+                  <th>وضعیت</th>
+                  <th class="text-end">مدیریت</th>
+                </tr>
+              </thead>
+              <tbody>
+                {
+                  fields.map((f) => {
+                    const opts = fieldOptionsOf(f);
+                    return (
+                      <tr>
+                        <td class="font-semibold text-ink">{f.label}</td>
+                        <td>
+                          <span class="ltr-inline font-mono text-xs text-muted">{f.field_key}</span>
+                        </td>
+                        <td>
+                          {f.product_public_id ? (
+                            <a href={`/admin/products/${f.product_public_id}/edit`} class="font-medium text-brand-fg hover:underline">
+                              {f.product_name}
+                            </a>
+                          ) : (
+                            <span>{f.product_name}</span>
+                          )}
+                        </td>
+                        <td class="text-xs text-muted">{TYPE_LABELS[f.field_type] ?? f.field_type}</td>
+                        <td class="max-w-[12rem] truncate text-xs text-muted">
+                          {opts.length > 0 ? opts.join('، ') : '—'}
+                        </td>
+                        <td>
+                          {canManage && f.public_id ? (
+                            <form method="POST" action="/api/admin/attributes">
+                              <input type="hidden" name="_action" value="toggle_required" />
+                              <input type="hidden" name="field_public_id" value={f.public_id} />
+                              <button
+                                type="submit"
+                                class={`rounded-md px-2 py-0.5 text-[11px] font-semibold transition hover:opacity-80 ${f.is_required === 1 ? 'gg-status-info' : 'border border-line text-muted'}`}
+                              >
+                                {f.is_required === 1 ? 'الزامی' : 'اختیاری'}
+                              </button>
+                            </form>
+                          ) : (
+                            <span class="text-xs text-muted">{f.is_required === 1 ? 'الزامی' : 'اختیاری'}</span>
+                          )}
+                        </td>
+                        <td>
+                          {canManage && f.public_id ? (
+                            <form method="POST" action="/api/admin/attributes">
+                              <input type="hidden" name="_action" value="toggle_active" />
+                              <input type="hidden" name="field_public_id" value={f.public_id} />
+                              <button
+                                type="submit"
+                                class={`rounded-md px-2 py-0.5 text-[11px] font-semibold transition hover:opacity-80 ${f.is_active === 1 ? 'gg-status-success' : 'gg-status-warning'}`}
+                              >
+                                {f.is_active === 1 ? 'فعال' : 'غیرفعال'}
+                              </button>
+                            </form>
+                          ) : (
+                            <span class="text-xs text-muted">{f.is_active === 1 ? 'فعال' : 'غیرفعال'}</span>
+                          )}
+                        </td>
+                        <td class="text-end">
+                          {f.product_public_id && (
+                            <a href={`/admin/products/${f.product_public_id}/edit`} class="text-xs font-semibold text-brand-fg hover:underline">
+                              ویرایش در محصول
+                            </a>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )
+    ) : variants.length === 0 ? (
+      <AdminEmptyState
+        title="تنوع محصولی یافت نشد"
+        description="تنوع‌ها و مبالغ مختلف هر محصول (مثلاً ریجن آمریکا / اروپا یا پلن ۱ ماهه / ۱ ساله) از داخل صفحه همان محصول تنظیم می‌شوند."
+        actionLabel="مشاهده محصولات"
+        actionHref="/admin/products"
+      />
+    ) : (
+      <div class="gg-admin-card overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>عنوان تنوع / پلن</th>
+                <th>ویژگی‌ها</th>
+                <th>محصول</th>
+                <th>مبلغ</th>
+                <th>وضعیت</th>
+                <th class="text-end">مدیریت</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                variants.map((v) => (
+                  <tr>
+                    <td class="font-semibold text-ink">{v.label}</td>
+                    <td class="text-xs text-muted">
+                      {[v.region, v.amount_label, v.duration_label].filter(Boolean).join(' · ') || '—'}
+                    </td>
+                    <td>
+                      {v.product_public_id ? (
+                        <a href={`/admin/products/${v.product_public_id}/edit`} class="font-medium text-brand-fg hover:underline">
+                          {v.product_name}
+                        </a>
+                      ) : (
+                        <span>{v.product_name}</span>
+                      )}
+                    </td>
+                    <td class="font-bold text-ink">{formatPrice(v.price_cents, v.currency)}</td>
+                    <td>
+                      <span class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${v.active === 1 ? 'gg-status-success' : 'gg-status-warning'}`}>
+                        {v.active === 1 ? 'فعال' : 'غیرفعال'}
+                      </span>
+                    </td>
+                    <td class="text-end">
+                      {v.product_public_id && (
+                        <a href={`/admin/products/${v.product_public_id}/edit`} class="text-xs font-semibold text-brand-fg hover:underline">
+                          ویرایش در محصول
+                        </a>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+</AdminLayout>

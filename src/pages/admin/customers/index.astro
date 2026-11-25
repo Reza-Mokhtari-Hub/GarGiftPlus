@@ -1,14 +1,23 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../../layouts/AdminLayout.astro';
-import { formatPrice, formatDate, getConfig } from '../../../config';
+import AdminPageHeader from '../../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../../config';
 import { countCustomers, listCustomers } from '../../../features/customers/db';
+import { listCustomersAdmin } from '../../../features/customers/accountsDb';
+import { getOrCreateWalletByCustomerId } from '../../../features/wallet/db';
 import { orderByClause } from '../../../features/customers/sort';
 import { paginate, queryHref } from '../../../pagination';
 import Pagination from '../../../components/Pagination.astro';
+import { formatJalaliDate, formatJalaliDateTime, toPersianDigits } from '../../../lib/format';
 
 const sort = Astro.url.searchParams.get('sort');
 const dir = Astro.url.searchParams.get('dir');
+const search = (Astro.url.searchParams.get('q') ?? '').trim();
+const statusFilter = Astro.url.searchParams.get('status') ?? '';
+const validStatus = statusFilter === 'active' || statusFilter === 'suspended' ? statusFilter : undefined;
+
 const PAGE_SIZE = 50;
 const { page, offset, totalPages } = paginate(
   Astro.url.searchParams,
@@ -16,11 +25,30 @@ const { page, offset, totalPages } = paginate(
   PAGE_SIZE,
 );
 const customers = await listCustomers(env.DB, orderByClause(sort, dir), PAGE_SIZE, offset);
+const registeredAccounts = await listCustomersAdmin(
+  env.DB,
+  60,
+  0,
+  search || undefined,
+  validStatus,
+);
+const accountsWithWallets = await Promise.all(
+  registeredAccounts.map(async (acc) => {
+    const w = await getOrCreateWalletByCustomerId(env.DB, acc.id);
+    return { ...acc, walletBalance: w.balance, walletCurrency: w.currency };
+  }),
+);
+
 const hrefFor = (p: number) =>
-  queryHref('/admin/customers', { sort, dir, page: p > 1 ? p : undefined });
+  queryHref('/admin/customers', {
+    sort,
+    dir,
+    q: search || undefined,
+    status: validStatus,
+    page: p > 1 ? p : undefined,
+  });
 const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
 
-// Column header → sort by it, toggling direction (default desc on a new column).
 const sortHref = (col: string) =>
   queryHref('/admin/customers', {
     sort: col,
@@ -29,57 +57,168 @@ const sortHref = (col: string) =>
 const arrow = (col: string) => (sort === col ? (dir === 'asc' ? ' ↑' : ' ↓') : '');
 ---
 
-<AdminLayout title="Customers" active="customers">
-  <h1 class="mb-8 font-serif text-3xl tracking-tight">Customers</h1>
+<AdminLayout
+  title="مشتریان و حساب‌ها"
+  active="customers"
+  requiredPermission="customers.view"
+  breadcrumbs={[{ label: 'مشتریان و مالی' }, { label: 'فهرست مشتریان' }]}
+>
+  <AdminPageHeader
+    title="مدیریت مشتریان و حساب‌های کاربری"
+    subtitle="مشاهده حساب‌های کاربری، وضعیت مسدودیت، موجودی کیف پول و مجموع خریدهای ثبت‌شده"
+    badge={`${toPersianDigits(accountsWithWallets.length)} حساب`}
+  >
+    <a slot="actions" href="/admin/wallets" class="gg-admin-btn-secondary text-xs">
+      دفتر کل کیف پول‌ها
+    </a>
+  </AdminPageHeader>
 
-  <div class="sm:overflow-x-auto">
-    <table class="admin-table w-full text-left text-sm sm:min-w-[40rem]">
-    <thead>
-      <tr class="border-b border-line text-xs uppercase tracking-widest text-gray-400">
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('email')} class="hover:text-brand">Email{arrow('email')}</a>
-        </th>
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('orders')} class="hover:text-brand">Orders{arrow('orders')}</a>
-        </th>
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('lifetime')} class="hover:text-brand">Lifetime value{arrow('lifetime')}</a>
-        </th>
-        <th class="py-3 font-normal">
-          <a href={sortHref('last')} class="hover:text-brand">Last order{arrow('last')}</a>
-        </th>
-      </tr>
-    </thead>
-    <tbody>
-      {
-        customers.map((c) => (
-          <tr class="border-b border-line">
-            <td class="py-3 pr-4">
-              <a
-                href={`/admin/customers/${encodeURIComponent(c.email)}`}
-                class="text-accent hover:underline"
-              >
-                {c.email}
-              </a>
-            </td>
-            <td data-label="Orders" class="py-3 pr-4 tabular-nums">{c.orders}</td>
-            <td data-label="Lifetime value" class="py-3 pr-4 tabular-nums">{formatPrice(c.lifetime_cents)}</td>
-            <td data-label="Last order" class="py-3 text-gray-500">{formatDate(c.last_order, { dateStyle: 'medium' }, timeZone)}</td>
-          </tr>
-        ))
-      }
-      {
-        customers.length === 0 && (
+  <form method="GET" action="/admin/customers" class="gg-admin-card mb-6 flex flex-wrap items-center gap-3 p-4">
+    <input
+      type="search"
+      name="q"
+      value={search}
+      placeholder="جستجوی ایمیل، نام، موبایل یا کد مشتری..."
+      class="gg-admin-input min-w-56 flex-1 py-2 text-xs"
+    />
+    <select name="status" class="gg-admin-input w-44 py-2 text-xs">
+      <option value="">همه وضعیت‌ها</option>
+      <option value="active" selected={validStatus === 'active'}>فقط حساب‌های فعال</option>
+      <option value="suspended" selected={validStatus === 'suspended'}>حساب‌های مسدودشده</option>
+    </select>
+    <button type="submit" class="gg-admin-btn-primary py-2 text-xs">جستجو و فیلتر</button>
+    {(search || validStatus) && (
+      <a href="/admin/customers" class="gg-admin-btn-secondary py-2 text-xs">پاک کردن</a>
+    )}
+  </form>
+
+  {/* حساب‌های کاربری و کیف پول */}
+  <section class="gg-admin-card mb-8 overflow-hidden p-5">
+    <h2 class="mb-4 text-base font-bold text-ink">حساب‌های کاربری و موجودی کیف پول</h2>
+    {
+      accountsWithWallets.length === 0 ? (
+        <AdminEmptyState
+          title="حساب کاربری با این مشخصات یافت نشد"
+          description="با اولین ورود یا خرید مشتری در فروشگاه، حساب و کیف پول به‌صورت خودکار ایجاد می‌شود."
+        />
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>ایمیل کاربر</th>
+                <th>نام و نام خانوادگی</th>
+                <th>موبایل</th>
+                <th>وضعیت</th>
+                <th>موجودی کیف پول</th>
+                <th>آخرین ورود</th>
+                <th class="text-end">مدیریت</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                accountsWithWallets.map((acc) => {
+                  const suspended = acc.status === 'suspended';
+                  return (
+                    <tr>
+                      <td>
+                        <a
+                          href={`/admin/customers/${encodeURIComponent(acc.email)}`}
+                          class="ltr-inline font-mono text-xs font-semibold text-brand-fg hover:underline"
+                        >
+                          {acc.email}
+                        </a>
+                      </td>
+                      <td class="font-medium text-ink">{acc.full_name || '—'}</td>
+                      <td>
+                        <span class="ltr-inline font-mono text-xs text-muted">{acc.phone || '—'}</span>
+                      </td>
+                      <td>
+                        <span class={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${suspended ? 'gg-status-error' : 'gg-status-success'}`}>
+                          {suspended ? 'مسدودشده' : 'فعال'}
+                        </span>
+                      </td>
+                      <td class="font-bold text-ink">
+                        {formatPrice(acc.walletBalance, acc.walletCurrency)}
+                      </td>
+                      <td class="text-xs text-muted">
+                        {formatJalaliDateTime(acc.last_login_at || acc.created_at, { timeZone })}
+                      </td>
+                      <td class="text-end">
+                        <a
+                          href={`/admin/customers/${encodeURIComponent(acc.email)}`}
+                          class="gg-admin-btn-secondary py-1 text-xs"
+                        >
+                          پروفایل و کیف پول
+                        </a>
+                      </td>
+                    </tr>
+                  );
+                })
+              }
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
+
+  {/* خلاصه مشتریان بر اساس سفارش‌های تسویه‌شده */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-base font-bold text-ink">مشتریان بر اساس سفارش‌های تسویه‌شده</h2>
+    <div class="overflow-x-auto">
+      <table class="gg-admin-table">
+        <thead>
           <tr>
-            <td colspan="4" class="py-8 text-center text-gray-400">
-              No customers yet.
-            </td>
+            <th>
+              <a href={sortHref('email')} class="hover:text-brand-fg">ایمیل{arrow('email')}</a>
+            </th>
+            <th>
+              <a href={sortHref('orders')} class="hover:text-brand-fg">تعداد سفارش{arrow('orders')}</a>
+            </th>
+            <th>
+              <a href={sortHref('lifetime')} class="hover:text-brand-fg">مجموع خرید{arrow('lifetime')}</a>
+            </th>
+            <th>
+              <a href={sortHref('last')} class="hover:text-brand-fg">آخرین سفارش{arrow('last')}</a>
+            </th>
           </tr>
-        )
-      }
-    </tbody>
-    </table>
-  </div>
+        </thead>
+        <tbody>
+          {
+            customers.map((c) => (
+              <tr>
+                <td>
+                  <a
+                    href={`/admin/customers/${encodeURIComponent(c.email)}`}
+                    class="ltr-inline font-mono text-xs text-brand-fg hover:underline"
+                  >
+                    {c.email}
+                  </a>
+                </td>
+                <td class="font-semibold text-ink">{toPersianDigits(c.orders)}</td>
+                <td class="font-bold text-ink">{formatPrice(c.lifetime_cents)}</td>
+                <td class="text-xs text-muted">
+                  {formatJalaliDate(c.last_order, { timeZone })}
+                </td>
+              </tr>
+            ))
+          }
+          {
+            customers.length === 0 && (
+              <tr>
+                <td colspan="4" class="py-8 text-center text-xs text-muted">
+                  هنوز سفارشی ثبت نشده است.
+                </td>
+              </tr>
+            )
+          }
+        </tbody>
+      </table>
+    </div>
 
-  <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+    <div class="mt-4">
+      <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+    </div>
+  </section>
 </AdminLayout>

@@ -1,0 +1,130 @@
+---
+import type { StorefrontShellModel } from '../../features/storefront/models';
+import BrandLogo from '../../features/storefront/controls/BrandLogo.astro';
+import StoreImage from '../../features/storefront/controls/StoreImage.astro';
+import StoreNav from '../../features/storefront/controls/StoreNav.astro';
+import StoreSearch from '../../features/storefront/controls/StoreSearch.astro';
+import StoreCartControl from '../../features/storefront/controls/StoreCartControl.astro';
+import StoreAccountControl from '../../features/storefront/controls/StoreAccountControl.astro';
+import ThemeSwitcher from '../../features/storefront/controls/ThemeSwitcher.astro';
+
+/**
+ * هدر اصلی فروشگاه GarGift+ با چیدمان کامل راست‌به‌چپ (RTL)،
+ * نوار اطلاع‌رسانی بالای صفحه، دسته‌بندی‌ها، جستجو، تغییر تم، سبد خرید و منوی کامل حساب کاربری.
+ */
+interface Props {
+  model: StorefrontShellModel;
+}
+
+const { model } = Astro.props;
+---
+
+{
+  model.announcement && (
+    <div
+      data-announcement-bar
+      class="border-b border-[#5b63fe]/20 bg-gradient-to-l from-[#5b63fe] via-[#7043e8] to-[#5b63fe] px-4 py-2 text-center text-xs font-semibold text-white dark:border-[#162434] dark:bg-none dark:bg-[#05080f] dark:text-[#cbd5e1]"
+    >
+      <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-center gap-2">
+        <span class="inline-flex h-2 w-2 rounded-full bg-[#84cc16] dark:bg-[#35d9cc] dark:shadow-[0_0_8px_#35d9cc]"></span>
+        {model.announcement.href ? (
+          <a
+            href={model.announcement.href}
+            class="inline-flex items-center gap-1.5 underline decoration-white/60 underline-offset-4 hover:decoration-white dark:text-[#35d9cc] dark:decoration-[#35d9cc]/50 dark:hover:decoration-[#35d9cc]"
+          >
+            <span>{model.announcement.text}</span>
+            <span aria-hidden="true">&larr;</span>
+          </a>
+        ) : (
+          <span>{model.announcement.text}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+<header class="sticky top-0 z-30 border-b border-[#e3e7f7] bg-white/95 shadow-[0_4px_20px_-4px_rgba(91,99,254,0.06)] backdrop-blur-md dark:border-[#152232] dark:bg-[#080c14]/95 dark:shadow-[0_4px_24px_rgba(0,0,0,0.5)]">
+  <nav
+    aria-label="منوی اصلی"
+    class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-2 gap-y-2 px-3 py-2.5 sm:flex-nowrap sm:gap-4 sm:px-6 sm:py-3.5"
+  >
+    <div class="flex min-w-0 items-center gap-2 sm:gap-3 lg:gap-4">
+      <a
+        href="/"
+        class="inline-flex shrink-0 items-center rounded-lg transition-opacity hover:opacity-90"
+      >
+        {
+          model.logo ? (
+            <StoreImage
+              image={model.logo}
+              class="h-8 w-auto max-w-44 object-contain sm:h-9"
+            />
+          ) : (
+            <BrandLogo variant="compact" label={model.storeName} />
+          )
+        }
+      </a>
+
+      <StoreNav
+        links={model.headerLinks}
+        categoryLinks={model.categoryLinks}
+        accountHref={model.account.enabled ? model.account.href : null}
+        mode="inline"
+        class="hidden min-w-0 items-center gap-3 text-sm font-medium text-muted xl:flex xl:gap-4"
+      />
+    </div>
+
+    <div class="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:flex-nowrap sm:gap-2 xl:shrink-0">
+      <StoreSearch
+        action={model.search.action}
+        query={model.search.query}
+        class="hidden lg:block"
+      />
+
+      <a
+        href={model.search.action}
+        aria-label="جستجوی محصولات"
+        class="inline-flex min-h-8 min-w-8 sm:min-h-9 sm:min-w-9 items-center justify-center rounded-lg border border-line bg-surface p-1.5 sm:p-2 text-muted transition-colors hover:border-brand hover:text-brand-fg lg:hidden"
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.75"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <circle cx="8.5" cy="8.5" r="5.75" />
+          <path d="M13 13l4 4" />
+        </svg>
+      </a>
+
+      <ThemeSwitcher scope="storefront" compact />
+
+      {
+        model.account.enabled && (
+          <StoreAccountControl href={model.account.href} />
+        )
+      }
+
+      {
+        model.cart.enabled && (
+          <StoreCartControl
+            href={model.cart.href}
+            class="inline-flex min-h-8 sm:min-h-9 items-center gap-1 sm:gap-1.5 whitespace-nowrap rounded-lg border border-line bg-surface px-2 sm:px-3 py-1 sm:py-1.5 text-xs font-semibold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+          />
+        )
+      }
+
+      <StoreNav
+        links={model.headerLinks}
+        categoryLinks={model.categoryLinks}
+        accountHref={model.account.enabled ? model.account.href : null}
+        mode="disclosure"
+        disclosureClass="relative xl:hidden"
+      />
+    </div>
+  </nav>
+</header>

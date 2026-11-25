@@ -1,0 +1,320 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { getConfig } from '../../config';
+import { parsePublicId } from '../../features/ids/publicId';
+import {
+  getSupportTicketByPublicId,
+  listAdminTickets,
+  listTicketReplies,
+  TICKET_DEPARTMENT_LABELS,
+  TICKET_PRIORITY_LABELS,
+  TICKET_STATUS_LABELS,
+  type TicketStatus,
+} from '../../features/tickets/db';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const statusFilter = (Astro.url.searchParams.get('status') ?? '').trim();
+const deptFilter = (Astro.url.searchParams.get('department') ?? '').trim();
+const searchQ = (Astro.url.searchParams.get('q') ?? '').trim();
+
+const [allTickets, filteredTickets] = await Promise.all([
+  listAdminTickets(env.DB, {}, 200, 0),
+  listAdminTickets(env.DB, { status: statusFilter, department: deptFilter, q: searchQ }, 80, 0),
+]);
+
+const openCount = allTickets.filter((t) => t.status === 'open').length;
+const inProgressCount = allTickets.filter((t) => t.status === 'in_progress' || t.status === 'waiting_customer').length;
+const resolvedCount = allTickets.filter((t) => t.status === 'resolved' || t.status === 'closed').length;
+
+const requestedPid = parsePublicId(Astro.url.searchParams.get('ticket'), 'supportTicket');
+const selectedTicket =
+  (requestedPid ? filteredTickets.find((t) => t.public_id === requestedPid) : null) ??
+  (requestedPid ? await getSupportTicketByPublicId(env.DB, requestedPid) : null) ??
+  filteredTickets[0] ??
+  null;
+
+const replies = selectedTicket ? await listTicketReplies(env.DB, selectedTicket.id, true) : [];
+
+const msg = Astro.url.searchParams.get('msg');
+const err = Astro.url.searchParams.get('error');
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+
+const statusStyle: Record<TicketStatus, string> = {
+  open: 'gg-status-warning',
+  in_progress: 'gg-status-info',
+  waiting_customer: 'bg-brand-soft text-brand-fg border border-brand/25',
+  resolved: 'gg-status-success',
+  closed: 'bg-surface-elevated text-muted border border-line',
+};
+---
+
+<AdminLayout
+  title="تیکت‌های پشتیبانی"
+  active="tickets"
+  requiredPermission="tickets.manage"
+  breadcrumbs={[{ label: 'عملیات روزانه' }, { label: 'تیکت‌های پشتیبانی' }]}
+>
+  <AdminPageHeader
+    title="مرکز پشتیبانی و تیکت‌های مشتریان"
+    subtitle="پاسخ‌گویی به تیکت‌ها، ثبت یادداشت داخلی تیم و پیگیری سریع سفارش‌های مرتبط"
+    badge={`${toPersianDigits(openCount)} تیکت باز`}
+  />
+
+  {msg && <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{msg}</div>}
+  {err && <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{err}</div>}
+
+  <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <AdminKpiCard label="کل تیکت‌ها" value={toPersianDigits(allTickets.length)} tone="violet" />
+    <AdminKpiCard label="باز و نیازمند پاسخ" value={toPersianDigits(openCount)} tone="coral" href="/admin/tickets?status=open" />
+    <AdminKpiCard label="در حال بررسی / منتظر مشتری" value={toPersianDigits(inProgressCount)} tone="amber" href="/admin/tickets?status=in_progress" />
+    <AdminKpiCard label="حل‌شده و بسته" value={toPersianDigits(resolvedCount)} tone="turquoise" href="/admin/tickets?status=resolved" />
+  </div>
+
+  {/* نوار فیلتر */}
+  <form method="GET" action="/admin/tickets" class="gg-admin-card mb-6 flex flex-wrap items-center gap-3 p-4">
+    <input
+      type="search"
+      name="q"
+      value={searchQ}
+      placeholder="جستجو در کد تیکت، ایمیل مشتری، موضوع یا شناسه سفارش..."
+      class="gg-admin-input min-w-56 flex-1 py-2 text-xs"
+    />
+    <select name="status" class="gg-admin-input w-44 py-2 text-xs">
+      <option value="">همه وضعیت‌ها</option>
+      <option value="open" selected={statusFilter === 'open'}>{TICKET_STATUS_LABELS.open}</option>
+      <option value="in_progress" selected={statusFilter === 'in_progress'}>{TICKET_STATUS_LABELS.in_progress}</option>
+      <option value="waiting_customer" selected={statusFilter === 'waiting_customer'}>{TICKET_STATUS_LABELS.waiting_customer}</option>
+      <option value="resolved" selected={statusFilter === 'resolved'}>{TICKET_STATUS_LABELS.resolved}</option>
+      <option value="closed" selected={statusFilter === 'closed'}>{TICKET_STATUS_LABELS.closed}</option>
+    </select>
+    <select name="department" class="gg-admin-input w-44 py-2 text-xs">
+      <option value="">همه بخش‌ها</option>
+      <option value="support" selected={deptFilter === 'support'}>{TICKET_DEPARTMENT_LABELS.support}</option>
+      <option value="fulfillment" selected={deptFilter === 'fulfillment'}>{TICKET_DEPARTMENT_LABELS.fulfillment}</option>
+      <option value="finance" selected={deptFilter === 'finance'}>{TICKET_DEPARTMENT_LABELS.finance}</option>
+      <option value="technical" selected={deptFilter === 'technical'}>{TICKET_DEPARTMENT_LABELS.technical}</option>
+    </select>
+    <button type="submit" class="gg-admin-btn-primary py-2 text-xs">اعمال فیلتر</button>
+    {(searchQ || statusFilter || deptFilter) && (
+      <a href="/admin/tickets" class="gg-admin-btn-secondary py-2 text-xs">پاک کردن</a>
+    )}
+  </form>
+
+  {filteredTickets.length === 0 && !selectedTicket ? (
+    <AdminEmptyState
+      title="تیکتی مطابق فیلترها پیدا نشد"
+      description="هنوز تیکت پشتیبانی با این مشخصات ثبت نشده است."
+    />
+  ) : (
+    <div class="grid gap-6 lg:grid-cols-12">
+      {/* فهرست تیکت‌ها */}
+      <section class="gg-admin-card p-4 lg:col-span-5">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-sm font-bold text-ink">صندوق ورودی تیکت‌ها</h2>
+          <span class="text-xs text-muted">{toPersianDigits(filteredTickets.length)} مورد</span>
+        </div>
+        <div class="space-y-2 max-h-[42rem] overflow-y-auto pe-1">
+          {filteredTickets.map((t) => {
+            const activeRow = selectedTicket?.public_id === t.public_id;
+            const qs = new URLSearchParams();
+            if (statusFilter) qs.set('status', statusFilter);
+            if (deptFilter) qs.set('department', deptFilter);
+            if (searchQ) qs.set('q', searchQ);
+            qs.set('ticket', t.public_id);
+            return (
+              <a
+                href={`/admin/tickets?${qs.toString()}`}
+                class:list={[
+                  'block rounded-xl border p-3.5 transition',
+                  activeRow
+                    ? 'border-brand bg-brand-soft/60 shadow-xs'
+                    : 'border-line bg-paper hover:border-brand/45',
+                ]}
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <p class="text-xs font-bold text-ink">{t.subject}</p>
+                  <span class={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold ${statusStyle[t.status]}`}>
+                    {TICKET_STATUS_LABELS[t.status]}
+                  </span>
+                </div>
+                <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted">
+                  <span class="ltr-inline font-mono">{t.customer_email}</span>
+                  <span>{TICKET_PRIORITY_LABELS[t.priority]}</span>
+                </div>
+                <div class="mt-1.5 flex items-center justify-between text-[10px] text-faint">
+                  <span>{TICKET_DEPARTMENT_LABELS[t.department]}</span>
+                  <span>{formatJalaliDateTime(t.last_reply_at, { timeZone })}</span>
+                </div>
+              </a>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* جزئیات و گفتگو */}
+      <section class="gg-admin-card p-5 lg:col-span-7">
+        {selectedTicket ? (
+          <div class="space-y-5">
+            <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-4">
+              <div class="space-y-1.5">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h2 class="text-base font-extrabold text-ink">{selectedTicket.subject}</h2>
+                  <span class={`rounded-md px-2.5 py-0.5 text-[11px] font-bold ${statusStyle[selectedTicket.status]}`}>
+                    {TICKET_STATUS_LABELS[selectedTicket.status]}
+                  </span>
+                </div>
+                <div class="flex flex-wrap items-center gap-3 text-xs text-muted">
+                  <span>
+                    مشتری:{' '}
+                    <a
+                      href={`/admin/customers/${encodeURIComponent(selectedTicket.customer_email)}`}
+                      class="ltr-inline font-mono font-semibold text-brand-fg hover:underline"
+                    >
+                      {selectedTicket.customer_email}
+                    </a>
+                  </span>
+                  <span>بخش: {TICKET_DEPARTMENT_LABELS[selectedTicket.department]}</span>
+                  <span>مسئول: {selectedTicket.assigned_admin || 'تخصیص نیافته'}</span>
+                </div>
+                {selectedTicket.order_public_id && (
+                  <p class="text-xs text-muted">
+                    سفارش مرتبط:{' '}
+                    <a
+                      href={`/admin/orders/${encodeURIComponent(selectedTicket.order_public_id)}`}
+                      class="ltr-inline font-mono font-semibold text-accent-fg hover:underline"
+                    >
+                      {selectedTicket.order_public_id}
+                    </a>
+                  </p>
+                )}
+              </div>
+              <span class="ltr-inline font-mono text-[11px] text-faint">
+                {selectedTicket.public_id}
+              </span>
+            </div>
+
+            {/* کنترل سریع وضعیت */}
+            <form method="POST" action="/api/admin/tickets" class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-paper p-3">
+              <input type="hidden" name="_action" value="status" />
+              <input type="hidden" name="ticket_public_id" value={selectedTicket.public_id} />
+              <select name="status" class="gg-admin-input w-44 py-1.5 text-xs">
+                <option value="open" selected={selectedTicket.status === 'open'}>{TICKET_STATUS_LABELS.open}</option>
+                <option value="in_progress" selected={selectedTicket.status === 'in_progress'}>{TICKET_STATUS_LABELS.in_progress}</option>
+                <option value="waiting_customer" selected={selectedTicket.status === 'waiting_customer'}>{TICKET_STATUS_LABELS.waiting_customer}</option>
+                <option value="resolved" selected={selectedTicket.status === 'resolved'}>{TICKET_STATUS_LABELS.resolved}</option>
+                <option value="closed" selected={selectedTicket.status === 'closed'}>{TICKET_STATUS_LABELS.closed}</option>
+              </select>
+              <label class="flex items-center gap-1.5 text-xs text-muted">
+                <input type="checkbox" name="assign_self" value="1" class="accent-brand" />
+                <span>تخصیص به من</span>
+              </label>
+              <button type="submit" class="gg-admin-btn-secondary py-1.5 text-xs">
+                ذخیره وضعیت
+              </button>
+            </form>
+
+            {selectedTicket.status !== 'closed' && (
+              <form method="POST" action="/api/admin/tickets" class="flex justify-end">
+                <input type="hidden" name="_action" value="status" />
+                <input type="hidden" name="ticket_public_id" value={selectedTicket.public_id} />
+                <input type="hidden" name="status" value="closed" />
+                <button
+                  type="submit"
+                  data-confirm-message="آیا از بستن این تیکت مطمئن هستید؟ مشتری دیگر امکان ارسال پاسخ در این تیکت نخواهد داشت."
+                  class="gg-admin-btn-danger py-1.5 text-xs"
+                >
+                  بستن کامل تیکت
+                </button>
+              </form>
+            )}
+
+            {/* رشته گفتگو */}
+            <div class="space-y-3">
+              {replies.map((reply) => {
+                const isInternal = reply.is_internal === 1;
+                const isAdmin = reply.author_type === 'admin';
+                return (
+                  <article
+                    class:list={[
+                      'rounded-xl border p-4 text-xs leading-6',
+                      isInternal
+                        ? 'gg-status-warning'
+                        : isAdmin
+                          ? 'border-brand/35 bg-brand-soft/45'
+                          : 'border-line bg-paper',
+                    ]}
+                  >
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <div class="flex items-center gap-2">
+                        <span class="font-bold text-ink">
+                          {isAdmin ? reply.author_name || 'اپراتور پشتیبانی' : reply.author_name || selectedTicket.customer_email}
+                        </span>
+                        {isInternal && (
+                          <span class="rounded bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold text-amber">
+                            یادداشت داخلی (محرمانه برای تیم)
+                          </span>
+                        )}
+                      </div>
+                      <span class="text-faint">
+                        {formatJalaliDateTime(reply.created_at, { timeZone })}
+                      </span>
+                    </div>
+                    <p class="whitespace-pre-wrap text-ink">{reply.message}</p>
+                  </article>
+                );
+              })}
+            </div>
+
+            {/* فرم ارسال پاسخ یا یادداشت داخلی */}
+            <form method="POST" action="/api/admin/tickets" class="space-y-3 border-t border-line pt-4">
+              <input type="hidden" name="_action" value="reply" />
+              <input type="hidden" name="ticket_public_id" value={selectedTicket.public_id} />
+
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <label class="text-xs font-bold text-ink" for="admin-ticket-reply">
+                  ارسال پاسخ یا ثبت یادداشت داخلی
+                </label>
+                <div class="flex flex-wrap items-center gap-3 text-xs">
+                  <label class="flex items-center gap-1.5 text-muted">
+                    <input type="checkbox" name="is_internal" value="1" class="accent-amber-500" />
+                    <span>ثبت به‌عنوان یادداشت داخلی تیم</span>
+                  </label>
+                  <select name="next_status" class="gg-admin-input w-44 py-1 text-xs">
+                    <option value="">تغییر خودکار وضعیت</option>
+                    <option value="waiting_customer">{TICKET_STATUS_LABELS.waiting_customer}</option>
+                    <option value="in_progress">{TICKET_STATUS_LABELS.in_progress}</option>
+                    <option value="resolved">{TICKET_STATUS_LABELS.resolved}</option>
+                  </select>
+                </div>
+              </div>
+
+              <textarea
+                id="admin-ticket-reply"
+                name="message"
+                rows="4"
+                required
+                minlength="2"
+                maxlength="4000"
+                placeholder="متن پاسخ پشتیبانی یا یادداشت داخلی..."
+                class="gg-admin-input text-xs"
+              ></textarea>
+
+              <button type="submit" class="gg-admin-btn-primary text-xs">
+                ثبت پیام در تیکت
+              </button>
+            </form>
+          </div>
+        ) : (
+          <AdminEmptyState
+            title="تیکتی انتخاب نشده است"
+            description="از ستون سمت راست یک تیکت را برای مشاهده جزئیات و پاسخ‌گویی انتخاب کنید."
+          />
+        )}
+      </section>
+    </div>
+  )}
+</AdminLayout>

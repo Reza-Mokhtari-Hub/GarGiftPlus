@@ -49,6 +49,62 @@ export async function countMedia(db: D1Database): Promise<number> {
   return row?.c ?? 0;
 }
 
+export async function countMediaFiltered(
+  db: D1Database,
+  options: { q?: string; unusedOnly?: boolean },
+): Promise<number> {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (options.q?.trim()) {
+    clauses.push('(original_name LIKE ? OR image_key LIKE ?)');
+    const like = `%${options.q.trim()}%`;
+    params.push(like, like);
+  }
+  if (options.unusedOnly) {
+    clauses.push(
+      `NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.image_key = media.image_key)
+       AND NOT EXISTS (SELECT 1 FROM products WHERE products.image_key = media.image_key)
+       AND NOT EXISTS (SELECT 1 FROM page_media WHERE page_media.media_id = media.id)
+       AND NOT EXISTS (SELECT 1 FROM settings WHERE settings.key = 'logo_image_key' AND settings.value = media.image_key)`,
+    );
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS c FROM media ${where}`)
+    .bind(...params)
+    .first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
+export async function listMediaFiltered(
+  db: D1Database,
+  limit: number,
+  offset: number,
+  options: { q?: string; unusedOnly?: boolean },
+): Promise<Media[]> {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (options.q?.trim()) {
+    clauses.push('(original_name LIKE ? OR image_key LIKE ?)');
+    const like = `%${options.q.trim()}%`;
+    params.push(like, like);
+  }
+  if (options.unusedOnly) {
+    clauses.push(
+      `NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.image_key = media.image_key)
+       AND NOT EXISTS (SELECT 1 FROM products WHERE products.image_key = media.image_key)
+       AND NOT EXISTS (SELECT 1 FROM page_media WHERE page_media.media_id = media.id)
+       AND NOT EXISTS (SELECT 1 FROM settings WHERE settings.key = 'logo_image_key' AND settings.value = media.image_key)`,
+    );
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const { results } = await db
+    .prepare(`SELECT * FROM media ${where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .bind(...params, limit, offset)
+    .all<Media>();
+  return results ?? [];
+}
+
 /**
  * D1 rejects a statement with more than 100 bound parameters ("too many SQL
  * variables"), so anything driven by user content — a page body can reference

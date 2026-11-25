@@ -42,13 +42,17 @@ describe('products orderByClause', () => {
   it('exposes storefront presets that all resolve to safe clauses', () => {
     for (const s of STORE_SORTS) {
       const clause = orderByClause(s.sort, s.dir);
-      expect(clause).toMatch(/^[a-z_]+( COLLATE NOCASE)? (ASC|DESC)(, id (ASC|DESC))?$/);
+      expect(clause).toMatch(
+        /^[a-z_]+( COLLATE NOCASE)? (ASC|DESC)(, [a-z_]+ (ASC|DESC))*$/,
+      );
     }
   });
 
   it('canonicalizes public sorting and rejects admin-only columns', () => {
     expect(parseStoreSortQuery(null, null)).toEqual({ sort: 'newest', dir: 'desc' });
     expect(parseStoreSortQuery('price', 'ASC')).toEqual({ sort: 'price', dir: 'asc' });
+    expect(parseStoreSortQuery('popularity', 'desc')).toEqual({ sort: 'popularity', dir: 'desc' });
+    expect(parseStoreSortQuery('featured', 'desc')).toEqual({ sort: 'featured', dir: 'desc' });
     expect(parseStoreSortQuery('sold', 'asc')).toEqual({ sort: 'newest', dir: 'asc' });
     expect(parseStoreSortQuery('name', 'sideways')).toEqual({ sort: 'name', dir: 'desc' });
   });

@@ -146,7 +146,16 @@ async function purgeAfterDeploy(origin, secret) {
 const ops = {
   expectedTheme: theme.id,
   readStamp: () => (existsSync(stampPath) ? readFileSync(stampPath, 'utf8') : null),
-  build: () => run('npx', ['astro', 'build']),
+  build: () => {
+    const prevNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      run('npx', ['astro', 'build']);
+    } finally {
+      if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prevNodeEnv;
+    }
+  },
   loadCacheConfig: () => deploymentCacheConfig(),
   migrate: () => run('npx', ['wrangler', 'd1', 'migrations', 'apply', 'DB', '--remote']),
   deploy: () => run('npx', ['wrangler', 'deploy']),

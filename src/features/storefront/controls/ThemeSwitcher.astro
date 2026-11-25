@@ -1,0 +1,209 @@
+---
+import { fa } from '../../../i18n/fa';
+import {
+  cookieKeyForScope,
+  storageKeyForScope,
+  type ThemeMode,
+  type ThemeScope,
+} from '../../../lib/theme';
+
+interface Props {
+  scope?: ThemeScope;
+  defaultMode?: ThemeMode;
+  compact?: boolean;
+  class?: string;
+}
+
+const {
+  scope = 'storefront',
+  defaultMode = 'system',
+  compact = false,
+  class: className = '',
+} = Astro.props;
+
+const storageKey = storageKeyForScope(scope);
+const cookieKey = cookieKeyForScope(scope);
+
+const modes: { value: ThemeMode; label: string; aria: string }[] = [
+  { value: 'light', label: fa.common.themeLight, aria: fa.common.themeModeAria.light },
+  { value: 'dark', label: fa.common.themeDark, aria: fa.common.themeModeAria.dark },
+  { value: 'system', label: fa.common.themeSystem, aria: fa.common.themeModeAria.system },
+];
+---
+
+<div
+  data-theme-switcher
+  data-scope={scope}
+  data-storage-key={storageKey}
+  data-cookie-key={cookieKey}
+  data-default-mode={defaultMode}
+  role="group"
+  aria-label={fa.common.themeSelector}
+  class={`inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-line bg-surface-elevated p-0.5 ${className}`.trim()}
+>
+  {
+    modes.map((m) => (
+      <button
+        type="button"
+        data-theme-option={m.value}
+        aria-label={m.aria}
+        aria-pressed="false"
+        title={m.label}
+        class={`inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-medium text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-brand whitespace-nowrap ${compact ? 'min-h-7 min-w-7 px-1 sm:min-h-8 sm:min-w-8 sm:px-1.5' : 'min-h-8 px-2.5'}`}
+      >
+        {m.value === 'light' && (
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            class="shrink-0"
+          >
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+          </svg>
+        )}
+        {m.value === 'dark' && (
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            class="shrink-0"
+          >
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />
+          </svg>
+        )}
+        {m.value === 'system' && (
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            class="shrink-0"
+          >
+            <rect x="2" y="3" width="20" height="14" rx="2" />
+            <path d="M8 21h8M12 17v4" />
+          </svg>
+        )}
+        {!compact && <span class="hidden sm:inline">{m.label}</span>}
+      </button>
+    ))
+  }
+</div>
+
+<script>
+  // @ts-nocheck
+  const switchers = Array.from(document.querySelectorAll('[data-theme-switcher]'));
+  if (switchers.length > 0) {
+    const media =
+      typeof window !== 'undefined' && window.matchMedia
+        ? window.matchMedia('(prefers-color-scheme: dark)')
+        : null;
+
+    const validMode = (v, fallback = 'system') =>
+      v === 'light' || v === 'dark' || v === 'system' ? v : fallback;
+
+    const readMode = (el) => {
+      const sKey = el.dataset.storageKey || 'gargift_theme_mode';
+      const cKey = el.dataset.cookieKey || sKey;
+      const fallback = validMode(el.dataset.defaultMode, 'system');
+      let stored = null;
+      try {
+        stored = localStorage.getItem(sKey);
+      } catch {}
+      if (!stored) {
+        try {
+          const m = document.cookie.match(new RegExp('(?:^|;\\s*)' + cKey + '=([^;]+)'));
+          if (m) stored = decodeURIComponent(m[1]);
+        } catch {}
+      }
+      return validMode(stored, fallback);
+    };
+
+    const persistMode = (el, mode) => {
+      const sKey = el.dataset.storageKey || 'gargift_theme_mode';
+      const cKey = el.dataset.cookieKey || sKey;
+      try {
+        localStorage.setItem(sKey, mode);
+      } catch {}
+      try {
+        const secure = location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = `${cKey}=${encodeURIComponent(mode)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+      } catch {}
+    };
+
+    const applyTheme = (mode) => {
+      const sysDark = Boolean(media && media.matches);
+      const resolved = mode === 'dark' || (mode === 'system' && sysDark) ? 'dark' : 'light';
+      const root = document.documentElement;
+      root.dataset.theme = resolved;
+      root.dataset.themeMode = mode;
+      root.classList.toggle('dark', resolved === 'dark');
+    };
+
+    const syncButtons = (el, activeMode) => {
+      for (const btn of el.querySelectorAll('[data-theme-option]')) {
+        const isActive = btn.dataset.themeOption === activeMode;
+        btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        btn.classList.toggle('bg-surface', isActive);
+        btn.classList.toggle('text-brand-fg', isActive);
+        btn.classList.toggle('ring-1', isActive);
+        btn.classList.toggle('ring-line', isActive);
+        btn.classList.toggle('text-muted', !isActive);
+      }
+    };
+
+    for (const el of switchers) {
+      const initial = readMode(el);
+      applyTheme(initial);
+      syncButtons(el, initial);
+
+      for (const btn of el.querySelectorAll('[data-theme-option]')) {
+        btn.addEventListener('click', () => {
+          const next = validMode(btn.dataset.themeOption, 'system');
+          persistMode(el, next);
+          applyTheme(next);
+          for (const other of switchers) {
+            if (other.dataset.scope === el.dataset.scope) syncButtons(other, next);
+          }
+        });
+      }
+    }
+
+    const onSystemChange = () => {
+      for (const el of switchers) {
+        const mode = readMode(el);
+        if (mode === 'system') {
+          applyTheme('system');
+        }
+      }
+    };
+    media?.addEventListener?.('change', onSystemChange);
+
+    window.addEventListener('storage', (event) => {
+      for (const el of switchers) {
+        if (event.key === el.dataset.storageKey) {
+          const mode = readMode(el);
+          applyTheme(mode);
+          syncButtons(el, mode);
+        }
+      }
+    });
+  }
+</script>

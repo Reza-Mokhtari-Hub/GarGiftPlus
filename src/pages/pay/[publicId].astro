@@ -10,17 +10,21 @@ import { isAccessToken } from '../../features/ids/token.ts';
 import { resolveAccessToken } from '../../features/orders/guestAccess.ts';
 import DemoCheckout from '../../features/payments/checkout/DemoCheckout.astro';
 import LightningPay from '../../features/payments/checkout/LightningPay.astro';
+import BankTransferPay from '../../features/payments/checkout/BankTransferPay.astro';
 import {
   settleDemoCheckout,
   settleLightningOnLoad,
 } from '../../features/payments/checkout/settle';
+import { getVerifiedCustomer } from '../../features/auth/customer';
+import { parsePublicId } from '../../features/ids/publicId.ts';
+import { getLatestPaymentTxForTarget } from '../../features/payments/transactionsDb';
+import { handleBankTransferReceiptPost } from '../../features/payments/receiptUpload';
 
 // Single "complete your payment" entry point for the self-rendered rails. The
 // URL carries the guest access token for new checkouts (resolved through the
 // registry) or a legacy public id for pre-cutover ones — a bare ord_ public ID
-// never grants access. The method is read from the stored pending payment (its
-// `backend`), so there's one URL and one source of truth. Hosted providers
-// (Stripe/OpenNode) never reach here; they hand off to their own pages.
+// never grants guest access, unless the authenticated customer owns that order's
+// payment transaction.
 const guestParam = Astro.params.publicId;
 let orderPublicId: string | null = null;
 if (guestParam && isAccessToken(guestParam)) {
@@ -28,6 +32,17 @@ if (guestParam && isAccessToken(guestParam)) {
   orderPublicId = access?.order_public_id ?? null;
 } else if (guestParam && isLegacyPublicId(guestParam)) {
   orderPublicId = guestParam;
+} else if (guestParam) {
+  const parsedOrd = parsePublicId(guestParam, 'order');
+  if (parsedOrd) {
+    const customer = await getVerifiedCustomer(Astro.cookies);
+    if (customer) {
+      const tx = await getLatestPaymentTxForTarget(env.DB, 'order', parsedOrd);
+      if (tx && (tx.customer_id === customer.id || tx.customer_email?.toLowerCase() === customer.email.toLowerCase())) {
+        orderPublicId = parsedOrd;
+      }
+    }
+  }
 }
 if (!orderPublicId) return new Response('Not found', { status: 404 });
 
@@ -47,12 +62,15 @@ if (!pending) return new Response('Not found', { status: 404 });
 
 const isDemo = pending.backend === 'demo';
 const isLightning = pending.backend === 'lnbits' || pending.backend === 'phoenixd';
+const isBankTransfer = pending.backend === 'bank_transfer';
+const isGateway = pending.backend === 'zarinpal' || pending.backend === 'zibal';
 // An unexpected backend landing here → just show the order page.
-if (!isDemo && !isLightning) return Astro.redirect(`/order/${guestParam}`, 303);
+if (!isDemo && !isLightning && !isBankTransfer && !isGateway) {
+  return Astro.redirect(`/order/${guestParam}`, 303);
+}
 
 // Every self-rendered pending payment now carries an expiry (Lightning: the
-// invoice's; Demo: 24h). Past it, the unpaid flow fails closed — no rendering
-// the payment UI, no settlement POST.
+// invoice's; Demo: 24h; Bank transfer: 48h). Past it, the unpaid flow fails closed.
 const payExpired =
   pending.status === 'expired' ||
   (pending.expires_at != null && Date.parse(pending.expires_at) <= Date.now());
@@ -64,8 +82,6 @@ const waitUntil = ctx ? ctx.waitUntil.bind(ctx) : undefined;
 
 let declined: string | null = null;
 if (isDemo && Astro.request.method === 'POST' && !payExpired) {
-  // Middleware already loaded the settings overlay for this document — hand it
-  // down so settlement doesn't re-read it (and the three keys it derives).
   const result = await settleDemoCheckout(
     pending,
     await Astro.request.formData(),
@@ -73,9 +89,20 @@ if (isDemo && Astro.request.method === 'POST' && !payExpired) {
     Astro.locals.settings,
     waitUntil,
   );
-  // Settled → the order page, addressed by the SAME guest param (token or legacy).
   if (result.settled) return Astro.redirect(`/order/${guestParam}`, 303);
   declined = result.declined ?? null;
+}
+
+if (isBankTransfer && Astro.request.method === 'POST' && !payExpired) {
+  const receiptResult = await handleBankTransferReceiptPost(
+    Astro.request,
+    Astro.cookies,
+    `/pay/${guestParam}`,
+  );
+  if ('badRequest' in receiptResult) {
+    return new Response(receiptResult.badRequest, { status: 400 });
+  }
+  return Astro.redirect(receiptResult.redirectTo, 303);
 }
 
 if (
@@ -86,25 +113,69 @@ if (
   return Astro.redirect(`/order/${guestParam}`, 303);
 }
 
-// Past its window (Lightning: the BOLT11's expiry; Demo: 24h) the unpaid flow is
-// terminal — render an "expired" state instead of the payment UI, so an
-// abandoned tab can't poll forever and an expired demo can't settle.
 const lightningExpired = isLightning && payExpired;
+const queryError = Astro.url.searchParams.get('error');
+const querySuccess = Astro.url.searchParams.get('success');
 
 const { storeName } = getConfig();
-const title = isDemo ? 'Demo checkout' : 'Pay with Lightning';
+const title = isDemo
+  ? 'پرداخت آزمایشی (دمو)'
+  : isBankTransfer
+    ? 'پرداخت کارت‌به‌کارت'
+    : isGateway
+      ? 'وضعیت پرداخت درگاه بانکی'
+      : 'پرداخت با لایتنینگ';
 const description = isDemo
-  ? `Simulated checkout for ${storeName}.`
-  : `Pay ${storeName} with Bitcoin Lightning.`;
+  ? `تسویه حساب آزمایشی برای ${storeName}`
+  : isBankTransfer
+    ? `پرداخت کارت‌به‌کارت و ثبت فیش واریزی در ${storeName}`
+    : `پرداخت سفارش در ${storeName} از طریق شبکه Bitcoin Lightning`;
 ---
 
 <Layout title={title} description={description}>
   {isDemo && payExpired && (
-    <Fragment>
-      <h1 class="mb-2 font-serif text-3xl tracking-tight sm:text-4xl">Checkout expired</h1>
-      <p class="text-muted">This demo checkout has expired. Please start a new one.</p>
-    </Fragment>
+    <div class="mx-auto max-w-md rounded-2xl border border-line bg-surface p-6 text-center">
+      <h1 class="gg-h2 mb-2 text-ink">مهلت پرداخت آزمایشی به پایان رسید</h1>
+      <p class="text-sm text-muted">این صفحه پرداخت آزمایشی منقضی شده است. لطفاً از سبد خرید دوباره اقدام کنید.</p>
+      <a
+        href="/cart"
+        class="mt-5 inline-flex rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand hover:bg-brand-hover"
+      >
+        بازگشت به سبد خرید
+      </a>
+    </div>
   )}
   {isDemo && !payExpired && <DemoCheckout pending={pending} declined={declined} />}
   {isLightning && <LightningPay pending={pending} expired={lightningExpired} />}
+  {isBankTransfer && (
+    <BankTransferPay
+      pending={pending}
+      guestToken={guestParam!}
+      expired={payExpired}
+      errorMsg={queryError}
+      successMsg={querySuccess}
+    />
+  )}
+  {isGateway && (
+    <div class="mx-auto max-w-md rounded-2xl border border-line bg-surface p-6 text-center">
+      <h1 class="gg-h2 text-ink">پرداخت سفارش تکمیل نشد</h1>
+      <p class="mt-2 text-sm text-muted">
+        {queryError || 'تراکنش در درگاه بانکی لغو شد یا به خطا برخورد کرد. هیچ مبلغی از حساب شما کسر نشده است (یا در صورت کسر، طی ۷۲ ساعت توسط بانک بازگردانده می‌شود).'}
+      </p>
+      <div class="mt-6 flex flex-wrap justify-center gap-3">
+        <a
+          href="/cart"
+          class="rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition hover:bg-brand-hover"
+        >
+          بازگشت به سبد خرید و تلاش مجدد
+        </a>
+        <a
+          href="/account/orders"
+          class="rounded-xl border border-line bg-paper px-4 py-2.5 text-sm font-medium text-ink transition hover:border-brand"
+        >
+          سفارش‌های من
+        </a>
+      </div>
+    </div>
+  )}
 </Layout>

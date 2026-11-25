@@ -1,0 +1,191 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import Layout from '../../layouts/Layout.astro';
+import AccountShell from '../../features/account/AccountShell.astro';
+import { getConfig } from '../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../features/auth/customer';
+import {
+  getOrCreateWalletByCustomerId,
+  listWalletTransactionsByCustomer,
+} from '../../features/wallet/db';
+import { WALLET_TX_LABELS } from '../../features/wallet/rules';
+import { listPaymentTransactionsByCustomer } from '../../features/payments/transactionsDb';
+import { PAYMENT_TX_STATUS_LABELS } from '../../features/payments/transactions';
+import { formatMoney } from '../../money';
+import { formatJalaliDateTime } from '../../lib/format';
+
+if (!(await accountsEnabled())) return Astro.redirect('/', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
+
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+const walletTxs = await listWalletTransactionsByCustomer(env.DB, customer.id, 50, 0);
+const paymentTxs = await listPaymentTransactionsByCustomer(
+  env.DB,
+  customer.id,
+  customer.email,
+  50,
+);
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+
+const paymentMethodLabels: Record<string, string> = {
+  wallet: 'کیف پول',
+  bank_transfer: 'کارت‌به‌کارت',
+  zarinpal: 'زرین‌پال',
+  zibal: 'زیبال',
+  demo: 'آزمایشی',
+  stripe: 'کارت بانکی',
+  lightning: 'لایتنینگ',
+};
+---
+
+<Layout title="تراکنش‌های من">
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="transactions"
+    title="تراکنش‌های مالی و گردش کیف پول"
+  >
+    <div class="space-y-6">
+      {/* دفتر کل تراکنش‌های کیف پول */}
+      <section class="rounded-xl border border-line bg-surface p-5 sm:p-6">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 class="text-base font-bold text-ink">دفتر کل تراکنش‌های کیف پول</h2>
+            <p class="mt-0.5 text-xs text-muted">
+              تمامی واریزها، برداشت‌ها، خریدها و استردادهای ثبت‌شده روی کیف پول شما
+            </p>
+          </div>
+          <a
+            href="/account/wallet"
+            class="rounded-lg bg-brand px-3.5 py-2 text-xs font-bold text-on-brand hover:bg-brand-hover"
+          >
+            + افزایش موجودی
+          </a>
+        </div>
+
+        {walletTxs.length === 0 ? (
+          <p class="rounded-xl border border-line bg-paper p-6 text-center text-xs text-muted">
+            هنوز تراکنشی در دفتر کل کیف پول شما ثبت نشده است.
+          </p>
+        ) : (
+          <div class="overflow-x-auto">
+            <table class="w-full text-start text-xs">
+              <thead>
+                <tr class="border-b border-line text-muted">
+                  <th class="py-2.5 pe-3 font-semibold">شناسه</th>
+                  <th class="py-2.5 px-3 font-semibold">نوع عملیات</th>
+                  <th class="py-2.5 px-3 font-semibold">شرح / مرجع</th>
+                  <th class="py-2.5 px-3 font-semibold">مبلغ</th>
+                  <th class="py-2.5 px-3 font-semibold">مانده پس از تراکنش</th>
+                  <th class="py-2.5 ps-3 font-semibold">تاریخ و ساعت</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-line">
+                {walletTxs.map((tx) => (
+                  <tr>
+                    <td class="py-3 pe-3 font-mono text-[11px] text-muted">{tx.public_id}</td>
+                    <td class="py-3 px-3 font-bold text-ink">{WALLET_TX_LABELS[tx.type]}</td>
+                    <td class="py-3 px-3 text-muted">
+                      {tx.reason || tx.reference_id || '—'}
+                    </td>
+                    <td
+                      class:list={[
+                        'py-3 px-3 gg-numeric font-extrabold',
+                        tx.amount > 0 ? 'text-success' : 'text-danger',
+                      ]}
+                    >
+                      {tx.amount > 0 ? '+' : ''}
+                      {formatMoney(tx.amount, tx.currency)}
+                    </td>
+                    <td class="py-3 px-3 gg-numeric font-semibold text-ink">
+                      {formatMoney(tx.balance_after, tx.currency)}
+                    </td>
+                    <td class="py-3 ps-3 text-faint">
+                      {formatJalaliDateTime(tx.created_at, { timeZone })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* تراکنش‌های درگاه پرداخت و کارت‌به‌کارت */}
+      <section class="rounded-xl border border-line bg-surface p-5 sm:p-6">
+        <h2 class="text-base font-bold text-ink">سوابق پرداخت‌های درگاه و کارت‌به‌کارت</h2>
+        <p class="mt-0.5 text-xs text-muted">
+          وضعیت تمامی تلاش‌های پرداخت برای سفارش‌ها و شارژهای کیف پول
+        </p>
+
+        {paymentTxs.length === 0 ? (
+          <p class="mt-4 rounded-xl border border-line bg-paper p-6 text-center text-xs text-muted">
+            هنوز تراکنش پرداختی ثبت نشده است.
+          </p>
+        ) : (
+          <div class="mt-4 overflow-x-auto">
+            <table class="w-full text-start text-xs">
+              <thead>
+                <tr class="border-b border-line text-muted">
+                  <th class="py-2.5 pe-3 font-semibold">شناسه تراکنش</th>
+                  <th class="py-2.5 px-3 font-semibold">بابت</th>
+                  <th class="py-2.5 px-3 font-semibold">روش پرداخت</th>
+                  <th class="py-2.5 px-3 font-semibold">مبلغ</th>
+                  <th class="py-2.5 px-3 font-semibold">وضعیت</th>
+                  <th class="py-2.5 px-3 font-semibold">کد مرجع / توضیحات</th>
+                  <th class="py-2.5 ps-3 font-semibold">تاریخ</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-line">
+                {paymentTxs.map((ptx) => (
+                  <tr>
+                    <td class="py-3 pe-3 font-mono text-[11px] text-muted">{ptx.public_id}</td>
+                    <td class="py-3 px-3 font-semibold text-ink">
+                      {ptx.target_type === 'wallet_topup'
+                        ? `شارژ کیف پول (${ptx.target_public_id})`
+                        : `سفارش (${ptx.target_public_id})`}
+                    </td>
+                    <td class="py-3 px-3 text-muted">
+                      {paymentMethodLabels[ptx.method] ?? ptx.method}
+                    </td>
+                    <td class="py-3 px-3 gg-numeric font-bold text-ink">
+                      {formatMoney(ptx.amount, ptx.currency)}
+                    </td>
+                    <td class="py-3 px-3">
+                      <span
+                        class:list={[
+                          'rounded-md px-2 py-0.5 text-[11px] font-bold',
+                          ptx.status === 'VERIFIED'
+                            ? 'bg-success/15 text-success'
+                            : ptx.status === 'PAYMENT_REVIEW' || ptx.status === 'INITIATED'
+                              ? 'bg-warning/15 text-warning'
+                              : 'bg-danger/15 text-danger',
+                        ]}
+                      >
+                        {PAYMENT_TX_STATUS_LABELS[ptx.status]}
+                      </span>
+                    </td>
+                    <td class="py-3 px-3 text-muted">
+                      {ptx.ref_id ? (
+                        <span dir="ltr" class="ltr-inline font-mono text-ink">{ptx.ref_id}</span>
+                      ) : ptx.failure_reason ? (
+                        <span class="text-danger">{ptx.failure_reason}</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td class="py-3 ps-3 text-faint">
+                      {formatJalaliDateTime(ptx.created_at, { timeZone })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  </AccountShell>
+</Layout>

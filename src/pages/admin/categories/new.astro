@@ -1,6 +1,7 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../../components/admin/AdminPageHeader.astro';
 import CategoryForm from '../../../features/categories/CategoryForm.astro';
 import { listCategories, buildTree, flattenTree } from '../../../features/categories/db';
 
@@ -8,12 +9,27 @@ const parentOptions = flattenTree(buildTree(await listCategories(env.DB)));
 const error = Astro.url.searchParams.get('error');
 ---
 
-<AdminLayout title="New category" active="categories">
-  <a href="/admin/categories" class="text-sm text-gray-500 hover:text-brand">&larr; Back to categories</a>
-  <h1 class="mt-4 mb-6 text-2xl font-bold">New category</h1>
+<AdminLayout
+  title="ایجاد دسته‌بندی جدید"
+  active="categories"
+  requiredPermission="categories.manage"
+  breadcrumbs={[
+    { label: 'دسته‌بندی‌ها', href: '/admin/categories' },
+    { label: 'دسته‌بندی جدید' },
+  ]}
+>
+  <AdminPageHeader
+    title="ایجاد دسته‌بندی جدید"
+    subtitle="افزودن دسته جدید به درخت کاتالوگ فروشگاه همراه با تنظیمات سئو و نمایش"
+  >
+    <a slot="actions" href="/admin/categories" class="gg-admin-btn-secondary text-xs">
+      ← بازگشت به دسته‌بندی‌ها
+    </a>
+  </AdminPageHeader>
+
   <CategoryForm
     action="/api/admin/categories"
-    submitLabel="Create category"
+    submitLabel="ایجاد دسته‌بندی"
     parentOptions={parentOptions}
     error={error}
   />

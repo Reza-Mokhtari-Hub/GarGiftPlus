@@ -1,0 +1,158 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import Pagination from '../../components/Pagination.astro';
+import { getConfig } from '../../config';
+import { listAdminAuditLogsFiltered } from '../../features/audit/db';
+import { paginate, queryHref } from '../../pagination';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const q = (Astro.url.searchParams.get('q') ?? '').trim();
+const moduleFilter = (Astro.url.searchParams.get('module') ?? '').trim();
+const actorFilter = (Astro.url.searchParams.get('actor') ?? '').trim();
+const actionFilter = (Astro.url.searchParams.get('action') ?? '').trim();
+const resultFilter = (Astro.url.searchParams.get('result') ?? '').trim();
+const dateFrom = (Astro.url.searchParams.get('dateFrom') ?? '').trim();
+const dateTo = (Astro.url.searchParams.get('dateTo') ?? '').trim();
+
+const PAGE_SIZE = 40;
+const rawPage = Number(Astro.url.searchParams.get('page') ?? '1');
+const currentPage = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+
+const firstRes = await listAdminAuditLogsFiltered(
+  env.DB,
+  {
+    q: q || undefined,
+    module: moduleFilter || undefined,
+    actor: actorFilter || undefined,
+    action: actionFilter || undefined,
+    result: resultFilter || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
+  },
+  PAGE_SIZE,
+  (currentPage - 1) * PAGE_SIZE,
+);
+
+const { page, totalPages } = paginate(Astro.url.searchParams, firstRes.total, PAGE_SIZE);
+const logs = firstRes.logs;
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+
+const hrefFor = (p: number) =>
+  queryHref('/admin/audit-logs', {
+    q: q || undefined,
+    module: moduleFilter || undefined,
+    actor: actorFilter || undefined,
+    action: actionFilter || undefined,
+    result: resultFilter || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
+    page: p > 1 ? p : undefined,
+  });
+
+const resultBadge = (res: string) => {
+  if (res === 'denied' || res === 'failed') return { label: res === 'denied' ? 'رد دسترسی' : 'ناموفق', cls: 'gg-status-error' };
+  return { label: 'موفق', cls: 'gg-status-success' };
+};
+---
+
+<AdminLayout
+  title="گزارش ممیزی سیستم (Audit Logs)"
+  active="auditLogs"
+  requiredPermission="audit.view"
+  breadcrumbs={[{ label: 'سیستم و گزارش‌ها' }, { label: 'گزارش ممیزی' }]}
+>
+  <AdminPageHeader
+    title="گزارش ممیزی و تاریخچه عملیات مدیریتی"
+    subtitle="ثبت تغییرناپذیر تمام اقدامات حساس پنل با پالایش خودکار داده‌های محرمانه (رمز، توکن و کد گیفت‌کارت)"
+    badge={`${toPersianDigits(firstRes.total)} رویداد`}
+  />
+
+  <form method="GET" action="/admin/audit-logs" class="gg-admin-card mb-6 grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4">
+    <input type="search" name="q" value={q} placeholder="جستجوی هدف، دلیل یا اقدام..." class="gg-admin-input py-2 text-xs" />
+    <input type="text" name="actor" value={actorFilter} placeholder="فیلتر اپراتور (مثال: admin)" class="gg-admin-input py-2 text-xs" />
+    <input type="text" name="module" value={moduleFilter} placeholder="ماژول (order، wallet، settings...)" class="gg-admin-input py-2 text-xs" />
+    <select name="result" class="gg-admin-input py-2 text-xs">
+      <option value="">همه نتایج</option>
+      <option value="success" selected={resultFilter === 'success'}>موفق</option>
+      <option value="failed" selected={resultFilter === 'failed'}>ناموفق</option>
+      <option value="denied" selected={resultFilter === 'denied'}>رد دسترسی</option>
+    </select>
+    <input type="text" name="action" value={actionFilter} placeholder="نام رویداد (action)" class="gg-admin-input py-2 text-xs" />
+    <input type="date" name="dateFrom" value={dateFrom} class="gg-admin-input ltr-inline py-2 font-mono text-xs" />
+    <input type="date" name="dateTo" value={dateTo} class="gg-admin-input ltr-inline py-2 font-mono text-xs" />
+    <div class="flex items-center gap-2">
+      <button type="submit" class="gg-admin-btn-primary flex-1 justify-center py-2 text-xs">جستجو</button>
+      {(q || moduleFilter || actorFilter || actionFilter || resultFilter || dateFrom || dateTo) && (
+        <a href="/admin/audit-logs" class="gg-admin-btn-secondary py-2 text-xs">پاک</a>
+      )}
+    </div>
+  </form>
+
+  {logs.length === 0 ? (
+    <AdminEmptyState title="رکوردی مطابق فیلترها پیدا نشد" description="پس از ثبت تغییرات مدیریتی در سیستم، لاگ‌ها به‌صورت خودکار اینجا ثبت می‌شوند." />
+  ) : (
+    <section class="gg-admin-card overflow-hidden p-5">
+      <div class="overflow-x-auto">
+        <table class="gg-admin-table">
+          <thead>
+            <tr>
+              <th>زمان (شمسی)</th>
+              <th>اپراتور</th>
+              <th>ماژول / رویداد</th>
+              <th>هدف</th>
+              <th>نتیجه</th>
+              <th>جزئیات</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.map((row) => {
+              const badge = resultBadge(row.result);
+              return (
+                <tr>
+                  <td class="whitespace-nowrap text-[11px] text-muted">
+                    {formatJalaliDateTime(row.created_at, { timeZone })}
+                  </td>
+                  <td class="text-xs font-semibold text-ink">
+                    <span class="ltr-inline font-mono">{row.actor}</span>
+                  </td>
+                  <td class="text-xs">
+                    {row.module && (
+                      <span class="me-1.5 rounded bg-brand-soft px-1.5 py-0.5 font-mono text-[10px] font-bold text-brand-fg">
+                        {row.module}
+                      </span>
+                    )}
+                    <span class="ltr-inline font-mono text-[11px] font-semibold text-ink">{row.action}</span>
+                  </td>
+                  <td class="text-xs">
+                    <span class="text-muted">{row.target_type}:</span>{' '}
+                    <span class="ltr-inline font-mono text-[11px] text-ink">{row.target_id}</span>
+                  </td>
+                  <td>
+                    <span class={`rounded-md px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.label}</span>
+                  </td>
+                  <td class="text-[11px]">
+                    {row.reason && <p class="mb-1 text-muted">{row.reason}</p>}
+                    {row.details_json ? (
+                      <details>
+                        <summary class="cursor-pointer font-semibold text-brand-fg">مشاهده JSON پالایش‌شده</summary>
+                        <pre class="ltr-inline mt-1.5 max-w-md overflow-x-auto rounded-lg border border-line bg-paper p-2 font-mono text-[10px] text-ink">{row.details_json}</pre>
+                      </details>
+                    ) : (
+                      <span class="text-faint">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-4">
+        <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+      </div>
+    </section>
+  )}
+</AdminLayout>

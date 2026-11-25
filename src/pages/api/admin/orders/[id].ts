@@ -5,9 +5,11 @@ import {
   getOrderByPublicId,
   fulfillOrder,
   unfulfillOrder,
+  updateOrderInternalNotes,
   type ShippingAddress,
   resolveInventoryException,
 } from '../../../../features/orders/db';
+import { guardAdminApi } from '../../../../features/fulfillment/actor';
 import { getSecret } from '../../../../features/secrets/store';
 import { setSetting } from '../../../../features/settings/db';
 import {
@@ -48,15 +50,19 @@ import { deliverOrderNotifications } from '../../../../features/email/outbox';
 import { getStoreSettings } from '../../../../features/settings/db';
 import { shouldSendCustomerOrderEmail } from '../../../../features/email/orderPolicy';
 import { getPaymentProvider, type PaymentMethod } from '../../../../features/payments';
-import { formatPrice } from '../../../../config';
+import { formatPrice, toMinorUnits } from '../../../../config';
 import { parseOrderOrLegacyPublicId, parsePublicId } from '../../../../features/ids/publicId';
+import { ensureCustomerByEmail } from '../../../../features/customers/accountsDb';
+import { applyWalletMutation } from '../../../../features/wallet/db';
+import { recordAdminAuditLog } from '../../../../features/audit/db';
+import { toEnglishDigits } from '../../../../lib/format';
 
 export const prerender = false;
 
 // POST /api/admin/orders/:id — fulfill, unfulfill, refund, or reissue the guest
 // link. :id is the order public ID (ord_ or a preserved legacy shape); numeric
 // row ids are not accepted.
-export const POST: APIRoute = async ({ request, params, redirect }) => {
+export const POST: APIRoute = async ({ request, params, redirect, locals, cookies }) => {
   const publicId = parseOrderOrLegacyPublicId(params.id, 'order');
   const existing = publicId ? await getOrderByPublicId(env.DB, publicId) : null;
   if (!existing) return new Response('Not found', { status: 404 });
@@ -66,8 +72,42 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
   const action = String(form.get('_action'));
   const back = redirect(`/admin/orders/${publicId}`, 303);
 
+  const REFUND_ACTIONS = new Set([
+    'refund',
+    'record_refund',
+    'refund_to_wallet',
+    'sync_refund',
+    'void_refund',
+    'review_refund',
+  ]);
+  const requiredPerm = REFUND_ACTIONS.has(action) ? 'orders.refund' : 'orders.fulfill';
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, requiredPerm);
+  if (!guard.ok) return guard.response;
+
+  if (action === 'update_internal_notes') {
+    const notesRaw = String(form.get('internal_notes') ?? '').trim();
+    const cleanedNotes = notesRaw ? notesRaw.slice(0, 2000) : null;
+    await updateOrderInternalNotes(env.DB, id, cleanedNotes);
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.internal_notes_updated',
+      module: 'orders',
+      targetType: 'order',
+      targetId: publicId ?? String(id),
+      actor: guard.actor.id,
+      details: { hasNotes: cleanedNotes !== null },
+    });
+    return redirect(`/admin/orders/${publicId}?notice=${encodeURIComponent('یادداشت داخلی سفارش ذخیره شد.')}`, 303);
+  }
+
   if (action === 'unfulfill') {
     await unfulfillOrder(env.DB, id);
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.unfulfilled',
+      module: 'orders',
+      targetType: 'order',
+      targetId: publicId ?? String(id),
+      actor: guard.actor.id,
+    });
     return back;
   }
 
@@ -77,19 +117,21 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     redirect(`/admin/orders/${publicId}?notice=${encodeURIComponent(msg)}`, 303);
   const cents = () => {
     const raw = String(form.get('amount') ?? '').trim();
-    // Merchants type dollars; everything downstream is cents.
-    const n = Math.round(Number(raw) * 100);
-    return Number.isFinite(n) ? n : NaN;
+    const num = Number(raw);
+    if (!Number.isFinite(num)) return NaN;
+    return toMinorUnits(num, existing.currency);
   };
-  const admin = String(form.get('_admin') ?? '') || null;
+  const admin = guard.actor.id || String(form.get('_admin') ?? '') || 'admin';
   const note = String(form.get('note') ?? '').trim() || null;
   const reason = String(form.get('reason') ?? '').trim() || null;
 
   if (action === 'resolve_inventory_exception') {
     const exceptionId = parsePublicId(form.get('exception_id'), 'inventoryException');
-    if (!exceptionId) return fail('Invalid inventory exception.');
+    if (!exceptionId) return fail('شناسه مغایرت موجودی نامعتبر است.');
     const resolved = await resolveInventoryException(env.DB, id, exceptionId);
-    return resolved ? notice('Inventory exception marked reconciled.') : fail('That inventory exception is already resolved or does not belong to this order.');
+    return resolved
+      ? notice('مغایرت موجودی با موفقیت بررسی و ثبت شد.')
+      : fail('این مغایرت قبلاً برطرف شده یا متعلق به این سفارش نیست.');
   }
 
   // Rotate the guest access token and email the customer the replacement link.
@@ -99,23 +141,23 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
   if (action === 'reissue_link') {
     if (!existing.email) {
       return fail(
-        'This order has no customer email, so a new link cannot be delivered. Nothing was changed.',
+        'این سفارش ایمیل مشتری ندارد و امکان ارسال لینک جدید وجود ندارد. تغییری ثبت نشد.',
       );
     }
     if (!shouldSendCustomerOrderEmail(existing.payment_method)) {
-      return fail('Demo orders never email customers, so their link cannot be reissued.');
+      return fail('برای سفارش‌های آزمایشی ایمیل ارسال نمی‌شود و امکان صدور مجدد لینک نیست.');
     }
     if (!existing.public_id?.startsWith('ord_')) {
       // A legacy order's guest link IS its preserved public ID — there is no
       // registry token to rotate.
-      return fail('This order predates revocable guest links and cannot be reissued.');
+      return fail('این سفارش از لینک دسترسی قابل ابطال پشتیبانی نمی‌کند.');
     }
     // Rotation kills every old link the instant it lands, so refuse up front
     // when no email provider could deliver the replacement — otherwise the
     // customer would lose access with nothing on the way.
     if (!(await getEmailProvider(await getStoreSettings(env.DB)))) {
       return fail(
-        'Email is not configured, so the replacement link could not be delivered. Nothing was changed.',
+        'سرویس ایمیل پیکربندی نشده است؛ لینک جایگزین ارسال نشد و تغییری اعمال نگردید.',
       );
     }
     // Atomic: rotates the token AND queues the versioned
@@ -123,7 +165,7 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     // unsettled checkouts (and unknown registry rows).
     const reissued = await reissueGuestAccess(env.DB, existing.public_id);
     if (!reissued) {
-      return fail('Only settled orders with a guest link can be reissued.');
+      return fail('فقط سفارش‌های تسویه‌شده دارای لینک مهمان قابل صدور مجدد هستند.');
     }
     try {
       await deliverOrderNotifications(env.DB, id, new URL(request.url).origin);
@@ -132,7 +174,7 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
       console.error('Guest-link reissue delivery failed:', err);
     }
     return notice(
-      'The old order links no longer work. A new link is being emailed to the customer.',
+      'لینک‌های قبلی سفارش باطل شدند و لینک جدید به ایمیل مشتری در حال ارسال است.',
     );
   }
 
@@ -141,36 +183,25 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     const order = await getOrder(env.DB, id);
     if (!order?.provider_session_id) return back;
 
-    // Local guards first, before building a provider client: constructing one
-    // throws when the rail isn't fully configured, and a request we were going
-    // to reject anyway shouldn't surface as a 500 with no explanation.
-    //
-    // A refund already recorded by hand makes a full provider refund ambiguous:
-    // we would be asking the provider for the whole total while part of it has
-    // already gone back another way. The merchant should refund the remainder
-    // in the provider's own dashboard, which syncs back automatically.
     if (order.external_refunded_cents > 0) {
       return fail(
-        'This order already has a manually recorded refund. Issue the remaining amount in your payment provider’s dashboard — it will sync back here automatically.',
+        'برای این سفارش قبلاً بازگشت وجه دستی ثبت شده است. مانده مبلغ را از پنل درگاه انجام دهید تا به‌صورت خودکار همگام‌سازی شود.',
       );
     }
-    if (refundableCents(order) <= 0) return fail('This order is already fully refunded.');
+    if (refundableCents(order) <= 0) return fail('این سفارش قبلاً به‌طور کامل استرداد شده است.');
 
     try {
-      // NULL predates payment_method and was always Stripe. Falling through to
-      // the store's CURRENT default would send a legacy card refund at whatever
-      // rail happens to be configured now.
       const provider = await getPaymentProvider(
         (order.payment_method ?? 'stripe') as PaymentMethod,
       );
       if (!provider.refund) {
         return fail(
-          'Refunds are not supported for this payment method — return the money yourself, then use "Record refund".',
+          'بازگشت وجه مستقیم از طریق این روش پرداخت پشتیبانی نمی‌شود؛ مبلغ را بازگردانده و از گزینه «ثبت بازگشت وجه دستی» یا «بازگشت به کیف پول» استفاده کنید.',
         );
       }
       await provider.refund(order.provider_session_id);
     } catch (err) {
-      return fail(`Refund failed: ${(err as Error).message}`);
+      return fail(`خطا در بازگشت وجه: ${(err as Error).message}`);
     }
     // Absolute, not additive: the provider now holds the full total. The
     // charge.refunded webhook that follows reports the same number and is
@@ -180,7 +211,7 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
       cumulativeRefundedCents: order.amount_total_cents,
       provider: order.payment_method ?? 'stripe',
       idempotencyKey: `admin:provider-refund:${id}:${order.amount_total_cents}`,
-      reason: reason ?? 'Full refund issued from minshop',
+      reason: reason ?? 'بازگشت وجه کامل از پنل مدیریت',
       createdBy: admin,
     });
     // Precisely because that webhook is a no-op, it will not mail the customer
@@ -195,16 +226,13 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
   // Record money already returned outside the provider. Moves no money.
   if (action === 'record_refund') {
     const order = await getOrder(env.DB, id);
-    if (!order) return fail('Order not found.');
+    if (!order) return fail('سفارش یافت نشد.');
     const amount = cents();
-    if (!Number.isFinite(amount) || amount <= 0) return fail('Enter a refund amount above zero.');
+    if (!Number.isFinite(amount) || amount <= 0) return fail('مبلغ بازگشت وجه باید بزرگ‌تر از صفر باشد.');
 
     const result = await recordExternalRefund(env.DB, {
       orderId: id,
       amountCents: amount,
-      // Same order + amount + note submitted twice is a double-click, not two
-      // refunds. A merchant who really means two identical refunds can add a
-      // distinguishing note.
       idempotencyKey: `manual:${id}:${amount}:${note ?? ''}`,
       kind: order.payment_method === 'demo' ? 'demo' : 'manual_external',
       provider: order.payment_method,
@@ -215,30 +243,126 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
 
     if (!result.ok) {
       if (result.reason === 'duplicate') {
-        return fail('That refund is already recorded — nothing was changed.');
+        return fail('این بازگشت وجه قبلاً ثبت شده است و تغییری اعمال نشد.');
       }
       if (result.reason === 'insufficient_balance') {
         return fail(
-          `That is more than the remaining refundable balance (${formatPrice(refundableCents(order))}).`,
+          `مبلغ واردشده از مانده قابل استرداد سفارش (${formatPrice(refundableCents(order), order.currency)}) بیشتر است.`,
         );
       }
-      if (result.reason === 'invalid_amount') return fail('Enter a refund amount above zero.');
-      return fail('This order cannot be refunded.');
+      if (result.reason === 'invalid_amount') return fail('مبلغ بازگشت وجه باید بزرگ‌تر از صفر باشد.');
+      return fail('امکان ثبت بازگشت وجه برای این سفارش وجود ندارد.');
     }
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.refund_recorded',
+      module: 'refunds',
+      targetType: 'order',
+      targetId: order.public_id ?? String(order.id),
+      actor: guard.actor.id,
+      reason,
+      details: { amountCents: amount, currency: order.currency, note },
+    });
     // sendRefundNotice applies the demo rule itself, so demo orders stay silent.
     await sendRefundNotice(id, amount, new URL(request.url).origin);
-    return back;
+    return notice('بازگشت وجه در سوابق مالی سفارش ثبت شد.');
+  }
+
+  // Refund directly to customer's GarGift+ Wallet (REFUND_CREDIT)
+  if (action === 'refund_to_wallet') {
+    const order = await getOrder(env.DB, id);
+    if (!order || !order.email) {
+      return fail('این سفارش ایمیل مشتری ندارد و امکان شارژ کیف پول وجود ندارد.');
+    }
+    const maxRefundable = refundableCents(order);
+    if (maxRefundable <= 0) {
+      return fail('این سفارش قبلاً به‌طور کامل استرداد شده است.');
+    }
+    const rawAmountStr = toEnglishDigits(
+      String(form.get('wallet_amount') ?? form.get('amount') ?? '').trim(),
+    );
+    let refundAmount = maxRefundable;
+    if (rawAmountStr !== '') {
+      const parsedAmount = Number(rawAmountStr);
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+        return fail('مبلغ بازگشتی به کیف پول باید عددی مثبت و معتبر باشد.');
+      }
+      refundAmount = toMinorUnits(parsedAmount, order.currency);
+      if (refundAmount <= 0) {
+        return fail('مبلغ بازگشتی به کیف پول باید بزرگ‌تر از صفر باشد.');
+      }
+    }
+    if (refundAmount > maxRefundable) {
+      return fail('مبلغ بازگشتی نمی‌تواند بیشتر از مانده قابل استرداد سفارش باشد.');
+    }
+    const refundReason =
+      reason || `بازگشت وجه سفارش #${order.public_id ?? order.id} به کیف پول مشتری`;
+
+    const refundRes = await recordExternalRefund(env.DB, {
+      orderId: id,
+      amountCents: refundAmount,
+      idempotencyKey: `wallet_refund:${id}:${order.refunded_cents}:${refundAmount}`,
+      kind: 'manual_external',
+      provider: 'wallet',
+      reason: refundReason,
+      note: 'در انتظار واریز به کیف پول مشتری',
+      createdBy: admin ?? 'admin',
+    });
+
+    if (!refundRes.ok) {
+      return fail(
+        refundRes.reason === 'duplicate'
+          ? 'این درخواست استرداد قبلاً ثبت شده است.'
+          : 'مانده قابل استرداد سفارش برای این مبلغ کافی نیست.',
+      );
+    }
+
+    const customer = await ensureCustomerByEmail(env.DB, order.email);
+    const walletRes = await applyWalletMutation(env.DB, {
+      customerId: customer.id,
+      type: 'REFUND_CREDIT',
+      positiveAmount: refundAmount,
+      idempotencyKey: `refund_credit:${order.public_id ?? order.id}:${refundRes.refund.public_id}`,
+      referenceType: 'order',
+      referenceId: order.public_id ?? String(order.id),
+      reason: refundReason,
+      actorType: 'admin',
+      actorId: admin ?? 'admin',
+    });
+
+    if (!walletRes.ok) {
+      return fail(walletRes.error);
+    }
+
+    await env.DB
+      .prepare('UPDATE refunds SET note = ? WHERE id = ?')
+      .bind(`واریز به کیف پول (${walletRes.transaction.public_id})`, refundRes.refund.id)
+      .run();
+
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.refund_to_wallet',
+      targetType: 'order',
+      targetId: order.public_id ?? String(order.id),
+      actor: admin ?? 'admin',
+      reason: refundReason,
+      details: {
+        customerEmail: order.email,
+        refundAmount,
+        walletTxPublicId: walletRes.transaction.public_id,
+      },
+    });
+
+    return notice('مبلغ سفارش با موفقیت به کیف پول مشتری برگشت داده شد.');
   }
 
   // Reconcile a refund the merchant made in the provider's own dashboard, for
   // when the webhook never arrived. Absolute: this is the provider's total.
   if (action === 'sync_refund') {
     const order = await getOrder(env.DB, id);
-    if (!order) return fail('Order not found.');
+    if (!order) return fail('سفارش یافت نشد.');
     const amount = cents();
-    if (!Number.isFinite(amount) || amount < 0) return fail('Enter the total refunded so far.');
+    if (!Number.isFinite(amount) || amount < 0) return fail('مجموع مبلغ مستردشده را به‌درستی وارد کنید.');
     if (amount > order.amount_total_cents) {
-      return fail('That is more than the order total.');
+      return fail('مبلغ واردشده از جمع کل سفارش بیشتر است.');
     }
 
     const result = await syncProviderRefund(env.DB, {
@@ -247,35 +371,37 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
       provider: order.payment_method ?? 'stripe',
       idempotencyKey: `admin:sync:${id}:${amount}`,
       providerRefundId: String(form.get('provider_refund_id') ?? '').trim() || null,
-      reason: reason ?? 'Synced by hand from the provider dashboard',
+      reason: reason ?? 'همگام‌سازی دستی از پنل درگاه پرداخت',
       createdBy: admin,
     });
 
-    if (!result.ok) return fail('This order cannot be reconciled.');
+    if (!result.ok) return fail('امکان همگام‌سازی این سفارش وجود ندارد.');
     if (!result.advanced) {
-      return fail('That total is already recorded — nothing was changed.');
+      return fail('این مبلغ قبلاً ثبت شده است — تغییری اعمال نشد.');
     }
-    // The provider total can be individually valid yet exceed the order once
-    // added to what was recorded by hand. The generated aggregate clamps, so
-    // without this the conflict would be absorbed silently — the webhook path
-    // has always checked, and this path must too.
     const conflict = await openReviewIfOverRefunded(env.DB, id);
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.refund_synced',
+      module: 'refunds',
+      targetType: 'order',
+      targetId: order.public_id ?? String(order.id),
+      actor: guard.actor.id,
+      details: { cumulativeAmountCents: amount, deltaCents: result.deltaCents },
+    });
     await sendRefundNotice(id, result.deltaCents, new URL(request.url).origin);
     if (conflict) {
       return fail(
-        'Recorded, but the provider total plus refunds recorded here now exceeds the order total. Review the refunds on this order.',
+        'مبلغ ثبت شد، اما مجموع استرداد درگاه و استردادهای دستی از مبلغ سفارش فراتر رفته است. لطفاً سوابق این سفارش را بررسی کنید.',
       );
     }
-    return back;
+    return notice('مبلغ مستردشده درگاه با موفقیت همگام‌سازی شد.');
   }
 
-  // Correct a mistaken manual entry. Moves no money. The form submits the
-  // refund's public ID (rfnd_ or a preserved legacy UUID); resolution happens
-  // here at the boundary and the ledger write stays integer.
+  // Correct a mistaken manual entry. Moves no money.
   if (action === 'void_refund') {
     const refundPublicId = parseOrderOrLegacyPublicId(form.get('refund_id'), 'refund');
     const target = refundPublicId ? await getRefundByPublicId(env.DB, refundPublicId) : null;
-    if (!target || target.order_id !== id) return fail('Invalid refund.');
+    if (!target || target.order_id !== id) return fail('رکورد بازگشت وجه معتبر نیست.');
     const result = await voidRecordedRefund(env.DB, {
       refundId: target.id,
       idempotencyKey: `void:${target.id}`,
@@ -285,16 +411,31 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     if (!result.ok) {
       return fail(
         result.reason === 'duplicate'
-          ? 'That entry has already been voided.'
-          : 'Only manually recorded refunds can be voided.',
+          ? 'این رکورد قبلاً باطل شده است.'
+          : 'فقط رکوردهای بازگشت وجه ثبت‌شده به‌صورت دستی قابل ابطال هستند.',
       );
     }
-    return back;
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.refund_voided',
+      module: 'refunds',
+      targetType: 'refund',
+      targetId: target.public_id,
+      actor: guard.actor.id,
+      reason,
+    });
+    return notice('رکورد بازگشت وجه دستی با موفقیت باطل شد.');
   }
 
   if (action === 'review_refund') {
     await acknowledgeRefundReview(env.DB, id, admin);
-    return back;
+    await recordAdminAuditLog(env.DB, {
+      action: 'order.refund_review_acknowledged',
+      module: 'refunds',
+      targetType: 'order',
+      targetId: publicId ?? String(id),
+      actor: guard.actor.id,
+    });
+    return notice('مغایرت بازگشت وجه به‌عنوان بررسی‌شده علامت‌گذاری شد.');
   }
 
   /** Attempt outbox delivery of the shipped notice; true iff an email will go. */

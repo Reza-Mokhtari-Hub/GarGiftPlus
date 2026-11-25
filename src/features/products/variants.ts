@@ -4,7 +4,7 @@ import { toMinorUnits } from '../../money';
 import { toGrams, type WeightUnit } from '../shipping/weight';
 import { withPublicId } from '../ids/publicId.ts';
 
-/** A purchasable variant (the SKU/inventory unit). A product has 0 or N. */
+/** A purchasable variant. A product has 0 or N. */
 export interface ProductVariant {
   id: number;
   public_id: string | null;
@@ -19,6 +19,10 @@ export interface ProductVariant {
   /** Overrides the product's weight in grams; NULL inherits it. An explicit 0 is a
    *  known weight, so this is `?? product.weight_grams`, never `|| `. */
   weight_grams: number | null;
+  region?: string | null;
+  amount_label?: string | null;
+  duration_label?: string | null;
+  compare_price_cents?: number | null;
 }
 
 /** A checkbox add-on: a price delta on top of the line, no stock of its own. */
@@ -188,6 +192,11 @@ export async function createVariant(
     image_id?: number | null;
     position?: number;
     weight_grams?: number | null;
+    active?: number;
+    region?: string | null;
+    amount_label?: string | null;
+    duration_label?: string | null;
+    compare_price_cents?: number | null;
   },
 ): Promise<void> {
   // Default position appends to the end of the list (so new rows don't jump up top).
@@ -195,10 +204,28 @@ export async function createVariant(
   await withPublicId('variant', (publicId) =>
     db
       .prepare(
-        `INSERT INTO product_variants (product_id, label, price_cents, stock, sku, image_id, position, weight_grams, public_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO product_variants (
+           product_id, label, price_cents, stock, sku, image_id, position, weight_grams,
+           active, region, amount_label, duration_label, compare_price_cents, public_id
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(productId, v.label, v.price_cents, v.stock, v.sku, v.image_id ?? null, position, v.weight_grams ?? null, publicId)
+      .bind(
+        productId,
+        v.label,
+        v.price_cents,
+        v.stock,
+        v.sku,
+        v.image_id ?? null,
+        position,
+        v.weight_grams ?? null,
+        v.active ?? 1,
+        v.region ?? null,
+        v.amount_label ?? null,
+        v.duration_label ?? null,
+        v.compare_price_cents ?? null,
+        publicId,
+      )
       .run(),
   );
 }
@@ -213,14 +240,62 @@ export async function updateVariant(
     sku: string | null;
     image_id?: number | null;
     weight_grams?: number | null;
+    position?: number;
+    active?: number;
+    region?: string | null;
+    amount_label?: string | null;
+    duration_label?: string | null;
+    compare_price_cents?: number | null;
   },
 ): Promise<void> {
-  await db
-    .prepare(
-      `UPDATE product_variants SET label = ?, price_cents = ?, stock = ?, sku = ?, image_id = ?, weight_grams = ? WHERE id = ?`,
-    )
-    .bind(v.label, v.price_cents, v.stock, v.sku, v.image_id ?? null, v.weight_grams ?? null, id)
-    .run();
+  if (typeof v.position === 'number') {
+    await db
+      .prepare(
+        `UPDATE product_variants
+            SET label = ?, price_cents = ?, stock = ?, sku = ?, image_id = ?, weight_grams = ?,
+                position = ?, active = ?, region = ?, amount_label = ?, duration_label = ?, compare_price_cents = ?
+          WHERE id = ?`,
+      )
+      .bind(
+        v.label,
+        v.price_cents,
+        v.stock,
+        v.sku,
+        v.image_id ?? null,
+        v.weight_grams ?? null,
+        v.position,
+        v.active ?? 1,
+        v.region ?? null,
+        v.amount_label ?? null,
+        v.duration_label ?? null,
+        v.compare_price_cents ?? null,
+        id,
+      )
+      .run();
+  } else {
+    await db
+      .prepare(
+        `UPDATE product_variants
+            SET label = ?, price_cents = ?, stock = ?, sku = ?, image_id = ?, weight_grams = ?,
+                active = ?, region = ?, amount_label = ?, duration_label = ?, compare_price_cents = ?
+          WHERE id = ?`,
+      )
+      .bind(
+        v.label,
+        v.price_cents,
+        v.stock,
+        v.sku,
+        v.image_id ?? null,
+        v.weight_grams ?? null,
+        v.active ?? 1,
+        v.region ?? null,
+        v.amount_label ?? null,
+        v.duration_label ?? null,
+        v.compare_price_cents ?? null,
+        id,
+      )
+      .run();
+  }
 }
 
 /** Null out any variant that referenced a now-deleted gallery image. */
@@ -268,34 +343,25 @@ async function nextPosition(
 export async function updateExtra(
   db: D1Database,
   id: number,
-  e: { label: string; price_delta_cents: number },
+  e: { label: string; price_delta_cents: number; position?: number },
 ): Promise<void> {
-  await db
-    .prepare('UPDATE product_extras SET label = ?, price_delta_cents = ? WHERE id = ?')
-    .bind(e.label, e.price_delta_cents, id)
-    .run();
+  if (typeof e.position === 'number') {
+    await db
+      .prepare('UPDATE product_extras SET label = ?, price_delta_cents = ?, position = ? WHERE id = ?')
+      .bind(e.label, e.price_delta_cents, e.position, id)
+      .run();
+  } else {
+    await db
+      .prepare('UPDATE product_extras SET label = ?, price_delta_cents = ? WHERE id = ?')
+      .bind(e.label, e.price_delta_cents, id)
+      .run();
+  }
 }
 
 export async function deleteExtra(db: D1Database, id: number): Promise<void> {
   await db.prepare('DELETE FROM product_extras WHERE id = ?').bind(id).run();
 }
 
-/**
- * Apply the whole variants + extras editor in one shot (so a single "Save changes"
- * persists everything). Reads parallel array fields posted alongside the product
- * form. Rows are matched positionally; each row always emits every field, so the
- * arrays stay aligned. Empty-`*_id` rows with a non-blank label are CREATES; rows
- * whose id appears in `*_remove` are DELETED; the rest are UPDATES.
- *
- *   variant_group_label                          → the group display name ("Size")
- *   v_id[], v_label[], v_price[], v_stock[],
- *   v_sku[], v_image[], v_weight[]               → one entry per variant row
- *   v_remove[]                                   → variant ids to delete
- *   e_id[], e_label[], e_price[]                 → one entry per extra row
- *   e_remove[]                                   → extra ids to delete
- *
- * Prices arrive in major units and are scaled to `currency`.
- */
 /**
  * Reject a mistyped variant weight with nothing written. This is separate from
  * applyVariantForm so the route can run it BEFORE the product/image/category
@@ -337,19 +403,22 @@ export async function applyVariantForm(
     const n = Number(String(s).trim());
     return Number.isFinite(n) && n > 0 ? toMinorUnits(n, currency) : 0;
   };
+  const optionalPrice = (s: string): number | null => {
+    const t = String(s ?? '').trim();
+    if (!t) return null;
+    const n = Number(t);
+    return Number.isFinite(n) && n > 0 ? toMinorUnits(n, currency) : null;
+  };
   const count = (s: string) => {
     const n = Number(String(s).trim());
     return Number.isInteger(n) && n > 0 ? n : 0;
   };
-  // Blank inherits the product's weight; an explicit 0 is a known weight and must
-  // survive as 0 rather than collapsing back to "inherit".
   const weight = (s: string): number | null => {
     const parsed = toGrams(String(s ?? ''), weightUnit);
     return parsed.status === 'ok' ? parsed.grams : null;
   };
+  const trimOrNull = (s: string | undefined) => (s ?? '').trim() || null;
 
-  // Endpoints must call validateVariantWeights BEFORE their first write; this
-  // recheck only guards direct callers that skipped it.
   const invalid = validateVariantWeights(form, weightUnit);
   if (invalid) return { error: invalid };
 
@@ -372,29 +441,52 @@ export async function applyVariantForm(
   const vIds = str('v_id');
   const vLabels = str('v_label');
   const vPrices = str('v_price');
+  const vComparePrices = str('v_compare_price');
   const vStocks = str('v_stock');
   const vSkus = str('v_sku');
   const vImages = str('v_image');
   const vWeights = str('v_weight');
+  const vRegions = str('v_region');
+  const vAmounts = str('v_amount');
+  const vDurations = str('v_duration');
+  const vActives = str('v_active');
+
+  let positionCounter = 0;
   for (let i = 0; i < vLabels.length; i++) {
     const id = Number(vIds[i]);
     const label = (vLabels[i] ?? '').trim();
     if (Number.isInteger(id) && vRemove.has(id)) continue; // already deleted
     const parsedWeight = weight(vWeights[i] ?? '');
+    const unitPrice = price(vPrices[i] ?? '');
+    const compareRaw = optionalPrice(vComparePrices[i] ?? '');
+    const comparePriceCents = compareRaw != null && compareRaw > unitPrice ? compareRaw : null;
+    const rawActive = vActives[i];
+    const active = rawActive === undefined || rawActive === '' ? 1 : rawActive === '0' ? 0 : 1;
+
     const fields = {
       label,
-      price_cents: price(vPrices[i] ?? ''),
+      price_cents: unitPrice,
       stock: count(vStocks[i] ?? ''),
-      sku: (vSkus[i] ?? '').trim() || null,
+      sku: trimOrNull(vSkus[i]),
       image_id: pickImage(vImages[i] ?? ''),
       weight_grams: parsedWeight ?? null,
+      position: positionCounter,
+      active,
+      region: trimOrNull(vRegions[i]),
+      amount_label: trimOrNull(vAmounts[i]),
+      duration_label: trimOrNull(vDurations[i]),
+      compare_price_cents: comparePriceCents,
     };
     if (Number.isInteger(id) && id > 0) {
-      if (!label) continue; // a cleared label on an existing row → ignore (use Remove to delete)
+      if (!label) continue;
       const v = await getVariant(db, id);
-      if (v && v.product_id === productId) await updateVariant(db, id, fields);
+      if (v && v.product_id === productId) {
+        await updateVariant(db, id, fields);
+        positionCounter++;
+      }
     } else if (label) {
       await createVariant(db, productId, fields);
+      positionCounter++;
     }
   }
 
@@ -407,17 +499,22 @@ export async function applyVariantForm(
   const eIds = str('e_id');
   const eLabels = str('e_label');
   const ePrices = str('e_price');
+  let extraPos = 0;
   for (let i = 0; i < eLabels.length; i++) {
     const id = Number(eIds[i]);
     const label = (eLabels[i] ?? '').trim();
     if (Number.isInteger(id) && eRemove.has(id)) continue;
-    const fields = { label, price_delta_cents: price(ePrices[i] ?? '') };
+    const fields = { label, price_delta_cents: price(ePrices[i] ?? ''), position: extraPos };
     if (Number.isInteger(id) && id > 0) {
       if (!label) continue;
       const e = await getExtra(db, id);
-      if (e && e.product_id === productId) await updateExtra(db, id, fields);
+      if (e && e.product_id === productId) {
+        await updateExtra(db, id, fields);
+        extraPos++;
+      }
     } else if (label) {
       await createExtra(db, productId, fields);
+      extraPos++;
     }
   }
   return {};

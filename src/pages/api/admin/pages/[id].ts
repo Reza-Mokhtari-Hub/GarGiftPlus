@@ -1,6 +1,8 @@
 import type { APIRoute } from 'astro';
 import { env } from 'cloudflare:workers';
 import { getConfig } from '../../../../config';
+import { guardAdminApi } from '../../../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../../../features/audit/db';
 import { getPageByPublicId, deletePage } from '../../../../features/pages/db';
 import { parsePageForm } from '../../../../features/pages/form';
 import { uniquePageSlug } from '../../../../features/pages/slug';
@@ -11,19 +13,27 @@ import { purgeCacheTags } from '../../../../features/cache/purge';
 
 export const prerender = false;
 
-// POST /api/admin/pages/:id — save, or delete when `_action=delete`.
-// :id is the page_ public ID; numeric row ids are not accepted.
-export const POST: APIRoute = async ({ request, params, redirect }) => {
+export const POST: APIRoute = async ({ request, params, redirect, locals, cookies }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'content.manage');
+  if (!guard.ok) return guard.response;
+
   const publicId = parsePublicId(params.id, 'page');
   const existing = publicId ? await getPageByPublicId(env.DB, publicId) : null;
-  if (!existing) return new Response('Not found', { status: 404 });
+  if (!existing) return new Response('صفحه یافت نشد', { status: 404 });
   const id = existing.id;
 
   const form = await request.formData();
 
   if (String(form.get('_action')) === 'delete') {
-    // Drops the page and its media associations. The files stay in the library.
     await deletePage(env.DB, id);
+    await recordAdminAuditLog(env.DB, {
+      action: 'page.deleted',
+      module: 'content',
+      targetType: 'page',
+      targetId: publicId ?? String(id),
+      actor: guard.actor.id,
+      details: { title: existing.title },
+    });
     await purgeCacheTags([CACHE_TAG.shell]);
     return redirect('/admin/pages', 303);
   }
@@ -33,7 +43,6 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
   const parsed = parsePageForm(form);
   if ('error' in parsed) return back(`?error=${encodeURIComponent(parsed.error)}`);
 
-  // Keep the slug stable on rename: the form pre-fills the current slug.
   const slugBase = parsed.data.slug || existing.slug || parsed.data.title;
   const slug = await uniquePageSlug(env.DB, slugBase, id);
 
@@ -43,6 +52,15 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     { ...parsed.data, slug },
     { baseUrl: getConfig().images.baseUrl },
   );
+
+  await recordAdminAuditLog(env.DB, {
+    action: 'page.updated',
+    module: 'content',
+    targetType: 'page',
+    targetId: publicId ?? String(id),
+    actor: guard.actor.id,
+    details: { title: parsed.data.title, slug, published: parsed.data.published },
+  });
 
   await purgeCacheTags([CACHE_TAG.shell]);
   const warning = saveWarning(result);

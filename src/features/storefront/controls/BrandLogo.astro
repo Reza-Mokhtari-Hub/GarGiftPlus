@@ -1,0 +1,78 @@
+---
+import { fa } from '../../../i18n/fa';
+
+interface Props {
+  variant?: 'full' | 'compact' | 'icon';
+  label?: string;
+  class?: string;
+}
+
+const { variant = 'compact', label = fa.common.brandName, class: className = '' } = Astro.props;
+const showWordmark = variant !== 'icon';
+const showTagline = variant === 'full';
+---
+
+<span class={`inline-flex items-center gap-2.5 select-none ${className}`.trim()}>
+  <svg
+    width="34"
+    height="34"
+    viewBox="0 0 64 64"
+    fill="none"
+    aria-hidden="true"
+    class="h-8 w-8 shrink-0"
+  >
+    <rect x="2" y="2" width="60" height="60" rx="16" class="fill-brand" />
+    <rect
+      x="3"
+      y="3"
+      width="58"
+      height="58"
+      rx="15"
+      stroke="currentColor"
+      stroke-opacity="0.12"
+      stroke-width="1.5"
+    />
+    <rect x="16" y="26" width="32" height="7" rx="2.5" class="fill-on-brand" />
+    <path
+      d="M19 35.5h26v10.5a4 4 0 0 1-4 4H23a4 4 0 0 1-4-4V35.5Z"
+      class="fill-on-brand"
+      fill-opacity="0.92"
+    />
+    <rect x="29.5" y="26" width="5" height="24" rx="1.5" fill="#35D9CC" />
+    <path
+      d="M31.5 26h-6.2a4.3 4.3 0 1 1 2.7-7.6L32 21.8l4-3.4a4.3 4.3 0 1 1 2.7 7.6h-7.2Z"
+      stroke="#35D9CC"
+      stroke-width="3"
+      stroke-linejoin="round"
+    />
+    <path
+      d="M49 12v7M45.5 15.5h7"
+      stroke="#35D9CC"
+      stroke-width="2.75"
+      stroke-linecap="round"
+    />
+  </svg>
+
+  {
+    showWordmark && (
+      <span class="flex flex-col leading-none">
+        <span class="inline-flex items-baseline gap-0.5 text-lg font-extrabold text-ink whitespace-nowrap">
+          <span dir="ltr" class="inline-block">
+            {label === fa.common.brandName ? (
+              <>
+                GarGift<span class="text-accent">+</span>
+              </>
+            ) : (
+              label
+            )}
+          </span>
+        </span>
+        {showTagline && (
+          <span class="mt-1 text-[11px] font-medium text-muted whitespace-nowrap">
+            {fa.common.brandSubtitle}
+          </span>
+        )}
+      </span>
+    )
+  }
+</span>

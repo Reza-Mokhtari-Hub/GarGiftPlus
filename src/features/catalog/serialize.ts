@@ -1,7 +1,9 @@
-import type { Product } from '../products/db';
-import type { ProductVariant, ProductExtra } from '../products/variants';
-import { productImageUrl } from '../products/image';
-import { toMajorUnits } from '../../money';
+import type { Product } from '../products/db.ts';
+import type { ProductVariant, ProductExtra } from '../products/variants.ts';
+import type { ProductCheckoutField } from '../products/customFields.ts';
+import { parseFieldOptions } from '../products/customFields.ts';
+import { productImageUrl } from '../products/image.ts';
+import { toMajorUnits } from '../../money.ts';
 
 /** A purchasable variant in catalog form (price in both major + minor units). */
 export interface CatalogVariant {
@@ -9,6 +11,10 @@ export interface CatalogVariant {
   id: string;
   label: string;
   price: { amount: number; cents: number; currency: string };
+  compare_price?: { amount: number; cents: number; currency: string } | null;
+  region?: string | null;
+  amount_label?: string | null;
+  duration_label?: string | null;
   in_stock: boolean;
   sku: string | null;
 }
@@ -21,28 +27,38 @@ export interface CatalogExtra {
   price_delta: { amount: number; cents: number; currency: string };
 }
 
+export interface CatalogCheckoutField {
+  id: string;
+  key: string;
+  label: string;
+  type: ProductCheckoutField['field_type'];
+  placeholder: string | null;
+  help_text: string | null;
+  options: string[];
+  required: boolean;
+  min_length: number | null;
+  max_length: number | null;
+}
+
 /**
  * The public, machine-readable shape of a product — what the `/api/products`
  * catalog endpoints return for agents/tools. Stable, self-describing, with
  * ABSOLUTE urls so a consumer needs no base-url knowledge. Pure (no bindings) so
  * it's unit-testable and reusable across the list + detail routes.
- *
- * `variant_label` flags products that have a variant group (so a list consumer
- * knows to fetch the detail). `variants`/`extras` are populated only on the
- * detail route — the list stays lightweight.
- *
- * Availability is exposed as `in_stock` only — NOT an exact count. A public,
- * pollable browse endpoint that returned exact quantities would leak sales
- * velocity (poll over time, watch it drop). Agents get the precise remaining
- * amount transactionally, in the checkout stock-shortfall error, not here.
  */
 export interface CatalogProduct {
   /** Prefixed public ID (`prod_…`) — never a row ID. */
   id: string;
   slug: string;
   name: string;
+  short_description?: string | null;
   description: string | null;
+  brand?: string | null;
+  region?: string | null;
+  badge?: string | null;
+  estimated_delivery?: string | null;
   price: { amount: number; cents: number; currency: string };
+  compare_price?: { amount: number; cents: number; currency: string } | null;
   in_stock: boolean;
   variant_label: string | null;
   categories: string[];
@@ -50,38 +66,57 @@ export interface CatalogProduct {
   url: string;
   variants?: CatalogVariant[];
   extras?: CatalogExtra[];
+  checkout_fields?: CatalogCheckoutField[];
 }
 
 const money = (cents: number, currency: string) => ({
   amount: toMajorUnits(cents, currency), // major units (e.g. 24.0)
-  cents, // minor units (Stripe-style)
+  cents, // minor units
   currency: currency.toUpperCase(),
 });
 
 /**
- * Serialize a product (+ its category names) into the catalog shape. Pass
- * `options.variants`/`options.extras` (detail route) to embed them; when variants
- * are present they are the inventory unit, so top-level `in_stock` derives from
- * them rather than the product row.
+ * Serialize a product (+ its category names) into the catalog shape.
+ * Digital products (`requires_shipping === 0`) derive availability strictly from
+ * `active === 1` rather than legacy `stock`.
  */
 export function toCatalogProduct(
   p: Product,
   categoryNames: string[],
   origin: string,
-  options?: { variants?: ProductVariant[]; extras?: ProductExtra[]; imageBaseUrl?: string },
+  options?: {
+    variants?: ProductVariant[];
+    extras?: ProductExtra[];
+    checkoutFields?: ProductCheckoutField[];
+    imageBaseUrl?: string;
+  },
 ): CatalogProduct {
   const variants = options?.variants;
   const extras = options?.extras;
+  const checkoutFields = options?.checkoutFields;
   const hasVariants = !!variants && variants.length > 0;
+  const isDigital = p.requires_shipping !== 1;
+
+  const isVariantAvailable = (v: ProductVariant) =>
+    v.active === 1 && (isDigital || v.stock > 0);
+  const isProductAvailable =
+    p.active === 1 && (isDigital || p.stock > 0);
 
   const out: CatalogProduct = {
     id: requirePublicId(p.public_id, p.id, 'product'),
     slug: p.slug,
     name: p.name,
+    ...(p.short_description !== undefined ? { short_description: p.short_description } : {}),
     description: p.description,
+    ...(p.brand !== undefined ? { brand: p.brand } : {}),
+    ...(p.region !== undefined ? { region: p.region } : {}),
+    ...(p.badge !== undefined ? { badge: p.badge } : {}),
+    ...(p.estimated_delivery !== undefined ? { estimated_delivery: p.estimated_delivery } : {}),
     price: money(p.price_cents, p.currency),
-    // With variants, availability comes from them (the variant is the SKU).
-    in_stock: hasVariants ? variants!.some((v) => v.stock > 0) : p.stock > 0,
+    ...(p.compare_price_cents != null && p.compare_price_cents > p.price_cents
+      ? { compare_price: money(p.compare_price_cents, p.currency) }
+      : {}),
+    in_stock: hasVariants ? variants!.some(isVariantAvailable) : isProductAvailable,
     variant_label: p.variant_label,
     categories: categoryNames,
     image: new URL(productImageUrl(p.image_key, options?.imageBaseUrl ?? ''), origin).href,
@@ -93,7 +128,13 @@ export function toCatalogProduct(
       id: requirePublicId(v.public_id, v.id, 'variant'),
       label: v.label,
       price: money(v.price_cents, p.currency),
-      in_stock: v.stock > 0,
+      ...(v.compare_price_cents != null && v.compare_price_cents > v.price_cents
+        ? { compare_price: money(v.compare_price_cents, p.currency) }
+        : {}),
+      ...(v.region !== undefined ? { region: v.region } : {}),
+      ...(v.amount_label !== undefined ? { amount_label: v.amount_label } : {}),
+      ...(v.duration_label !== undefined ? { duration_label: v.duration_label } : {}),
+      in_stock: isVariantAvailable(v),
       sku: v.sku,
     }));
   }
@@ -103,6 +144,22 @@ export function toCatalogProduct(
       label: e.label,
       price_delta: money(e.price_delta_cents, p.currency),
     }));
+  }
+  if (checkoutFields) {
+    out.checkout_fields = checkoutFields
+      .filter((f) => f.is_active === 1)
+      .map((f) => ({
+        id: requirePublicId(f.public_id, f.id, 'checkout field'),
+        key: f.field_key,
+        label: f.label,
+        type: f.field_type,
+        placeholder: f.placeholder,
+        help_text: f.help_text,
+        options: parseFieldOptions(f.options_json),
+        required: f.is_required === 1,
+        min_length: f.min_length,
+        max_length: f.max_length,
+      }));
   }
   return out;
 }

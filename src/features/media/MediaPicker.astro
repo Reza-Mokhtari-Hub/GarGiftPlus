@@ -27,9 +27,9 @@ interface Props {
 
 const {
   id,
-  label = 'Choose from Media',
+  label = 'انتخاب از کتابخانه رسانه',
   allowUpload = true,
-  buttonClass = 'rounded-md border border-line px-4 py-2 text-xs font-medium uppercase tracking-wider text-muted hover:border-brand hover:text-brand',
+  buttonClass = 'rounded-xl border border-line px-4 py-2 text-xs font-medium text-muted hover:border-brand hover:text-brand-fg',
 } = Astro.props;
 ---
 
@@ -53,16 +53,16 @@ const {
 
   <dialog
     data-picker-dialog
-    aria-label="Choose an image"
-    class="w-[min(56rem,92vw)] rounded-md border border-line p-0 backdrop:bg-black/40"
+    aria-label="انتخاب تصویر"
+    class="w-[min(56rem,92vw)] rounded-xl border border-line bg-surface p-0 text-ink backdrop:bg-black/40"
   >
     <div class="flex items-center justify-between border-b border-line px-5 py-4">
-      <h2 class="font-serif text-xl tracking-tight">Choose an image</h2>
+      <h2 class="text-base font-bold text-ink">انتخاب تصویر از رسانه</h2>
       <button
         type="button"
         data-picker-close
-        aria-label="Close"
-        class="text-2xl leading-none text-faint hover:text-brand"
+        aria-label="بستن"
+        class="text-2xl leading-none text-faint hover:text-brand-fg"
       >
         &times;
       </button>
@@ -75,23 +75,23 @@ const {
             type="file"
             data-picker-file
             accept="image/jpeg,image/png,image/webp,image/gif"
-            class="block w-full text-sm text-muted file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-brand file:px-4 file:py-2 file:text-xs file:font-medium file:uppercase file:tracking-wider file:text-on-brand hover:file:bg-brand-hover sm:w-auto"
+            class="block w-full text-sm text-muted file:me-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-brand file:px-4 file:py-2 file:text-xs file:font-semibold file:text-on-brand hover:file:bg-brand-hover sm:w-auto"
           />
           <button
             type="button"
             data-picker-upload
-            class="rounded-md bg-brand px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-on-brand hover:bg-brand-hover"
+            class="rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-on-brand hover:bg-brand-hover"
           >
-            Upload
+            آپلود تصویر
           </button>
         </div>
       )
     }
 
-    <p data-picker-error class="hidden px-5 pt-3 text-sm text-red-700"></p>
+    <p data-picker-error class="hidden px-5 pt-3 text-sm text-coral"></p>
 
     <div data-picker-grid class="grid max-h-[60vh] grid-cols-3 gap-4 overflow-y-auto p-5 sm:grid-cols-4">
-      <p class="col-span-full py-8 text-center text-sm text-muted">Loading…</p>
+      <p class="col-span-full py-8 text-center text-sm text-muted">در حال بارگذاری…</p>
     </div>
 
     <div class="flex items-center justify-between border-t border-line px-5 py-3 text-xs">
@@ -100,16 +100,16 @@ const {
         <button
           type="button"
           data-picker-prev
-          class="rounded-md border border-line px-3 py-1.5 uppercase tracking-widest text-muted disabled:opacity-40"
+          class="rounded-lg border border-line px-3 py-1.5 text-muted disabled:opacity-40"
         >
-          Previous
+          قبلی
         </button>
         <button
           type="button"
           data-picker-next
-          class="rounded-md border border-line px-3 py-1.5 uppercase tracking-widest text-muted disabled:opacity-40"
+          class="rounded-lg border border-line px-3 py-1.5 text-muted disabled:opacity-40"
         >
-          Next
+          بعدی
         </button>
       </span>
     </div>
@@ -160,17 +160,17 @@ const {
 
     async function load() {
       clearError();
-      grid.innerHTML = '<p class="col-span-full py-8 text-center text-sm text-muted">Loading…</p>';
+      grid.innerHTML = '<p class="col-span-full py-8 text-center text-sm text-muted">در حال بارگذاری…</p>';
       let payload: PickerPage;
       try {
         const res = await fetch(`/api/admin/media?limit=${PAGE_SIZE}&offset=${offset}`, {
           headers: { accept: 'application/json' },
         });
-        if (!res.ok) throw new Error(`Media list failed (${res.status})`);
+        if (!res.ok) throw new Error(`خطا در دریافت فهرست رسانه (${res.status})`);
         payload = (await res.json()) as PickerPage;
       } catch (err) {
         grid.innerHTML = '';
-        showError(err instanceof Error ? err.message : 'Could not load media.');
+        showError(err instanceof Error ? err.message : 'بارگذاری تصاویر انجام نشد.');
         return;
       }
 
@@ -178,13 +178,13 @@ const {
       grid.innerHTML = '';
       if (payload.media.length === 0) {
         grid.innerHTML =
-          '<p class="col-span-full py-8 text-center text-sm text-muted">No images yet.</p>';
+          '<p class="col-span-full py-8 text-center text-sm text-muted">هنوز تصویری در کتابخانه ثبت نشده است.</p>';
       }
       for (const item of payload.media) {
         const button = document.createElement('button');
         button.type = 'button';
         button.className =
-          'group flex flex-col gap-1 rounded-md border border-line p-2 text-left hover:border-brand';
+          'group flex flex-col gap-1 rounded-lg border border-line p-2 text-start hover:border-brand';
         button.innerHTML = `
           <span class="block aspect-square overflow-hidden rounded bg-surface">
             <img src="${item.url}" alt="" loading="lazy" decoding="async"
@@ -203,7 +203,7 @@ const {
       }
 
       const from = total === 0 ? 0 : offset + 1;
-      countEl.textContent = `${from}–${offset + payload.media.length} of ${total}`;
+      countEl.textContent = `${from} تا ${offset + payload.media.length} از ${total}`;
       prev.disabled = offset === 0;
       next.disabled = offset + PAGE_SIZE >= total;
     }
@@ -227,7 +227,7 @@ const {
     uploadBtn?.addEventListener('click', async () => {
       const input = root.querySelector<HTMLInputElement>('[data-picker-file]')!;
       const file = input.files?.[0];
-      if (!file) return showError('Choose a file first.');
+      if (!file) return showError('ابتدا یک فایل تصویر انتخاب کنید.');
       clearError();
       uploadBtn.disabled = true;
       try {
@@ -239,12 +239,12 @@ const {
           body,
         });
         const payload = (await res.json()) as { error?: string };
-        if (!res.ok) throw new Error(payload.error ?? 'Upload failed.');
+        if (!res.ok) throw new Error(payload.error ?? 'آپلود تصویر ناموفق بود.');
         input.value = '';
         offset = 0; // newest first, so the upload lands on page one
         await load();
       } catch (err) {
-        showError(err instanceof Error ? err.message : 'Upload failed.');
+        showError(err instanceof Error ? err.message : 'آپلود تصویر ناموفق بود.');
       } finally {
         uploadBtn.disabled = false;
       }

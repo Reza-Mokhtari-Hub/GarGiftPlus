@@ -1,0 +1,317 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import Layout from '../../layouts/Layout.astro';
+import AccountShell from '../../features/account/AccountShell.astro';
+import { getConfig } from '../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../features/auth/customer';
+import { getOrCreateWalletByCustomerId } from '../../features/wallet/db';
+import { listOrdersByEmail } from '../../features/orders/db';
+import { orderReference } from '../../features/orders/number';
+import { parsePublicId } from '../../features/ids/publicId';
+import {
+  listCustomerTickets,
+  listTicketReplies,
+  TICKET_DEPARTMENT_LABELS,
+  TICKET_PRIORITY_LABELS,
+  TICKET_STATUS_LABELS,
+  type TicketStatus,
+} from '../../features/tickets/db';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+if (!(await accountsEnabled())) return Astro.redirect('/', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
+
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+const tickets = await listCustomerTickets(env.DB, customer.email, 40);
+const recentOrders = await listOrdersByEmail(env.DB, customer.email, 20, 0);
+
+const requestedPublicId = parsePublicId(Astro.url.searchParams.get('ticket'), 'supportTicket');
+const selectedTicket =
+  (requestedPublicId ? tickets.find((t) => t.public_id === requestedPublicId) : null) ??
+  tickets[0] ??
+  null;
+const replies = selectedTicket ? await listTicketReplies(env.DB, selectedTicket.id, false) : [];
+
+const msg = Astro.url.searchParams.get('msg');
+const err = Astro.url.searchParams.get('error');
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const orderCfg = getConfig().orderNumber;
+
+const statusBadgeClass: Record<TicketStatus, string> = {
+  open: 'bg-warning/15 text-warning',
+  in_progress: 'bg-info/15 text-info',
+  waiting_customer: 'bg-brand/15 text-brand-fg',
+  resolved: 'bg-success/15 text-success',
+  closed: 'bg-surface-elevated text-muted',
+};
+---
+
+<Layout title="پشتیبانی و تیکت‌ها">
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="tickets"
+    title="پشتیبانی و تیکت‌های من"
+  >
+    {msg && (
+      <div class="mb-5 rounded-xl border border-success/40 bg-success/10 px-4 py-3 text-xs font-semibold text-success">
+        {msg}
+      </div>
+    )}
+    {err && (
+      <div class="mb-5 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-xs font-semibold text-danger">
+        {err}
+      </div>
+    )}
+
+    <div class="grid gap-6 lg:grid-cols-12">
+      {/* ستون راست: ایجاد تیکت + لیست تیکت‌ها */}
+      <div class="space-y-6 lg:col-span-5">
+        <section class="rounded-xl border border-line bg-surface p-5">
+          <h2 class="text-sm font-bold text-ink">ثبت تیکت پشتیبانی جدید</h2>
+          <p class="mt-1 text-xs text-muted">
+            سوال، پیگیری سفارش یا درخواست مالی خود را ارسال کنید تا کارشناسان پاسخ دهند.
+          </p>
+
+          <form method="POST" action="/api/account/tickets" class="mt-4 space-y-3">
+            <input type="hidden" name="_action" value="create" />
+
+            <div>
+              <label for="ticket-subject" class="mb-1 block text-xs font-medium text-muted">
+                موضوع تیکت
+              </label>
+              <input
+                id="ticket-subject"
+                type="text"
+                name="subject"
+                required
+                minlength="3"
+                maxlength="180"
+                placeholder="مثال: پیگیری وضعیت تحویل سفارش یا شارژ کیف پول"
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+              />
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label for="ticket-dept" class="mb-1 block text-xs font-medium text-muted">
+                  بخش مربوطه
+                </label>
+                <select
+                  id="ticket-dept"
+                  name="department"
+                  class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                >
+                  <option value="support">{TICKET_DEPARTMENT_LABELS.support}</option>
+                  <option value="fulfillment">{TICKET_DEPARTMENT_LABELS.fulfillment}</option>
+                  <option value="finance">{TICKET_DEPARTMENT_LABELS.finance}</option>
+                  <option value="technical">{TICKET_DEPARTMENT_LABELS.technical}</option>
+                </select>
+              </div>
+              <div>
+                <label for="ticket-prio" class="mb-1 block text-xs font-medium text-muted">
+                  اولویت
+                </label>
+                <select
+                  id="ticket-prio"
+                  name="priority"
+                  class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                >
+                  <option value="normal" selected>{TICKET_PRIORITY_LABELS.normal}</option>
+                  <option value="low">{TICKET_PRIORITY_LABELS.low}</option>
+                  <option value="high">{TICKET_PRIORITY_LABELS.high}</option>
+                  <option value="urgent">{TICKET_PRIORITY_LABELS.urgent}</option>
+                </select>
+              </div>
+            </div>
+
+            {recentOrders.length > 0 && (
+              <div>
+                <label for="ticket-order" class="mb-1 block text-xs font-medium text-muted">
+                  سفارش مرتبط (اختیاری)
+                </label>
+                <select
+                  id="ticket-order"
+                  name="order_public_id"
+                  class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                >
+                  <option value="">بدون ارتباط با سفارش خاص</option>
+                  {recentOrders.map((o) => (
+                    <option value={o.public_id}>
+                      سفارش #{orderReference(o.public_id, o.id, orderCfg)} — {o.public_id}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label for="ticket-msg" class="mb-1 block text-xs font-medium text-muted">
+                شرح درخواست
+              </label>
+              <textarea
+                id="ticket-msg"
+                name="message"
+                rows="4"
+                required
+                minlength="5"
+                maxlength="4000"
+                placeholder="لطفاً توضیحات کامل را بنویسید. هرگز رمز عبور یا کد محرمانه ارسال نکنید."
+                class="w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+              ></textarea>
+            </div>
+
+            <button
+              type="submit"
+              class="w-full rounded-xl bg-brand px-4 py-2.5 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+            >
+              ارسال تیکت پشتیبانی
+            </button>
+          </form>
+        </section>
+
+        <section class="rounded-xl border border-line bg-surface p-5">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-sm font-bold text-ink">تیکت‌های ثبت‌شده شما</h2>
+            <span class="gg-numeric text-xs text-muted">{toPersianDigits(tickets.length)} تیکت</span>
+          </div>
+
+          {tickets.length === 0 ? (
+            <p class="rounded-lg border border-line bg-paper p-5 text-center text-xs text-muted">
+              هنوز تیکتی ثبت نکرده‌اید.
+            </p>
+          ) : (
+            <div class="space-y-2">
+              {tickets.map((t) => {
+                const isSelected = selectedTicket?.public_id === t.public_id;
+                return (
+                  <a
+                    href={`/account/tickets?ticket=${encodeURIComponent(t.public_id)}`}
+                    class:list={[
+                      'block rounded-xl border p-3.5 transition',
+                      isSelected
+                        ? 'border-brand bg-brand/8'
+                        : 'border-line bg-paper hover:border-brand/50',
+                    ]}
+                  >
+                    <div class="flex items-start justify-between gap-2">
+                      <p class="text-xs font-bold text-ink">{t.subject}</p>
+                      <span class={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold ${statusBadgeClass[t.status]}`}>
+                        {TICKET_STATUS_LABELS[t.status]}
+                      </span>
+                    </div>
+                    <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted">
+                      <span>{TICKET_DEPARTMENT_LABELS[t.department]}</span>
+                      <span class="ltr-inline font-mono text-[10px] text-faint">{t.public_id}</span>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+
+      {/* ستون چپ: گفتگو و جزئیات تیکت انتخابی */}
+      <div class="lg:col-span-7">
+        {selectedTicket ? (
+          <section class="rounded-xl border border-line bg-surface p-5 sm:p-6">
+            <div class="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
+              <div class="space-y-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h2 class="text-base font-extrabold text-ink">{selectedTicket.subject}</h2>
+                  <span class={`rounded-md px-2.5 py-0.5 text-[11px] font-bold ${statusBadgeClass[selectedTicket.status]}`}>
+                    {TICKET_STATUS_LABELS[selectedTicket.status]}
+                  </span>
+                </div>
+                <p class="text-xs text-muted">
+                  بخش: {TICKET_DEPARTMENT_LABELS[selectedTicket.department]} • اولویت:{' '}
+                  {TICKET_PRIORITY_LABELS[selectedTicket.priority]}
+                  {selectedTicket.order_public_id && (
+                    <>
+                      {' '}• سفارش:{' '}
+                      <a
+                        href={`/account/orders/${selectedTicket.order_public_id}`}
+                        class="ltr-inline font-mono text-brand-fg hover:underline"
+                      >
+                        {selectedTicket.order_public_id}
+                      </a>
+                    </>
+                  )}
+                </p>
+              </div>
+              <span class="ltr-inline font-mono text-[11px] text-faint">
+                {selectedTicket.public_id}
+              </span>
+            </div>
+
+            <div class="my-5 space-y-3">
+              {replies.map((reply) => {
+                const isAdmin = reply.author_type === 'admin';
+                return (
+                  <article
+                    class:list={[
+                      'rounded-xl border p-4 text-xs leading-6',
+                      isAdmin
+                        ? 'border-brand/35 bg-brand/8'
+                        : 'border-line bg-paper',
+                    ]}
+                  >
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <span class="font-bold text-ink">
+                        {isAdmin ? `پشتیبانی ${reply.author_name || 'GarGift+'}` : reply.author_name || 'شما'}
+                      </span>
+                      <span class="text-faint">
+                        {formatJalaliDateTime(reply.created_at, { timeZone })}
+                      </span>
+                    </div>
+                    <p class="whitespace-pre-wrap text-ink">{reply.message}</p>
+                  </article>
+                );
+              })}
+            </div>
+
+            {selectedTicket.status !== 'closed' ? (
+              <form method="POST" action="/api/account/tickets" class="border-t border-line pt-4 space-y-3">
+                <input type="hidden" name="_action" value="reply" />
+                <input type="hidden" name="ticket_public_id" value={selectedTicket.public_id} />
+                <label for="reply-message" class="block text-xs font-bold text-ink">
+                  ارسال پاسخ جدید
+                </label>
+                <textarea
+                  id="reply-message"
+                  name="message"
+                  rows="3"
+                  required
+                  minlength="2"
+                  maxlength="4000"
+                  placeholder="پاسخ یا توضیحات تکمیلی خود را بنویسید..."
+                  class="w-full rounded-xl border border-line bg-paper px-3 py-2.5 text-xs text-ink focus:border-brand focus:outline-none"
+                ></textarea>
+                <button
+                  type="submit"
+                  class="rounded-xl bg-brand px-5 py-2.5 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+                >
+                  ارسال پاسخ
+                </button>
+              </form>
+            ) : (
+              <div class="rounded-xl border border-line bg-paper p-4 text-center text-xs text-muted">
+                این تیکت بسته شده است. برای پیگیری موضوع جدید، یک تیکت تازه ثبت کنید.
+              </div>
+            )}
+          </section>
+        ) : (
+          <section class="rounded-xl border border-line bg-surface p-10 text-center">
+            <h2 class="text-sm font-bold text-ink">گفتگویی انتخاب نشده است</h2>
+            <p class="mt-1.5 text-xs text-muted">
+              از فرم کنار صفحه تیکت جدید ثبت کنید تا سابقه پاسخ‌گویی پشتیبانی در اینجا نمایش داده شود.
+            </p>
+          </section>
+        )}
+      </div>
+    </div>
+  </AccountShell>
+</Layout>

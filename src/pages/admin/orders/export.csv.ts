@@ -1,46 +1,63 @@
 import type { APIRoute } from 'astro';
 import { env } from 'cloudflare:workers';
 import { listOrders } from '../../../features/orders/db';
-import { parseOrderFilters, orderFilterClause } from '../../../features/orders/filter';
+import {
+  parseOrderFilters,
+  parseOrderAdvancedFilters,
+  combineOrderFilterClauses,
+} from '../../../features/orders/filter';
 import { getConfig, toMajorUnits, currencyDecimals } from '../../../config';
 import { orderReference } from '../../../features/orders/number';
+import { guardAdminApi } from '../../../features/fulfillment/actor';
+import { buildCsvDocument } from '../../../features/admin/csv';
+import { recordAdminAuditLog } from '../../../features/audit/db';
 
 export const prerender = false;
 
-// Quote a CSV field only when it contains a comma, quote, or newline.
-const esc = (v: unknown): string => {
-  const s = v == null ? '' : String(v);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
-// Minor units → major-unit string, scaled by the order's own currency.
 const money = (cents: number, currency: string): string =>
   toMajorUnits(cents, currency).toFixed(currencyDecimals(currency));
 
-// GET /admin/orders/export.csv — download all orders as CSV.
-export const GET: APIRoute = async ({ url }) => {
-  // Parsed with the same helpers the list page uses, so "Export these" returns
-  // exactly the rows the merchant was looking at.
-  const filter = orderFilterClause(parseOrderFilters(url.searchParams));
+// GET /admin/orders/export.csv — دانلود خروجی CSV ایمن (با BOM و خنثی‌سازی فرمول اکسل)
+export const GET: APIRoute = async ({ url, locals, cookies, request }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'orders.export');
+  if (!guard.ok) return guard.response;
+
+  const filter = combineOrderFilterClauses(
+    parseOrderFilters(url.searchParams),
+    parseOrderAdvancedFilters(url.searchParams),
+  );
   const orders = await listOrders(env.DB, 100_000, 'created_at DESC', 0, filter);
   const onCfg = getConfig().orderNumber;
 
   const header = [
-    'Order', 'Date', 'Email', 'Status', 'Fulfillment',
-    'Subtotal', 'Shipping', 'Discount', 'Tax', 'Total', 'Currency',
-    // Both refund components, so a bookkeeper can tell money the provider sent
-    // back from money the merchant returned by hand. Net is what actually
-    // stayed, and is the figure the dashboard's revenue agrees with.
-    'Provider refunded', 'Externally refunded', 'Total refunded', 'Net',
-    'Refund state', 'Refund review',
-    'Carrier', 'Tracking',
+    'Order',
+    'Date',
+    'Email',
+    'Method',
+    'Status',
+    'Fulfillment',
+    'Subtotal',
+    'Shipping',
+    'Discount',
+    'Tax',
+    'Total',
+    'Currency',
+    'Provider refunded',
+    'Externally refunded',
+    'Total refunded',
+    'Net',
+    'Refund state',
+    'Refund review',
+    'Carrier',
+    'Tracking',
   ];
   const rows = orders.map((o) => [
     orderReference(o.public_id, o.id, onCfg),
     o.created_at,
     o.email ?? '',
+    o.payment_method ?? '',
     o.status,
     o.fulfillment_status,
-    // subtotal = total − shipping − tax + discount
     money(o.amount_total_cents - o.shipping_cents - o.tax_cents + o.discount_cents, o.currency),
     money(o.shipping_cents, o.currency),
     money(o.discount_cents, o.currency),
@@ -61,11 +78,21 @@ export const GET: APIRoute = async ({ url }) => {
     o.tracking_number ?? '',
   ]);
 
-  const csv = [header, ...rows].map((r) => r.map(esc).join(',')).join('\r\n') + '\r\n';
+  await recordAdminAuditLog(env.DB, {
+    action: 'orders.exported_csv',
+    module: 'orders',
+    targetType: 'orders',
+    targetId: 'csv_export',
+    actor: guard.actor.id,
+    details: { rowCount: rows.length },
+  });
+
+  const csv = buildCsvDocument(header, rows);
   return new Response(csv, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
       'content-disposition': 'attachment; filename="orders.csv"',
+      'cache-control': 'private, no-store',
     },
   });
 };

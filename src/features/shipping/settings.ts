@@ -20,7 +20,7 @@ import {
 } from './calculator.ts';
 import { CATCH_ALL, countryName, isCountryCode } from './countries.ts';
 import { toGrams, type WeightUnit } from './weight.ts';
-import { toMinorUnits } from '../../money.ts';
+import { currencyDecimals, toMajorUnits, toMinorUnits } from '../../money.ts';
 
 export const SHIPPING_CONFIG_KEY = 'shipping_config';
 
@@ -679,19 +679,11 @@ let tokenSeq = 0;
 const nextToken = (prefix: string) => `${prefix}_${(tokenSeq += 1).toString(36)}`;
 
 function amountToValue(minor: number, currency: string): string {
-  const major = minor / 10 ** (currency ? decimalsFor(currency) : 2);
-  return String(major);
+  return String(toMajorUnits(minor, currency));
 }
 
 function decimalsFor(currency: string): number {
-  try {
-    return (
-      new Intl.NumberFormat('en-US', { style: 'currency', currency: currency.toUpperCase() })
-        .resolvedOptions().maximumFractionDigits ?? 2
-    );
-  } catch {
-    return 2;
-  }
+  return currencyDecimals(currency);
 }
 
 /** Document → editable form model (for rendering an existing configuration). */

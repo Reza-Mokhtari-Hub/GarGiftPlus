@@ -1,0 +1,341 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../config';
+import { listAdminAuditLogsFiltered } from '../../features/audit/db';
+import { listReceiptsAdmin } from '../../features/payments/receiptsDb';
+import {
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_TX_STATUS_LABELS,
+} from '../../features/payments/transactions';
+import { listPaymentTransactions } from '../../features/payments/transactionsDb';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const statusFilterRaw = Astro.url.searchParams.get('status') ?? 'all';
+const validReceiptStatus =
+  statusFilterRaw === 'pending_review' ||
+  statusFilterRaw === 'approved' ||
+  statusFilterRaw === 'rejected'
+    ? statusFilterRaw
+    : undefined;
+
+const receipts = await listReceiptsAdmin(env.DB, validReceiptStatus, 100);
+const paymentTxs = await listPaymentTransactions(env.DB, { limit: 35 });
+const { logs: receiptAudits } = await listAdminAuditLogsFiltered(env.DB, { module: 'receipts' }, 30, 0);
+
+const pendingReviewCount = receipts.filter((r) => r.status === 'pending_review').length;
+const msg = Astro.url.searchParams.get('msg');
+const error = Astro.url.searchParams.get('error');
+---
+
+<AdminLayout
+  title="فیش‌های بانکی و بررسی واریز"
+  active="receipts"
+  requiredPermission="receipts.review"
+  breadcrumbs={[{ label: 'مشتریان و مالی' }, { label: 'بررسی فیش‌های بانکی' }]}
+>
+  <AdminPageHeader
+    title="صف بررسی فیش‌های کارت‌به‌کارت"
+    subtitle="بررسی تصویر فیش‌های ارسالی در فضای خصوصی R2، تایید و تسویه یا رد با ذکر دلیل الزامی"
+    badge={`${toPersianDigits(pendingReviewCount)} در انتظار بررسی`}
+  >
+    <div slot="actions" class="flex flex-wrap items-center gap-2">
+      <a href="/admin/bank-accounts" class="gg-admin-btn-secondary text-xs">حساب‌های بانکی</a>
+      <a href="/admin/payments" class="gg-admin-btn-secondary text-xs">همه تراکنش‌ها</a>
+    </div>
+  </AdminPageHeader>
+
+  <div class="mb-6 flex flex-wrap items-center gap-2">
+    <a
+      href="/admin/receipts?status=all"
+      class={`rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+        !validReceiptStatus ? 'bg-brand text-on-brand' : 'gg-admin-card text-muted hover:text-ink'
+      }`}
+    >
+      همه فیش‌ها ({toPersianDigits(receipts.length)})
+    </a>
+    <a
+      href="/admin/receipts?status=pending_review"
+      class={`rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+        validReceiptStatus === 'pending_review' ? 'bg-amber text-white' : 'gg-admin-card text-muted hover:text-ink'
+      }`}
+    >
+      در انتظار بررسی ({toPersianDigits(pendingReviewCount)})
+    </a>
+    <a
+      href="/admin/receipts?status=approved"
+      class={`rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+        validReceiptStatus === 'approved' ? 'bg-accent text-white' : 'gg-admin-card text-muted hover:text-ink'
+      }`}
+    >
+      تاییدشده
+    </a>
+    <a
+      href="/admin/receipts?status=rejected"
+      class={`rounded-xl px-3.5 py-2 text-xs font-semibold transition ${
+        validReceiptStatus === 'rejected' ? 'bg-coral text-white' : 'gg-admin-card text-muted hover:text-ink'
+      }`}
+    >
+      ردشده
+    </a>
+  </div>
+
+  {error && <div class="gg-status-error mb-6 rounded-xl px-4 py-3 text-sm">{error}</div>}
+
+  {
+    msg && (
+      <div class="gg-status-success mb-6 rounded-xl px-4 py-3 text-sm">
+        {msg === 'approved' && 'فیش واریزی با موفقیت تایید شد و سفارش یا کیف پول مشتری تسویه گردید.'}
+        {msg === 'rejected' && 'فیش واریزی رد شد و دلیل آن برای مشتری ثبت گردید.'}
+      </div>
+    )
+  }
+
+  <section class="mb-10 space-y-4">
+    <h2 class="text-base font-bold text-ink">فیش‌های کارت‌به‌کارت ارسالی مشتریان</h2>
+    {
+      receipts.length === 0 ? (
+        <AdminEmptyState
+          title="فیش واریزی در این وضعیت یافت نشد"
+          description="فیش‌های ثبت‌شده توسط مشتریان از طریق درگاه کارت‌به‌کارت بلافاصله در این صف نمایش داده می‌شوند."
+        />
+      ) : (
+        <div class="grid gap-4">
+          {receipts.map((r) => {
+            const isPending = r.status === 'pending_review';
+            const isApproved = r.status === 'approved';
+            return (
+              <div class="gg-admin-card p-5">
+                <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-4">
+                  <div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span
+                        class={`rounded-md px-2.5 py-1 text-xs font-bold ${
+                          isPending
+                            ? 'gg-status-warning'
+                            : isApproved
+                              ? 'gg-status-success'
+                              : 'gg-status-error'
+                        }`}
+                      >
+                        {isPending
+                          ? 'در انتظار بررسی'
+                          : isApproved
+                            ? 'تاییدشده'
+                            : 'ردشده'}
+                      </span>
+
+                      <span class="rounded-md bg-brand-soft px-2.5 py-1 text-xs font-semibold text-brand-fg">
+                        {r.target_type === 'wallet_topup' ? 'شارژ کیف پول' : 'پرداخت سفارش'}
+                      </span>
+
+                      <span class="ltr-inline font-mono text-xs text-muted">{r.public_id}</span>
+                    </div>
+
+                    <p class="mt-2 text-lg font-extrabold text-ink">
+                      {formatPrice(r.amount, r.currency)}
+                    </p>
+
+                    <div class="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                      <span>
+                        مشتری:{' '}
+                        {r.customer_email ? (
+                          <a
+                            href={`/admin/customers/${encodeURIComponent(r.customer_email)}`}
+                            class="ltr-inline font-mono font-semibold text-brand-fg hover:underline"
+                          >
+                            {r.customer_email}
+                          </a>
+                        ) : (
+                          'مهمان'
+                        )}
+                      </span>
+                      <span>
+                        مرجع:{' '}
+                        {r.target_type === 'order' ? (
+                          <a
+                            href={`/admin/orders/${r.target_public_id}`}
+                            class="ltr-inline font-mono font-semibold text-brand-fg hover:underline"
+                          >
+                            {r.target_public_id}
+                          </a>
+                        ) : (
+                          <span class="ltr-inline font-mono">{r.target_public_id}</span>
+                        )}
+                      </span>
+                      <span>زمان ثبت: {formatJalaliDateTime(r.created_at, { timeZone })}</span>
+                      {r.tracking_code && (
+                        <span>
+                          کد پیگیری بانکی:{' '}
+                          <strong class="ltr-inline font-mono text-ink">{r.tracking_code}</strong>
+                        </span>
+                      )}
+                    </div>
+
+                    {r.review_note && (
+                      <p class="mt-2 text-xs text-muted">
+                        یادداشت مدیر ({r.reviewed_by || 'admin'}):{' '}
+                        <strong class="text-ink">{r.review_note}</strong>
+                      </p>
+                    )}
+                  </div>
+
+                  <div class="flex flex-col items-end gap-2">
+                    <a
+                      href={`/api/admin/receipts/${r.public_id}/image`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="group relative block overflow-hidden rounded-xl border border-line bg-surface-2"
+                    >
+                      <img
+                        src={`/api/admin/receipts/${r.public_id}/image`}
+                        alt={`تصویر فیش ${r.public_id}`}
+                        loading="lazy"
+                        class="h-28 w-40 object-cover transition group-hover:scale-105"
+                      />
+                      <span class="block bg-surface/95 px-2 py-1 text-center text-[11px] font-semibold text-brand-fg">
+                        مشاهده تصویر کامل ↗
+                      </span>
+                    </a>
+                  </div>
+                </div>
+
+                {isPending && (
+                  <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                    <form
+                      method="POST"
+                      action={`/api/admin/receipts/${r.public_id}`}
+                      data-confirm-message={`فیش به مبلغ ${formatPrice(r.amount, r.currency)} تایید و تسویه شود؟`}
+                      class="flex flex-wrap items-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3"
+                    >
+                      <input type="hidden" name="_action" value="approve" />
+                      <input
+                        type="text"
+                        name="admin_note"
+                        placeholder="یادداشت تایید (اختیاری)..."
+                        class="gg-admin-input min-w-0 flex-1 py-2 text-xs"
+                      />
+                      <button type="submit" class="gg-admin-btn-primary shrink-0 py-2 text-xs">
+                        ✓ تایید و تسویه نهایی
+                      </button>
+                    </form>
+
+                    <form
+                      method="POST"
+                      action={`/api/admin/receipts/${r.public_id}`}
+                      class="flex flex-wrap items-center gap-2 rounded-xl border border-rose-500/30 bg-rose-500/5 p-3"
+                    >
+                      <input type="hidden" name="_action" value="reject" />
+                      <input
+                        type="text"
+                        name="admin_note"
+                        required
+                        placeholder="دلیل رد فیش (الزامی)..."
+                        class="gg-admin-input min-w-0 flex-1 py-2 text-xs"
+                      />
+                      <button type="submit" class="gg-admin-btn-danger shrink-0 py-2 text-xs">
+                        ✕ رد فیش
+                      </button>
+                    </form>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )
+    }
+  </section>
+
+  {/* آخرین تراکنش‌ها */}
+  <section class="gg-admin-card mb-8 overflow-hidden p-5">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-base font-bold text-ink">تراکنش‌های پرداخت اخیر</h2>
+      <a href="/admin/payments" class="text-xs font-semibold text-brand-fg hover:underline">
+        مدیریت کامل پرداخت‌ها ←
+      </a>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="gg-admin-table">
+        <thead>
+          <tr>
+            <th>شناسه</th>
+            <th>روش</th>
+            <th>هدف</th>
+            <th>مشتری</th>
+            <th>مبلغ</th>
+            <th>وضعیت</th>
+            <th class="text-end">تاریخ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            paymentTxs.map((tx) => (
+              <tr>
+                <td><span class="ltr-inline font-mono text-xs text-ink">{tx.public_id}</span></td>
+                <td class="text-xs font-medium text-ink">{PAYMENT_METHOD_LABELS[tx.method] ?? tx.method}</td>
+                <td><span class="ltr-inline font-mono text-xs text-muted">{tx.target_public_id}</span></td>
+                <td><span class="ltr-inline font-mono text-xs text-muted">{tx.customer_email || '—'}</span></td>
+                <td class="font-bold text-ink">{formatPrice(tx.amount, tx.currency)}</td>
+                <td>
+                  <span class="rounded bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink">
+                    {PAYMENT_TX_STATUS_LABELS[tx.status] ?? tx.status}
+                  </span>
+                </td>
+                <td class="text-end text-xs text-muted">{formatJalaliDateTime(tx.created_at, { timeZone })}</td>
+              </tr>
+            ))
+          }
+          {
+            paymentTxs.length === 0 && (
+              <tr>
+                <td colspan="7" class="py-6 text-center text-xs text-muted">تراکنشی ثبت نشده است.</td>
+              </tr>
+            )
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {/* لاگ ممیزی فیش‌ها */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-base font-bold text-ink">لاگ ممیزی تایید/رد فیش‌ها</h2>
+    <div class="overflow-x-auto">
+      <table class="gg-admin-table">
+        <thead>
+          <tr>
+            <th>عملیات</th>
+            <th>هدف</th>
+            <th>اپراتور</th>
+            <th>توضیح / دلیل</th>
+            <th class="text-end">زمان</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            receiptAudits.map((log) => (
+              <tr>
+                <td><span class="ltr-inline rounded bg-brand-soft px-2 py-0.5 font-mono text-xs font-semibold text-brand-fg">{log.action}</span></td>
+                <td><span class="ltr-inline font-mono text-xs text-muted">{log.target_id}</span></td>
+                <td class="text-xs text-ink">{log.actor}</td>
+                <td class="text-xs text-muted">{log.reason || '—'}</td>
+                <td class="text-end text-xs text-muted">{formatJalaliDateTime(log.created_at, { timeZone })}</td>
+              </tr>
+            ))
+          }
+          {
+            receiptAudits.length === 0 && (
+              <tr>
+                <td colspan="5" class="py-6 text-center text-xs text-muted">هنوز رویدادی ثبت نشده است.</td>
+              </tr>
+            )
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+</AdminLayout>

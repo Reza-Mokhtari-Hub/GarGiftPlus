@@ -11,25 +11,37 @@ import { menuReferencesFor } from '../../../features/navigation/admin';
 import FilterBar from '../../../components/FilterBar.astro';
 import {
   parseProductFilters,
-  productFilterClause,
+  parseAdminCategoryFilter,
+  productAdminFilterClause,
   productFilterParams,
   hasProductFilters,
   PRODUCT_STATUS_OPTIONS,
-  PRODUCT_STOCK_OPTIONS,
 } from '../../../features/products/filter';
+import { listCategories, buildTree, flattenTree } from '../../../features/categories/db';
+import { fa } from '../../../i18n/fa';
+import { toPersianDigits } from '../../../lib/format';
 
-// Auth: /admin + /api/admin are gated by src/middleware.ts. The admin password is
-// set in the first-run setup wizard (hashed in D1); Cloudflare Access at the edge
-// is the recommended production layer — see README → Admin auth.
-
+// Auth: /admin + /api/admin are gated by src/middleware.ts.
 const sort = Astro.url.searchParams.get('sort');
 const dir = Astro.url.searchParams.get('dir');
-const order = orderByClause(sort, dir);
+const order = orderByClause(sort, dir, { col: 'display_order', dir: 'ASC' });
 
 const filters = parseProductFilters(Astro.url.searchParams);
+const categoryFilter = parseAdminCategoryFilter(Astro.url.searchParams);
 // One clause, both queries — otherwise the pager counts rows the table filtered out.
-const filterClause = productFilterClause(filters);
-const filtered = hasProductFilters(filters);
+const filterClause = productAdminFilterClause(filters, categoryFilter);
+const filtered = hasProductFilters(filters) || categoryFilter !== null;
+
+const categories = flattenTree(buildTree(await listCategories(env.DB)));
+const categoryOptions = [
+  ...categories
+    .filter((c) => Boolean(c.public_id))
+    .map((c) => ({
+      value: c.public_id as string,
+      label: `${'— '.repeat(c.depth)}${c.name}`,
+    })),
+  { value: 'none', label: fa.admin.products.uncategorized },
+];
 
 const PAGE_SIZE = 30;
 const matchCount = await countAllProducts(env.DB, filterClause);
@@ -39,16 +51,15 @@ const { page, offset, totalPages } = paginate(
   PAGE_SIZE,
 );
 const products = await listAllProducts(env.DB, PAGE_SIZE, offset, order, filterClause);
-// Bounded to this page of rows, so the nav warning costs one query, not one
-// per product.
 const menuRefs = await menuReferencesFor(env.DB, 'product', products.map((p) => p.id));
-// Sort and pagination links carry the active filters, so paging or re-sorting
-// a filtered list doesn't silently drop back to everything.
-const filterQuery = productFilterParams(filters);
+
+const filterQuery = {
+  ...productFilterParams(filters),
+  category: categoryFilter ?? undefined,
+};
 const hrefFor = (p: number) =>
   queryHref('/admin/products', { ...filterQuery, sort, dir, page: p > 1 ? p : undefined });
 
-// Column header → sort by it, toggling direction (default asc on a new column).
 const sortHref = (col: string) =>
   queryHref('/admin/products', {
     ...filterQuery,
@@ -56,134 +67,188 @@ const sortHref = (col: string) =>
     dir: sort === col && dir === 'asc' ? 'desc' : 'asc',
   });
 const arrow = (col: string) => (sort === col ? (dir === 'asc' ? ' ↑' : ' ↓') : '');
+const notice = Astro.url.searchParams.get('notice');
 ---
 
-<AdminLayout title="Products" active="products">
-  <div class="mb-8 flex items-center justify-between">
-    <h1 class="font-serif text-3xl tracking-tight">Products</h1>
+<AdminLayout title={fa.admin.products.pageTitle} active="products" requiredPermission="products.view">
+  <div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+    <h1 class="text-2xl font-extrabold tracking-tight text-ink sm:text-3xl">
+      {fa.admin.products.pageTitle}
+    </h1>
     <a
       href="/admin/products/new"
-      class="rounded-md bg-brand px-4 py-2 text-xs font-medium uppercase tracking-wider text-white hover:bg-brand-hover"
+      class="rounded-lg bg-brand px-4 py-2 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-hover"
     >
-      New product
+      {fa.admin.products.addNew}
     </a>
   </div>
+
+  {
+    notice && (
+      <div class="gg-status-success mb-6 rounded-lg border px-4 py-3 text-sm font-medium">
+        {notice}
+      </div>
+    )
+  }
 
   <FilterBar
     action="/admin/products"
     active={filtered}
     count={matchCount}
-    noun="product"
+    noun="محصول"
     hidden={{ sort: sort ?? undefined, dir: dir ?? undefined }}
-    search={{ name: 'q', value: filters.q, placeholder: 'Product name' }}
+    search={{ name: 'q', value: filters.q, placeholder: fa.admin.products.searchPlaceholder }}
     selects={[
       {
-        name: 'status',
-        label: 'Visibility',
-        anyLabel: 'All products',
-        value: filters.status,
-        options: PRODUCT_STATUS_OPTIONS,
+        name: 'category',
+        label: fa.catalog.categoryLabel,
+        anyLabel: fa.admin.products.allCategories,
+        value: categoryFilter,
+        options: categoryOptions,
       },
       {
-        name: 'stock',
-        label: 'Stock',
-        anyLabel: 'Any stock',
-        value: filters.stock,
-        options: PRODUCT_STOCK_OPTIONS,
+        name: 'status',
+        label: fa.admin.products.colStatus,
+        anyLabel: fa.admin.products.allStatuses,
+        value: filters.status,
+        options: PRODUCT_STATUS_OPTIONS,
       },
     ]}
   />
 
-  <div class="sm:overflow-x-auto">
-    <table class="admin-table w-full text-left text-sm sm:min-w-[42rem]">
-    <thead>
-      <tr class="border-b border-line text-xs uppercase tracking-widest text-gray-400">
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('name')} class="hover:text-brand">Product{arrow('name')}</a>
-        </th>
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('price')} class="hover:text-brand">Price{arrow('price')}</a>
-        </th>
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('stock')} class="hover:text-brand">Stock{arrow('stock')}</a>
-        </th>
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('sold')} class="hover:text-brand">Sold{arrow('sold')}</a>
-        </th>
-        <th class="py-3 pr-4 font-normal">
-          <a href={sortHref('active')} class="hover:text-brand">Active{arrow('active')}</a>
-        </th>
-        <th class="py-3 text-right font-normal">Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {
-        products.map((p) => (
-          <tr class="border-b border-line">
-            <td class="py-3 pr-4">
-              <a
-                href={`/admin/products/${p.public_id}/edit`}
-                class="flex items-center gap-3 hover:text-brand"
-              >
-                <ProductImage
-                  imageKey={p.image_key}
-                  alt=""
-                  usage="thumbnail"
-                  class="h-10 w-10 rounded object-cover"
-                />
-                <span class="font-medium">{p.name}</span>
-              </a>
-            </td>
-            <td data-label="Price" class="py-3 pr-4 tabular-nums">{formatPrice(p.price_cents)}</td>
-            <td data-label="Stock" class="py-3 pr-4 tabular-nums">{p.stock}</td>
-            <td data-label="Sold" class="py-3 pr-4 tabular-nums">
-              {p.sold > 0 ? p.sold : <span class="text-gray-300">0</span>}
-            </td>
-            <td data-label="Active" class="py-3 pr-4">{p.active ? 'Yes' : <span class="text-gray-400">No</span>}</td>
-            <td data-label="" class="py-3 text-right">
-              <div class="flex justify-end gap-4 text-xs uppercase tracking-widest">
+  <div class="overflow-hidden rounded-xl border border-line bg-surface sm:overflow-x-auto">
+    <table class="admin-table w-full text-start text-sm sm:min-w-[46rem]">
+      <thead>
+        <tr class="border-b border-line text-xs font-semibold text-faint">
+          <th class="px-4 py-3 text-start font-semibold">
+            <a href={sortHref('name')} class="hover:text-brand-fg">{fa.admin.products.colProduct}{arrow('name')}</a>
+          </th>
+          <th class="px-3 py-3 text-start font-semibold">{fa.admin.products.colCategoryBrand}</th>
+          <th class="px-3 py-3 text-start font-semibold">
+            <a href={sortHref('display_order')} class="hover:text-brand-fg">{fa.admin.products.colOrder}{arrow('display_order')}</a>
+          </th>
+          <th class="px-3 py-3 text-start font-semibold">
+            <a href={sortHref('price')} class="hover:text-brand-fg">{fa.admin.products.colPrice}{arrow('price')}</a>
+          </th>
+          <th class="px-3 py-3 text-start font-semibold">
+            <a href={sortHref('sold')} class="hover:text-brand-fg">{fa.admin.products.colSold}{arrow('sold')}</a>
+          </th>
+          <th class="px-3 py-3 text-start font-semibold">
+            <a href={sortHref('active')} class="hover:text-brand-fg">{fa.admin.products.colStatus}{arrow('active')}</a>
+          </th>
+          <th class="px-4 py-3 text-end font-semibold">{fa.admin.products.colActions}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {
+          products.map((p) => (
+            <tr class="border-b border-line last:border-b-0">
+              <td class="px-4 py-3">
                 <a
-                  href={`/products/${p.slug}`}
-                  target="_blank"
-                  rel="noopener"
-                  class="text-gray-500 hover:text-brand"
+                  href={`/admin/products/${p.public_id}/edit`}
+                  class="flex items-center gap-3 hover:text-brand-fg"
                 >
-                  View ↗
+                  <ProductImage
+                    imageKey={p.image_key}
+                    alt=""
+                    usage="thumbnail"
+                    class="h-10 w-10 shrink-0 rounded-md object-cover"
+                  />
+                  <div class="min-w-0">
+                    <span class="block truncate font-semibold text-ink">{p.name}</span>
+                    <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
+                      {p.is_featured === 1 && (
+                        <span class="rounded bg-brand-soft px-1.5 py-0.5 font-medium text-brand-fg">
+                          {fa.admin.products.featuredBadge}
+                        </span>
+                      )}
+                      {p.badge && (
+                        <span class="rounded border border-line px-1.5 py-0.5 text-muted">
+                          {p.badge}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </a>
-                <a href={`/admin/products/${p.public_id}/edit`} class="text-accent hover:underline">
-                  Edit
-                </a>
-                <form
-                  method="POST"
-                  action={`/api/admin/products/${p.public_id}`}
-                  onsubmit={`return confirm('${
-                    menuRefs.has(p.id)
-                      ? 'This product is linked from your navigation. Deleting it hides that link on the storefront. Continue?'
-                      : 'Delete this product?'
-                  }')`}
-                >
-                  <input type="hidden" name="_action" value="delete" />
-                  <button type="submit" class="text-red-600 hover:underline">
-                    Delete
+              </td>
+              <td data-label={fa.admin.products.colCategoryBrand} class="px-3 py-3 text-xs text-muted">
+                {[p.brand, p.region].filter(Boolean).join(' · ') || '—'}
+              </td>
+              <td data-label={fa.admin.products.colOrder} class="px-3 py-3 tabular-nums text-muted">
+                {toPersianDigits(p.display_order ?? 0)}
+              </td>
+              <td data-label={fa.admin.products.colPrice} class="px-3 py-3 font-medium tabular-nums text-ink">
+                {formatPrice(p.price_cents, p.currency)}
+              </td>
+              <td data-label={fa.admin.products.colSold} class="px-3 py-3 tabular-nums">
+                {p.sold > 0 ? toPersianDigits(p.sold) : <span class="text-faint">{toPersianDigits(0)}</span>}
+              </td>
+              <td data-label={fa.admin.products.colStatus} class="px-3 py-3">
+                <form method="POST" action={`/api/admin/products/${p.public_id}`}>
+                  <input type="hidden" name="_action" value="toggle_active" />
+                  <input type="hidden" name="active" value={p.active ? '0' : '1'} />
+                  <button
+                    type="submit"
+                    title={p.active ? fa.admin.products.toggleDeactivate : fa.admin.products.toggleActivate}
+                    class:list={[
+                      'rounded-md border px-2 py-0.5 text-xs font-medium transition-colors',
+                      p.active
+                        ? 'gg-status-success border-transparent hover:opacity-80'
+                        : 'border-line text-faint hover:border-brand hover:text-ink',
+                    ]}
+                  >
+                    {p.active ? fa.admin.products.statusActive : fa.admin.products.statusInactive}
                   </button>
                 </form>
-              </div>
-            </td>
-          </tr>
-        ))
-      }
-      {
-        products.length === 0 && (
-          <tr>
-            <td colspan="6" class="py-8 text-center text-gray-400">
-              {/* "No products yet" would be wrong — and confusing — when the
-                  store has plenty and the filter simply excluded them all. */}
-              {filtered ? 'No products match these filters.' : 'No products yet.'}
-            </td>
-          </tr>
-        )
-      }
-    </tbody>
+              </td>
+              <td data-label="" class="px-4 py-3 text-end">
+                <div class="flex flex-wrap justify-end gap-3 text-xs font-medium">
+                  <a
+                    href={`/products/${p.slug}`}
+                    target="_blank"
+                    rel="noopener"
+                    class="text-muted hover:text-brand-fg"
+                  >
+                    {fa.admin.products.viewInStore} ↗
+                  </a>
+                  <a href={`/admin/products/${p.public_id}/edit`} class="text-brand-fg hover:underline">
+                    {fa.common.edit}
+                  </a>
+                  <form method="POST" action={`/api/admin/products/${p.public_id}`}>
+                    <input type="hidden" name="_action" value="duplicate" />
+                    <button type="submit" class="text-muted hover:text-ink hover:underline">
+                      {fa.admin.products.duplicateBtn}
+                    </button>
+                  </form>
+                  <form
+                    method="POST"
+                    action={`/api/admin/products/${p.public_id}`}
+                    data-confirm-message={
+                      menuRefs.has(p.id)
+                        ? 'این محصول در منوی فروشگاه لینک شده است. با حذف آن، لینک منو نیز مخفی می‌شود. ادامه می‌دهید؟'
+                        : fa.admin.products.deleteConfirm
+                    }
+                  >
+                    <input type="hidden" name="_action" value="delete" />
+                    <button type="submit" class="text-red-500 hover:underline">
+                      {fa.admin.products.deleteBtn}
+                    </button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          ))
+        }
+        {
+          products.length === 0 && (
+            <tr>
+              <td colspan="7" class="px-4 py-10 text-center text-faint">
+                {filtered ? fa.admin.products.emptyFiltered : fa.admin.products.emptyAll}
+              </td>
+            </tr>
+          )
+        }
+      </tbody>
     </table>
   </div>
 

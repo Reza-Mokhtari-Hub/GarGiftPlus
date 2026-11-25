@@ -1,0 +1,485 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getConfig } from '../../config';
+import {
+  getFulfillmentDashboardStats,
+  listFulfillmentQueueOrders,
+  listRecentPublishedDeliveries,
+  type FulfillmentQueueFilters,
+} from '../../features/fulfillment/db';
+import {
+  FULFILLMENT_STATE_LABELS,
+  toDbOrderFulfillmentStatus,
+  type DbOrderFulfillmentStatus,
+} from '../../features/fulfillment/status';
+import { orderReference } from '../../features/orders/number';
+import { formatMoney } from '../../money';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+import { paginate, queryHref } from '../../pagination';
+import Pagination from '../../components/Pagination.astro';
+
+const sp = Astro.url.searchParams;
+const q = sp.get('q')?.trim() || '';
+const customer = sp.get('customer')?.trim() || '';
+const product = sp.get('product')?.trim() || '';
+const method = sp.get('method')?.trim() || '';
+const fulfillment = sp.get('fulfillment')?.trim() || '';
+const dateFrom = sp.get('date_from')?.trim() || '';
+const dateTo = sp.get('date_to')?.trim() || '';
+const minAmountRaw = sp.get('min_amount')?.trim() || '';
+const maxAmountRaw = sp.get('max_amount')?.trim() || '';
+const sortRaw = sp.get('sort')?.trim() || 'newest';
+
+const minAmount = minAmountRaw && Number.isFinite(Number(minAmountRaw)) ? Number(minAmountRaw) : null;
+const maxAmount = maxAmountRaw && Number.isFinite(Number(maxAmountRaw)) ? Number(maxAmountRaw) : null;
+const sort =
+  sortRaw === 'oldest' || sortRaw === 'amount_desc' || sortRaw === 'amount_asc'
+    ? sortRaw
+    : 'newest';
+
+const filters: FulfillmentQueueFilters = {
+  q: q || null,
+  customer: customer || null,
+  product: product || null,
+  method: method || null,
+  fulfillment: fulfillment || null,
+  dateFrom: dateFrom || null,
+  dateTo: dateTo || null,
+  minAmount,
+  maxAmount,
+  sort,
+};
+
+const stats = await getFulfillmentDashboardStats(env.DB);
+const PAGE_SIZE = 20;
+const initialCount = await listFulfillmentQueueOrders(env.DB, filters, 1, 0);
+const { page, offset, totalPages } = paginate(sp, initialCount.total, PAGE_SIZE);
+const queueResult = await listFulfillmentQueueOrders(env.DB, filters, PAGE_SIZE, offset);
+const orders = queueResult.rows;
+const recentDeliveries = await listRecentPublishedDeliveries(env.DB, 6);
+
+const hasActiveFilters = Boolean(
+  q || customer || product || method || fulfillment || dateFrom || dateTo || minAmountRaw || maxAmountRaw,
+);
+
+const hrefFor = (p: number) =>
+  queryHref('/admin/fulfillment', {
+    q: q || undefined,
+    customer: customer || undefined,
+    product: product || undefined,
+    method: method || undefined,
+    fulfillment: fulfillment || undefined,
+    date_from: dateFrom || undefined,
+    date_to: dateTo || undefined,
+    min_amount: minAmountRaw || undefined,
+    max_amount: maxAmountRaw || undefined,
+    sort: sort !== 'newest' ? sort : undefined,
+    page: p > 1 ? p : undefined,
+  });
+
+const statusTabHref = (st: string) =>
+  queryHref('/admin/fulfillment', {
+    q: q || undefined,
+    customer: customer || undefined,
+    product: product || undefined,
+    method: method || undefined,
+    fulfillment: st || undefined,
+  });
+
+const orderCfg = getConfig().orderNumber;
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+
+const PAYMENT_METHOD_LABELS: Record<string, string> = {
+  wallet: 'کیف پول GarGift+',
+  bank_transfer: 'کارت‌به‌کارت بانکی',
+  zarinpal: 'درگاه زرین‌پال',
+  zibal: 'درگاه زیبال',
+  stripe: 'کارت بین‌المللی',
+  lightning: 'لایتنینگ',
+  opennode: 'بیت‌کوین',
+  demo: 'آزمایشی (دمو)',
+};
+
+const FULFILLMENT_BADGE_CLASSES: Record<DbOrderFulfillmentStatus, string> = {
+  unfulfilled: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
+  processing: 'bg-brand/15 text-brand-fg',
+  ready_for_delivery: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300',
+  partially_fulfilled: 'bg-purple-500/15 text-purple-700 dark:text-purple-300',
+  fulfilled: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  cancelled: 'bg-red-500/15 text-red-700 dark:text-red-300',
+};
+---
+
+<AdminLayout title="میز کار تحویل سفارش‌ها" active="fulfillment" requiredPermission="orders.view">
+  <div class="mb-6 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <p class="text-xs font-semibold text-brand-fg">مدیریت یکپارچه تحویل دستی سرویس‌های دیجیتال</p>
+      <h1 class="mt-1 text-2xl font-extrabold text-ink">میز کار تحویل سفارش‌ها</h1>
+    </div>
+    <div class="flex items-center gap-2 text-xs text-muted">
+      <span>فقط سفارش‌های با پرداخت تاییدشده وارد صف تحویل می‌شوند.</span>
+    </div>
+  </div>
+
+  {/* کارت‌های خلاصه آمار زنده از دیتابیس D1 */}
+  <section aria-label="خلاصه وضعیت صف تحویل" class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+    <a
+      href={statusTabHref('unfulfilled')}
+      class={`rounded-xl border p-4 transition-colors ${
+        fulfillment === 'unfulfilled'
+          ? 'border-brand bg-brand-soft'
+          : 'border-line bg-surface hover:border-brand/50'
+      }`}
+    >
+      <p class="text-xs font-medium text-muted">در انتظار پردازش</p>
+      <p class="mt-2 text-2xl font-extrabold tabular-nums text-amber-600 dark:text-amber-300">
+        {toPersianDigits(stats.unfulfilledCount)}
+      </p>
+    </a>
+
+    <a
+      href={statusTabHref('processing')}
+      class={`rounded-xl border p-4 transition-colors ${
+        fulfillment === 'processing'
+          ? 'border-brand bg-brand-soft'
+          : 'border-line bg-surface hover:border-brand/50'
+      }`}
+    >
+      <p class="text-xs font-medium text-muted">در حال آماده‌سازی</p>
+      <p class="mt-2 text-2xl font-extrabold tabular-nums text-brand-fg">
+        {toPersianDigits(stats.processingCount)}
+      </p>
+    </a>
+
+    <a
+      href={statusTabHref('ready_for_delivery')}
+      class={`rounded-xl border p-4 transition-colors ${
+        fulfillment === 'ready_for_delivery'
+          ? 'border-brand bg-brand-soft'
+          : 'border-line bg-surface hover:border-brand/50'
+      }`}
+    >
+      <p class="text-xs font-medium text-muted">آماده تحویل</p>
+      <p class="mt-2 text-2xl font-extrabold tabular-nums text-cyan-600 dark:text-cyan-300">
+        {toPersianDigits(stats.readyCount)}
+      </p>
+    </a>
+
+    <a
+      href={statusTabHref('partially_fulfilled')}
+      class={`rounded-xl border p-4 transition-colors ${
+        fulfillment === 'partially_fulfilled'
+          ? 'border-brand bg-brand-soft'
+          : 'border-line bg-surface hover:border-brand/50'
+      }`}
+    >
+      <p class="text-xs font-medium text-muted">تحویل ناقص</p>
+      <p class="mt-2 text-2xl font-extrabold tabular-nums text-purple-600 dark:text-purple-300">
+        {toPersianDigits(stats.partialCount)}
+      </p>
+    </a>
+
+    <a
+      href={statusTabHref('fulfilled')}
+      class={`rounded-xl border p-4 transition-colors ${
+        fulfillment === 'fulfilled'
+          ? 'border-brand bg-brand-soft'
+          : 'border-line bg-surface hover:border-brand/50'
+      }`}
+    >
+      <p class="text-xs font-medium text-muted">تحویل‌شده</p>
+      <p class="mt-2 text-2xl font-extrabold tabular-nums text-emerald-600 dark:text-emerald-300">
+        {toPersianDigits(stats.fulfilledCount)}
+      </p>
+    </a>
+
+    <a
+      href={statusTabHref('delayed')}
+      class={`rounded-xl border p-4 transition-colors ${
+        fulfillment === 'delayed'
+          ? 'border-red-500 bg-red-500/10'
+          : 'border-line bg-surface hover:border-red-500/50'
+      }`}
+    >
+      <p class="text-xs font-medium text-muted">سفارش‌های تأخیرخورده</p>
+      <p class="mt-2 text-2xl font-extrabold tabular-nums text-red-600 dark:text-red-300">
+        {toPersianDigits(stats.delayedCount)}
+      </p>
+    </a>
+  </section>
+
+  {/* فرم فیلتر و جستجوی پیشرفته سمت سرور */}
+  <section class="mb-6 rounded-2xl border border-line bg-surface p-5">
+    <form method="GET" action="/admin/fulfillment" class="space-y-4">
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <label for="fq-q" class="mb-1 block text-xs font-semibold text-ink">شماره سفارش / شناسه</label>
+          <input
+            id="fq-q"
+            type="search"
+            name="q"
+            value={q}
+            placeholder="مثال: ord_... یا شماره سفارش"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label for="fq-customer" class="mb-1 block text-xs font-semibold text-ink">مشتری (ایمیل / نام / موبایل)</label>
+          <input
+            id="fq-customer"
+            type="text"
+            name="customer"
+            value={customer}
+            placeholder="مثال: reza@gargift.ir"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label for="fq-product" class="mb-1 block text-xs font-semibold text-ink">نام محصول دیجیتال</label>
+          <input
+            id="fq-product"
+            type="text"
+            name="product"
+            value={product}
+            placeholder="مثال: گیفت‌کارت اپل یا ChatGPT"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label for="fq-fulfillment" class="mb-1 block text-xs font-semibold text-ink">وضعیت تحویل</label>
+          <select
+            id="fq-fulfillment"
+            name="fulfillment"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          >
+            <option value="" selected={fulfillment === ''}>همه وضعیت‌های تحویل</option>
+            <option value="unfulfilled" selected={fulfillment === 'unfulfilled'}>در انتظار پردازش</option>
+            <option value="processing" selected={fulfillment === 'processing'}>در حال آماده‌سازی</option>
+            <option value="ready_for_delivery" selected={fulfillment === 'ready_for_delivery'}>آماده تحویل</option>
+            <option value="partially_fulfilled" selected={fulfillment === 'partially_fulfilled'}>تحویل ناقص</option>
+            <option value="fulfilled" selected={fulfillment === 'fulfilled'}>تحویل‌شده</option>
+            <option value="delayed" selected={fulfillment === 'delayed'}>تأخیرخورده (+۲ ساعت)</option>
+            <option value="cancelled" selected={fulfillment === 'cancelled'}>لغو شده</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="fq-method" class="mb-1 block text-xs font-semibold text-ink">روش پرداخت</label>
+          <select
+            id="fq-method"
+            name="method"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          >
+            <option value="" selected={method === ''}>همه روش‌های پرداخت</option>
+            <option value="wallet" selected={method === 'wallet'}>کیف پول GarGift+</option>
+            <option value="bank_transfer" selected={method === 'bank_transfer'}>کارت‌به‌کارت بانکی</option>
+            <option value="zarinpal" selected={method === 'zarinpal'}>درگاه زرین‌پال</option>
+            <option value="zibal" selected={method === 'zibal'}>درگاه زیبال</option>
+            <option value="demo" selected={method === 'demo'}>آزمایشی (دمو)</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="fq-date-from" class="mb-1 block text-xs font-semibold text-ink">از تاریخ (میلادی YYYY-MM-DD)</label>
+          <input
+            id="fq-date-from"
+            type="date"
+            name="date_from"
+            value={dateFrom}
+            dir="ltr"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label for="fq-min-amount" class="mb-1 block text-xs font-semibold text-ink">حداقل مبلغ (تومان)</label>
+          <input
+            id="fq-min-amount"
+            type="number"
+            name="min_amount"
+            value={minAmountRaw}
+            min="0"
+            dir="ltr"
+            placeholder="0"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label for="fq-sort" class="mb-1 block text-xs font-semibold text-ink">مرتب‌سازی</label>
+          <select
+            id="fq-sort"
+            name="sort"
+            class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+          >
+            <option value="newest" selected={sort === 'newest'}>جدیدترین سفارش‌ها</option>
+            <option value="oldest" selected={sort === 'oldest'}>قدیمی‌ترین (اولویت صف)</option>
+            <option value="amount_desc" selected={sort === 'amount_desc'}>بیشترین مبلغ</option>
+            <option value="amount_asc" selected={sort === 'amount_asc'}>کمترین مبلغ</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <div class="text-xs text-muted">
+          تعداد سفارش‌های منطبق: <strong class="text-ink">{toPersianDigits(queueResult.total)}</strong> سفارش
+        </div>
+        <div class="flex items-center gap-2">
+          {hasActiveFilters && (
+            <a
+              href="/admin/fulfillment"
+              class="rounded-xl border border-line bg-paper px-4 py-2 text-xs font-semibold text-muted hover:border-brand hover:text-ink"
+            >
+              پاک کردن فیلترها
+            </a>
+          )}
+          <button
+            type="submit"
+            class="rounded-xl bg-brand px-5 py-2 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+          >
+            اعمال فیلتر و جستجو
+          </button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  {/* جدول صف تحویل سفارش‌ها */}
+  <section class="mb-8 overflow-hidden rounded-2xl border border-line bg-surface">
+    <div class="overflow-x-auto">
+      <table class="admin-table w-full text-start text-xs">
+        <thead>
+          <tr class="border-b border-line bg-paper/60 text-muted">
+            <th class="px-4 py-3 font-semibold">سفارش</th>
+            <th class="px-4 py-3 font-semibold">مشتری</th>
+            <th class="px-4 py-3 font-semibold">اقلام سفارش</th>
+            <th class="px-4 py-3 font-semibold">روش پرداخت</th>
+            <th class="px-4 py-3 font-semibold">مبلغ کل</th>
+            <th class="px-4 py-3 font-semibold">وضعیت تحویل</th>
+            <th class="px-4 py-3 font-semibold">پیشرفت اقلام</th>
+            <th class="px-4 py-3 font-semibold">زمان ثبت</th>
+            <th class="px-4 py-3 text-end font-semibold">عملیات</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-line">
+          {orders.map((o) => {
+            const ref = orderReference(o.public_id, o.id, orderCfg);
+            const fStatus = toDbOrderFulfillmentStatus(o.fulfillment_status);
+            const badgeClass = FULFILLMENT_BADGE_CLASSES[fStatus];
+            return (
+              <tr class="hover:bg-paper/40">
+                <td data-label="سفارش" class="px-4 py-3.5">
+                  <a
+                    href={`/admin/orders/${o.public_id}`}
+                    class="ltr-inline font-mono text-xs font-bold text-brand-fg hover:underline"
+                  >
+                    #{ref}
+                  </a>
+                  {o.assigned_admin && (
+                    <div class="mt-0.5 text-[11px] text-muted">مسئول: {o.assigned_admin}</div>
+                  )}
+                </td>
+                <td data-label="مشتری" class="px-4 py-3.5">
+                  {o.customer_name && <div class="font-semibold text-ink">{o.customer_name}</div>}
+                  {o.email ? (
+                    <a
+                      href={`/admin/customers/${encodeURIComponent(o.email)}`}
+                      class="ltr-inline font-mono text-[11px] text-muted hover:text-brand-fg"
+                    >
+                      {o.email}
+                    </a>
+                  ) : (
+                    <span class="text-muted">—</span>
+                  )}
+                </td>
+                <td data-label="اقلام سفارش" class="max-w-xs px-4 py-3.5">
+                  <div class="truncate font-medium text-ink" title={o.items_summary ?? ''}>
+                    {o.items_summary || '—'}
+                  </div>
+                </td>
+                <td data-label="روش پرداخت" class="px-4 py-3.5">
+                  <span class="text-ink">
+                    {PAYMENT_METHOD_LABELS[o.payment_method ?? ''] ?? o.payment_method ?? 'آنلاین'}
+                  </span>
+                </td>
+                <td data-label="مبلغ کل" class="px-4 py-3.5 font-bold tabular-nums text-ink">
+                  {formatMoney(o.amount_total_cents, o.currency)}
+                </td>
+                <td data-label="وضعیت تحویل" class="px-4 py-3.5">
+                  <span class={`inline-flex rounded-md px-2.5 py-1 text-[11px] font-bold ${badgeClass}`}>
+                    {FULFILLMENT_STATE_LABELS[fStatus]}
+                  </span>
+                </td>
+                <td data-label="پیشرفت اقلام" class="px-4 py-3.5 tabular-nums text-ink">
+                  {toPersianDigits(o.fulfilled_item_count)} از {toPersianDigits(o.item_count)} آیتم
+                </td>
+                <td data-label="زمان ثبت" class="px-4 py-3.5 text-muted">
+                  {formatJalaliDateTime(o.created_at, { timeZone })}
+                </td>
+                <td data-label="عملیات" class="px-4 py-3.5 text-end">
+                  <a
+                    href={`/admin/orders/${o.public_id}#fulfillment-workspace`}
+                    class="inline-flex items-center gap-1 rounded-lg bg-brand px-3 py-1.5 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+                  >
+                    <span>میز کار تحویل</span>
+                    <span aria-hidden="true">&larr;</span>
+                  </a>
+                </td>
+              </tr>
+            );
+          })}
+          {orders.length === 0 && (
+            <tr>
+              <td colspan="9" class="px-4 py-10 text-center text-sm text-muted">
+                {hasActiveFilters
+                  ? 'هیچ سفارشی با فیلترهای انتخاب‌شده یافت نشد.'
+                  : 'در حال حاضر سفارشی در صف تحویل وجود ندارد.'}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+
+  {/* فهرست تحویل‌های اخیر */}
+  {recentDeliveries.length > 0 && (
+    <section class="mt-8 rounded-2xl border border-line bg-surface p-5">
+      <h2 class="text-sm font-bold text-ink">تحویل‌های منتشرشده اخیر</h2>
+      <div class="mt-3 divide-y divide-line text-xs">
+        {recentDeliveries.map((rd) => {
+          const ref = orderReference(rd.order_public_id, rd.order_id, orderCfg);
+          return (
+            <div class="flex flex-wrap items-center justify-between gap-3 py-3">
+              <div class="flex flex-wrap items-center gap-2">
+                <a
+                  href={`/admin/orders/${rd.order_public_id}`}
+                  class="font-mono font-bold text-brand-fg hover:underline"
+                >
+                  سفارش <span class="ltr-inline">#{ref}</span>
+                </a>
+                <span class="text-muted">·</span>
+                <span class="font-semibold text-ink">{rd.item_name}</span>
+                <span class="rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+                  نسخه {toPersianDigits(rd.current_version)}
+                </span>
+              </div>
+              <div class="flex flex-wrap items-center gap-3 text-muted">
+                {rd.customer_email && <span class="ltr-inline font-mono">{rd.customer_email}</span>}
+                {rd.published_by && <span>توسط {rd.published_by}</span>}
+                <span>{formatJalaliDateTime(rd.published_at, { timeZone })}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  )}
+</AdminLayout>

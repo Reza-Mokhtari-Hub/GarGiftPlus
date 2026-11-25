@@ -1,0 +1,239 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import Layout from '../../../layouts/Layout.astro';
+import AccountShell from '../../../features/account/AccountShell.astro';
+import { getConfig } from '../../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../../features/auth/customer';
+import { getOrderByPublicId, listOrderItems } from '../../../features/orders/db';
+import { orderReference } from '../../../features/orders/number';
+import { guestOrderUrl } from '../../../features/orders/guestAccess';
+import { getOrCreateWalletByCustomerId } from '../../../features/wallet/db';
+import { getLatestPaymentTxForTarget } from '../../../features/payments/transactionsDb';
+import { listReceiptsForTarget } from '../../../features/payments/receiptsDb';
+import { PAYMENT_TX_STATUS_LABELS } from '../../../features/payments/transactions';
+import { formatMoney } from '../../../money';
+import { formatJalaliDateTime, toPersianDigits } from '../../../lib/format';
+import type { NormalizedCustomerInput } from '../../../features/products/customFields';
+import { getCustomerOrderDeliveryView } from '../../../features/fulfillment/db';
+import CustomerOrderDeliveryPanel from '../../../features/fulfillment/CustomerOrderDeliveryPanel.astro';
+
+if (!(await accountsEnabled())) return Astro.redirect('/', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
+
+const orderPublicId = (Astro.params.id ?? '').trim().toLowerCase();
+const order = orderPublicId ? await getOrderByPublicId(env.DB, orderPublicId) : null;
+
+// کنترل دسترسی سمت سرور: مشتری فقط به سفارش‌های متعلق به ایمیل یا شناسه خودش دسترسی دارد
+const ownsOrder =
+  order &&
+  ((order.email && order.email.trim().toLowerCase() === customer.email.toLowerCase()) ||
+    order.customer_id === customer.id);
+
+if (!order || !ownsOrder) {
+  return new Response('سفارش مورد نظر یافت نشد یا به حساب شما تعلق ندارد.', {
+    status: 404,
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+  });
+}
+
+Astro.response.headers.set('cache-control', 'private, no-store');
+Astro.response.headers.set('referrer-policy', 'no-referrer');
+
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+const items = await listOrderItems(env.DB, order.id);
+const deliveryView = await getCustomerOrderDeliveryView(env.DB, order, items);
+const paymentTx = await getLatestPaymentTxForTarget(env.DB, 'order', order.public_id ?? '');
+const receipts = order.public_id
+  ? await listReceiptsForTarget(env.DB, 'order', order.public_id)
+  : [];
+const capabilityReceiptUrl = await guestOrderUrl(env.DB, order.public_id, '');
+
+const orderCfg = getConfig().orderNumber;
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const ref = orderReference(order.public_id, order.id, orderCfg);
+
+const paymentMethodLabels: Record<string, string> = {
+  wallet: 'کیف پول گارگیفت+',
+  bank_transfer: 'کارت‌به‌کارت / واریز بانکی',
+  zarinpal: 'درگاه زرین‌پال',
+  zibal: 'درگاه زیبال',
+  demo: 'پرداخت آزمایشی',
+  stripe: 'کارت بانکی',
+  lightning: 'بیت‌کوین لایتنینگ',
+};
+
+function parseCustomerInputs(json: string | null): NormalizedCustomerInput[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+---
+
+<Layout title={`سفارش #${ref}`}>
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="orders"
+    title={`جزئیات سفارش #${ref}`}
+    subtitle={`ثبت‌شده در ${formatJalaliDateTime(order.created_at, { timeZone })}`}
+  >
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <a
+        href="/account/orders"
+        class="inline-flex items-center gap-1.5 text-xs font-semibold text-muted hover:text-brand-fg"
+      >
+        <span>&rarr; بازگشت به فهرست سفارش‌های من</span>
+      </a>
+
+      {capabilityReceiptUrl && (
+        <a
+          href={capabilityReceiptUrl}
+          class="rounded-lg border border-line bg-surface px-3.5 py-2 text-xs font-semibold text-ink hover:border-brand hover:text-brand-fg"
+        >
+          مشاهده صفحه رسید سفارش
+        </a>
+      )}
+    </div>
+
+    <div class="grid gap-6 lg:grid-cols-3">
+      {/* ستون اصلی: اقلام سفارش و اطلاعات مشتری + پنل تحویل دیجیتال */}
+      <div class="space-y-6 lg:col-span-2">
+        <section class="rounded-xl border border-line bg-surface p-5">
+          <h2 class="text-sm font-bold text-ink">اقلام سفارش و اطلاعات ثبت‌شده خریدار</h2>
+          <div class="mt-4 divide-y divide-line">
+            {items.map((item) => {
+              const inputs = parseCustomerInputs(item.customer_inputs_json);
+              return (
+                <div class="py-4 first:pt-0 last:pb-0">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="text-sm font-bold text-ink">
+                      {item.name}{' '}
+                      <span class="gg-numeric text-xs text-muted">
+                        × {toPersianDigits(item.quantity)}
+                      </span>
+                    </div>
+                    <div class="gg-numeric text-sm font-extrabold text-ink">
+                      {formatMoney(item.price_cents * item.quantity, order.currency)}
+                    </div>
+                  </div>
+
+                  {inputs.length > 0 && (
+                    <div class="mt-3 rounded-lg border border-line bg-paper p-3">
+                      <p class="mb-2 text-[11px] font-bold text-muted">
+                        اطلاعات اختصاصی اکانت / سفارش شما (ثبت‌شده هنگام خرید):
+                      </p>
+                      <dl class="grid gap-2 text-xs sm:grid-cols-2">
+                        {inputs.map((inp) => (
+                          <div class="rounded bg-surface px-2.5 py-1.5">
+                            <dt class="text-[11px] text-muted">{inp.label}</dt>
+                            <dd class="mt-0.5 font-semibold text-ink break-all">{inp.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* پنل کامل تحویل دیجیتال، تایم‌لاین مراحل، کدها و فایل‌های پیوست */}
+        <CustomerOrderDeliveryPanel
+          order={order}
+          deliveryView={deliveryView}
+          timeZone={timeZone}
+          attachmentDownloadBasePath={`/api/account/orders/${order.public_id}/attachments`}
+        />
+      </div>
+
+      {/* ستون کناری: خلاصه مالی و اطلاعات پرداخت */}
+      <div class="space-y-6">
+        <section class="rounded-xl border border-line bg-surface p-5">
+          <h2 class="text-sm font-bold text-ink">خلاصه مالی و پرداخت</h2>
+          <dl class="mt-4 space-y-2.5 text-xs">
+            <div class="flex items-center justify-between">
+              <dt class="text-muted">شماره سفارش</dt>
+              <dd class="font-mono font-bold text-ink">#{ref}</dd>
+            </div>
+            <div class="flex items-center justify-between">
+              <dt class="text-muted">روش پرداخت</dt>
+              <dd class="font-semibold text-ink">
+                {paymentMethodLabels[order.payment_method ?? ''] ?? order.payment_method ?? 'آنلاین'}
+              </dd>
+            </div>
+            <div class="flex items-center justify-between">
+              <dt class="text-muted">وضعیت پرداخت</dt>
+              <dd class="font-bold text-success">
+                {paymentTx ? PAYMENT_TX_STATUS_LABELS[paymentTx.status] : 'پرداخت‌شده'}
+              </dd>
+            </div>
+            {(order.provider_payment_id || paymentTx?.ref_id) && (
+              <div class="flex items-center justify-between">
+                <dt class="text-muted">کد مرجع / پیگیری</dt>
+                <dd dir="ltr" class="ltr-inline font-mono text-ink">
+                  {paymentTx?.ref_id ?? order.provider_payment_id}
+                </dd>
+              </div>
+            )}
+            <div class="border-t border-line pt-3 flex items-center justify-between text-sm font-extrabold text-ink">
+              <dt>مبلغ کل پرداخت‌شده</dt>
+              <dd class="gg-numeric text-accent-fg">
+                {formatMoney(order.amount_total_cents, order.currency)}
+              </dd>
+            </div>
+            {order.refunded_cents > 0 && (
+              <div class="flex items-center justify-between text-danger font-bold">
+                <dt>مبلغ مستردشده</dt>
+                <dd class="gg-numeric">{formatMoney(order.refunded_cents, order.currency)}</dd>
+              </div>
+            )}
+          </dl>
+        </section>
+
+        {receipts.length > 0 && (
+          <section class="rounded-xl border border-line bg-surface p-5">
+            <h2 class="text-sm font-bold text-ink">سوابق فیش کارت‌به‌کارت</h2>
+            <div class="mt-3 space-y-3 text-xs">
+              {receipts.map((r) => (
+                <div class="rounded-lg border border-line bg-paper p-3">
+                  <div class="flex items-center justify-between">
+                    <span class="font-bold text-ink">فیش {r.public_id}</span>
+                    <span
+                      class:list={[
+                        'rounded px-2 py-0.5 text-[11px] font-bold',
+                        r.status === 'approved'
+                          ? 'bg-success/15 text-success'
+                          : r.status === 'rejected'
+                            ? 'bg-danger/15 text-danger'
+                            : 'bg-warning/15 text-warning',
+                      ]}
+                    >
+                      {r.status === 'approved'
+                        ? 'تاییدشده'
+                        : r.status === 'rejected'
+                          ? 'ردشده'
+                          : 'در انتظار بررسی'}
+                    </span>
+                  </div>
+                  {r.tracking_code && (
+                    <p class="mt-1 text-muted">کد پیگیری: {r.tracking_code}</p>
+                  )}
+                  {r.review_note && (
+                    <p class="mt-1 text-ink">توضیح مدیر: {r.review_note}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    </div>
+  </AccountShell>
+</Layout>

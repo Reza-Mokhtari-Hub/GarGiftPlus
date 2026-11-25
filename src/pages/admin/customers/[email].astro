@@ -1,74 +1,451 @@
 ---
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../../layouts/AdminLayout.astro';
-import { formatPrice, formatDate, getConfig } from '../../../config';
+import AdminPageHeader from '../../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../../config';
 import { getCustomerOrders, getCustomerSummary } from '../../../features/customers/db';
+import { getCustomerByEmail } from '../../../features/customers/accountsDb';
+import {
+  getOrCreateWalletByCustomerId,
+  listWalletTransactions,
+} from '../../../features/wallet/db';
+import { WALLET_TX_LABELS } from '../../../features/wallet/rules';
+import { listPaymentTransactions } from '../../../features/payments/transactionsDb';
+import {
+  PAYMENT_METHOD_LABELS,
+  PAYMENT_TX_STATUS_LABELS,
+} from '../../../features/payments/transactions';
+import { listCustomerTickets, TICKET_STATUS_LABELS } from '../../../features/tickets/db';
 import { orderReference } from '../../../features/orders/number';
+import { hasAdminPermission } from '../../../features/fulfillment/permissions';
+import { resolveAdminActor } from '../../../features/fulfillment/actor';
 import { paginate, queryHref } from '../../../pagination';
 import Pagination from '../../../components/Pagination.astro';
+import { formatJalaliDate, formatJalaliDateTime, toPersianDigits } from '../../../lib/format';
 
-const email = Astro.params.email ? decodeURIComponent(Astro.params.email) : '';
+const email = Astro.params.email ? decodeURIComponent(Astro.params.email).trim().toLowerCase() : '';
 const summary = email ? await getCustomerSummary(env.DB, email) : null;
+const account = email ? await getCustomerByEmail(env.DB, email) : null;
 
-// Unknown email (no orders) → 404, so the page can't be used to probe addresses.
-if (!summary) {
-  return new Response('Not found', { status: 404 });
+if (!summary && !account) {
+  return new Response('مشتری یافت نشد', { status: 404 });
 }
 
+const actor = await resolveAdminActor(env.DB, {
+  locals: Astro.locals,
+  cookies: Astro.cookies,
+  request: Astro.request,
+});
+const canManageCustomer = hasAdminPermission(actor, 'customers.manage');
+const canAdjustWallet = hasAdminPermission(actor, 'wallet.adjust');
+
+const wallet = account ? await getOrCreateWalletByCustomerId(env.DB, account.id) : null;
+const walletTxs = wallet ? await listWalletTransactions(env.DB, wallet.id, 30) : [];
+const paymentTxs = account
+  ? await listPaymentTransactions(env.DB, { customerId: account.id, limit: 25 })
+  : [];
+const tickets = await listCustomerTickets(env.DB, email, 15);
+
+const totalOrders = summary?.orders ?? 0;
 const PAGE_SIZE = 50;
 const { page, offset, totalPages } = paginate(
   Astro.url.searchParams,
-  summary.orders,
+  totalOrders,
   PAGE_SIZE,
 );
-const orders = await getCustomerOrders(env.DB, email, PAGE_SIZE, offset);
+const orders = totalOrders > 0 ? await getCustomerOrders(env.DB, email, PAGE_SIZE, offset) : [];
 const base = `/admin/customers/${encodeURIComponent(email)}`;
 const hrefFor = (p: number) => queryHref(base, { page: p > 1 ? p : undefined });
 const onCfg = getConfig().orderNumber;
 const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const isSuspended = account?.status === 'suspended';
+
+const msg = Astro.url.searchParams.get('msg');
+const error = Astro.url.searchParams.get('error');
 ---
 
-<AdminLayout title={email} active="customers">
-  <a
-    href="/admin/customers"
-    class="text-xs uppercase tracking-widest text-gray-400 hover:text-brand"
+<AdminLayout
+  title={`پروفایل مشتری — ${email}`}
+  active="customers"
+  requiredPermission="customers.view"
+  breadcrumbs={[
+    { label: 'مشتریان و مالی' },
+    { label: 'مشتریان', href: '/admin/customers' },
+    { label: email },
+  ]}
+>
+  <AdminPageHeader
+    title={account?.full_name || email}
+    subtitle={`${email}${account?.phone ? ` · ${account.phone}` : ''} · ${toPersianDigits(totalOrders)} سفارش ثبت‌شده${summary ? ` · مجموع خرید: ${formatPrice(summary.lifetime_cents)}` : ''}`}
+    badge={isSuspended ? 'مسدودشده' : 'حساب فعال'}
   >
-    &larr; Back to customers
-  </a>
-  <h1 class="mt-4 mb-2 font-serif text-3xl tracking-tight break-all">{email}</h1>
-  <p class="mb-8 text-sm text-gray-500">
-    {summary.orders} order{summary.orders === 1 ? '' : 's'} · {formatPrice(summary.lifetime_cents)} lifetime
-  </p>
+    <a slot="actions" href="/admin/customers" class="gg-admin-btn-secondary text-xs">
+      بازگشت به مشتریان ←
+    </a>
+  </AdminPageHeader>
 
-  <table class="admin-table w-full text-left text-sm">
-    <thead>
-      <tr class="border-b border-line text-xs uppercase tracking-widest text-gray-400">
-        <th class="py-3 pr-4 font-normal">Order</th>
-        <th class="py-3 pr-4 font-normal">Total</th>
-        <th class="py-3 pr-4 font-normal">Status</th>
-        <th class="py-3 font-normal">When</th>
-      </tr>
-    </thead>
-    <tbody>
+  {
+    error && (
+      <div class="gg-status-error mb-6 rounded-xl px-4 py-3 text-sm">{error}</div>
+    )
+  }
+
+  {
+    msg === 'wallet_adjusted' && (
+      <div class="gg-status-success mb-6 rounded-xl px-4 py-3 text-sm">
+        موجودی کیف پول مشتری با موفقیت اصلاح شد و در دفتر کل و لاگ ممیزی ثبت گردید.
+      </div>
+    )
+  }
+
+  {
+    msg === 'profile_saved' && (
+      <div class="gg-status-success mb-6 rounded-xl px-4 py-3 text-sm">
+        وضعیت حساب، اطلاعات پروفایل و یادداشت‌های مدیریتی مشتری ذخیره شد.
+      </div>
+    )
+  }
+
+  {/* Wallet & Customer Account Management */}
+  <div class="mb-8 grid gap-6 lg:grid-cols-12">
+    {/* Wallet summary & manual adjust */}
+    <section class="gg-admin-card p-5 lg:col-span-6">
+      <div class="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
+        <div>
+          <p class="text-xs font-semibold text-muted">موجودی فعلی کیف پول</p>
+          <p class="mt-1.5 text-2xl font-extrabold text-brand-fg">
+            {wallet ? formatPrice(wallet.balance, wallet.currency) : formatPrice(0, 'irt')}
+          </p>
+          {wallet && (
+            <p class="mt-1 ltr-inline font-mono text-[11px] text-faint">
+              شناسه: {wallet.public_id}
+            </p>
+          )}
+        </div>
+        {account && (
+          <span class="ltr-inline rounded-lg border border-line bg-surface-2 px-2.5 py-1 font-mono text-xs text-muted">
+            {account.public_id}
+          </span>
+        )}
+      </div>
+
       {
-        orders.map((o) => (
-          <tr class="border-b border-line">
-            <td class="py-3 pr-4">
-              <a
-                href={`/admin/orders/${o.public_id}`}
-                class="text-accent tabular-nums hover:underline"
-              >
-                #{orderReference(o.public_id, o.id, onCfg)}
-              </a>
-            </td>
-            <td data-label="Total" class="py-3 pr-4 tabular-nums">{formatPrice(o.amount_total_cents, o.currency)}</td>
-            <td data-label="Status" class="py-3 pr-4">{o.status}</td>
-            <td data-label="When" class="py-3 text-gray-500">{formatDate(o.created_at, undefined, timeZone)}</td>
-          </tr>
-        ))
+        canAdjustWallet ? (
+          <form method="POST" action="/api/admin/customers/wallet" class="mt-4 space-y-3">
+            <input type="hidden" name="email" value={email} />
+            <h2 class="text-xs font-bold text-ink">اصلاح دستی موجودی کیف پول</h2>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label for="adj-direction" class="mb-1 block text-xs font-semibold text-muted">
+                  نوع عملیات
+                </label>
+                <select id="adj-direction" name="direction" class="gg-admin-input py-2 text-xs">
+                  <option value="credit">افزایش موجودی (شارژ / بستانکار)</option>
+                  <option value="debit">کسر از موجودی (بدهکار)</option>
+                </select>
+              </div>
+              <div>
+                <label for="adj-amount" class="mb-1 block text-xs font-semibold text-muted">
+                  مبلغ (تومان — عدد صحیح) *
+                </label>
+                <input
+                  id="adj-amount"
+                  name="amount"
+                  type="text"
+                  inputmode="numeric"
+                  dir="ltr"
+                  required
+                  placeholder="100000"
+                  class="gg-admin-input ltr-inline py-2 font-mono text-xs"
+                />
+              </div>
+            </div>
+            <div>
+              <label for="adj-reason" class="mb-1 block text-xs font-semibold text-muted">
+                علت اصلاح موجودی (الزامی — حداقل ۳ کاراکتر) *
+              </label>
+              <input
+                id="adj-reason"
+                name="reason"
+                type="text"
+                required
+                minlength="3"
+                placeholder="مثال: بازگشت وجه سفارش یا اعتبار هدیه..."
+                class="gg-admin-input py-2 text-xs"
+              />
+            </div>
+            <button type="submit" class="gg-admin-btn-primary text-xs">
+              اعمال تغییر در کیف پول مشتری
+            </button>
+          </form>
+        ) : (
+          <p class="mt-4 text-xs text-muted">
+            برای تغییر دستی موجودی کیف پول، مجوز <span class="ltr-inline font-mono">wallet.adjust</span> لازم است.
+          </p>
+        )
       }
-    </tbody>
-  </table>
+    </section>
 
-  <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+    {/* Customer Status & Notes */}
+    <section class="gg-admin-card p-5 lg:col-span-6">
+      <div class="flex items-center justify-between border-b border-line pb-4">
+        <div>
+          <h2 class="text-sm font-bold text-ink">وضعیت حساب، اطلاعات تماس و یادداشت مدیریتی</h2>
+          <p class="mt-0.5 text-xs text-muted">
+            حساب مسدودشده امکان ثبت سفارش جدید یا ورود نخواهد داشت.
+          </p>
+        </div>
+        <span class={`rounded-md px-2.5 py-1 text-[11px] font-bold ${isSuspended ? 'gg-status-error' : 'gg-status-success'}`}>
+          {isSuspended ? 'مسدودشده' : 'فعال'}
+        </span>
+      </div>
+
+      {
+        canManageCustomer ? (
+          <form method="POST" action="/api/admin/customers/status" class="mt-4 space-y-3">
+            <input type="hidden" name="email" value={email} />
+            <div class="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label for="cust-status" class="mb-1 block text-xs font-semibold text-muted">
+                  وضعیت حساب
+                </label>
+                <select id="cust-status" name="status" class="gg-admin-input py-2 text-xs">
+                  <option value="active" selected={!isSuspended}>فعال (Active)</option>
+                  <option value="suspended" selected={isSuspended}>مسدود (Suspended)</option>
+                </select>
+              </div>
+              <div>
+                <label for="cust-fullname" class="mb-1 block text-xs font-semibold text-muted">
+                  نام و نام خانوادگی
+                </label>
+                <input
+                  id="cust-fullname"
+                  name="full_name"
+                  type="text"
+                  value={account?.full_name ?? ''}
+                  class="gg-admin-input py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label for="cust-phone" class="mb-1 block text-xs font-semibold text-muted">
+                  شماره موبایل (۰۹...)
+                </label>
+                <input
+                  id="cust-phone"
+                  name="phone"
+                  type="text"
+                  dir="ltr"
+                  value={account?.phone ?? ''}
+                  placeholder="09120000000"
+                  class="gg-admin-input ltr-inline py-2 font-mono text-xs"
+                />
+              </div>
+            </div>
+            <div>
+              <label for="cust-notes" class="mb-1 block text-xs font-semibold text-muted">
+                یادداشت داخلی تیم پشتیبانی / مالی (غیرقابل مشاهده برای مشتری)
+              </label>
+              <textarea
+                id="cust-notes"
+                name="admin_notes"
+                rows="3"
+                class="gg-admin-input text-xs"
+                placeholder="یادداشت‌ها و سوابق بررسی..."
+              >{account?.admin_notes ?? ''}</textarea>
+            </div>
+            <button type="submit" class="gg-admin-btn-secondary text-xs">
+              ذخیره وضعیت و اطلاعات مشتری
+            </button>
+          </form>
+        ) : (
+          <div class="mt-4 space-y-2 text-xs text-muted">
+            <p>نام: <strong class="text-ink">{account?.full_name || '—'}</strong></p>
+            <p>موبایل: <span class="ltr-inline font-mono text-ink">{account?.phone || '—'}</span></p>
+            {account?.admin_notes && (
+              <p>یادداشت داخلی: <span class="text-ink">{account.admin_notes}</span></p>
+            )}
+          </div>
+        )
+      }
+    </section>
+  </div>
+
+  {/* Wallet Ledger */}
+  {
+    walletTxs.length > 0 && (
+      <section class="gg-admin-card mb-8 overflow-hidden p-5">
+        <h2 class="mb-4 text-sm font-bold text-ink">گردش حساب کیف پول مشتری</h2>
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>شناسه</th>
+                <th>نوع</th>
+                <th>تغییر مبلغ</th>
+                <th>مانده پس از تراکنش</th>
+                <th>توضیح / علت</th>
+                <th class="text-end">تاریخ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {walletTxs.map((tx) => {
+                const isPositive = tx.amount > 0;
+                return (
+                  <tr>
+                    <td><span class="ltr-inline font-mono text-xs text-muted">{tx.public_id}</span></td>
+                    <td class="font-semibold text-ink">{WALLET_TX_LABELS[tx.type] ?? tx.type}</td>
+                    <td class={`font-bold ${isPositive ? 'text-accent' : 'text-coral'}`}>
+                      {isPositive ? '+' : ''}{formatPrice(tx.amount, wallet?.currency ?? 'irt')}
+                    </td>
+                    <td class="text-ink">{formatPrice(tx.balance_after, wallet?.currency ?? 'irt')}</td>
+                    <td class="text-xs text-muted">{tx.reason}</td>
+                    <td class="text-end text-xs text-muted">
+                      {formatJalaliDateTime(tx.created_at, { timeZone })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
+  {/* Payment Transactions */}
+  {
+    paymentTxs.length > 0 && (
+      <section class="gg-admin-card mb-8 overflow-hidden p-5">
+        <h2 class="mb-4 text-sm font-bold text-ink">تراکنش‌های پرداخت این مشتری</h2>
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>شناسه</th>
+                <th>روش</th>
+                <th>مرجع هدف</th>
+                <th>مبلغ</th>
+                <th>وضعیت</th>
+                <th class="text-end">تاریخ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paymentTxs.map((ptx) => (
+                <tr>
+                  <td><span class="ltr-inline font-mono text-xs text-muted">{ptx.public_id}</span></td>
+                  <td class="font-medium text-ink">{PAYMENT_METHOD_LABELS[ptx.method] ?? ptx.method}</td>
+                  <td><span class="ltr-inline font-mono text-xs text-muted">{ptx.target_public_id}</span></td>
+                  <td class="font-bold text-ink">{formatPrice(ptx.amount, ptx.currency)}</td>
+                  <td>
+                    <span class="rounded bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink">
+                      {PAYMENT_TX_STATUS_LABELS[ptx.status] ?? ptx.status}
+                    </span>
+                  </td>
+                  <td class="text-end text-xs text-muted">
+                    {formatJalaliDateTime(ptx.created_at, { timeZone })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
+  {/* Support Tickets */}
+  {
+    tickets.length > 0 && (
+      <section class="gg-admin-card mb-8 overflow-hidden p-5">
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-sm font-bold text-ink">تیکت‌های پشتیبانی مشتری</h2>
+          <a href={`/admin/tickets?q=${encodeURIComponent(email)}`} class="text-xs font-semibold text-brand-fg hover:underline">
+            مشاهده در میز پشتیبانی ←
+          </a>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>کد تیکت</th>
+                <th>موضوع</th>
+                <th>وضعیت</th>
+                <th class="text-end">آخرین پاسخ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tickets.map((t) => (
+                <tr>
+                  <td>
+                    <a href={`/admin/tickets?ticket=${t.public_id}`} class="ltr-inline font-mono text-xs font-semibold text-brand-fg hover:underline">
+                      {t.public_id}
+                    </a>
+                  </td>
+                  <td class="font-medium text-ink">{t.subject}</td>
+                  <td>
+                    <span class="rounded bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink">
+                      {TICKET_STATUS_LABELS[t.status] ?? t.status}
+                    </span>
+                  </td>
+                  <td class="text-end text-xs text-muted">
+                    {formatJalaliDateTime(t.last_reply_at, { timeZone })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    )
+  }
+
+  {/* Orders */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-sm font-bold text-ink">سفارش‌های تسویه‌شده</h2>
+    {
+      orders.length === 0 ? (
+        <AdminEmptyState
+          title="سفارش تسویه‌شده‌ای ثبت نشده است"
+          description="تمامی سفارش‌های پرداخت‌شده این مشتری در این بخش نمایش داده می‌شوند."
+        />
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>شماره سفارش</th>
+                <th>مبلغ کل</th>
+                <th>وضعیت پرداخت</th>
+                <th>تحویل</th>
+                <th class="text-end">تاریخ ثبت</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((o) => (
+                <tr>
+                  <td>
+                    <a
+                      href={`/admin/orders/${o.public_id}`}
+                      class="ltr-inline font-mono text-xs font-semibold text-brand-fg hover:underline"
+                    >
+                      #{orderReference(o.public_id, o.id, onCfg)}
+                    </a>
+                  </td>
+                  <td class="font-bold text-ink">{formatPrice(o.amount_total_cents, o.currency)}</td>
+                  <td class="text-xs text-muted">{o.status === 'refunded' ? 'مستردشده' : 'پرداخت‌شده'}</td>
+                  <td class="text-xs text-muted">{o.fulfillment_status === 'fulfilled' ? 'تحویل‌شده' : 'در صف تحویل'}</td>
+                  <td class="text-end text-xs text-muted">{formatJalaliDate(o.created_at, { timeZone })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+
+    <div class="mt-4">
+      <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
+    </div>
+  </section>
 </AdminLayout>

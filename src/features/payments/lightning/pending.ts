@@ -1,5 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { PaidOrderInput, OrderItemInput, ShippingAddress } from '../../orders/db';
+import type { NormalizedCustomerInput } from '../../products/customFields';
 
 /**
  * Pending Lightning payments — the in-flight state between minting a BOLT11
@@ -126,6 +127,8 @@ export function pendingToPaidOrder(p: PendingPayment): PaidOrderInput {
         n: string;
         p: number;
         v?: number | null;
+        ci?: NormalizedCustomerInput[];
+        ti?: boolean;
       }[];
       items = raw.map((r) => ({
         productId: r.id,
@@ -133,6 +136,8 @@ export function pendingToPaidOrder(p: PendingPayment): PaidOrderInput {
         name: r.n,
         priceCents: r.p,
         quantity: r.q,
+        ...(Array.isArray(r.ci) && r.ci.length > 0 ? { customerInputs: r.ci } : {}),
+        ...(typeof r.ti === 'boolean' ? { trackInventory: r.ti } : {}),
       }));
     } catch {
       items = [];

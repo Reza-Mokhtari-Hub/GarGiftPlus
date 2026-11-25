@@ -11,6 +11,8 @@ import {
   type DigitalDeliveryRelease,
 } from '../digitalDelivery/rollout.ts';
 
+import type { NormalizedCustomerInput } from '../products/customFields.ts';
+
 export interface ReservationItem extends OrderItemInput {
   productId: number;
   publicId?: string;
@@ -18,6 +20,8 @@ export interface ReservationItem extends OrderItemInput {
   fileName?: string | null;
   fileMime?: string | null;
   fileSizeBytes?: number | null;
+  customerInputs?: NormalizedCustomerInput[];
+  trackInventory?: boolean;
 }
 
 export type ReservationStatus =
@@ -51,10 +55,11 @@ interface ProductPublicIdRow {
   public_id: string | null;
 }
 
-/** Combine lines that share the same finite stock target (for example extras). */
+/** Combine lines that share the same finite stock target (skips digital items with trackInventory === false). */
 export function aggregateStockTargets(items: ReservationItem[]): StockTarget[] {
   const targets = new Map<string, StockTarget>();
   for (const item of items) {
+    if (item.trackInventory === false) continue;
     const variantId = item.variantId ?? null;
     const key = variantId == null ? `p:${item.productId}` : `v:${variantId}`;
     const current = targets.get(key);
@@ -84,6 +89,8 @@ function parseItems(value: string): ReservationItem[] | null {
           (item.fileName != null && typeof item.fileName !== 'string') ||
           (item.fileMime != null && typeof item.fileMime !== 'string') ||
           (item.fileSizeBytes != null && (!Number.isInteger(item.fileSizeBytes) || item.fileSizeBytes < 0)) ||
+          (item.customerInputs != null && !Array.isArray(item.customerInputs)) ||
+          (item.trackInventory != null && typeof item.trackInventory !== 'boolean') ||
           typeof item.name !== 'string',
       )
     ) {
@@ -283,7 +290,15 @@ export async function reserveInventory(
   publicId: string,
   items: ReservationItem[],
   ttlSeconds: number,
-  paymentMethod: 'stripe' | 'opennode' | 'lightning' | 'demo',
+  paymentMethod:
+    | 'stripe'
+    | 'opennode'
+    | 'lightning'
+    | 'demo'
+    | 'zarinpal'
+    | 'zibal'
+    | 'bank_transfer'
+    | 'wallet',
   purger?: StockTransitionPurger,
   release: DigitalDeliveryRelease = DIGITAL_DELIVERY_RELEASE,
 ): Promise<boolean> {
@@ -293,6 +308,22 @@ export async function reserveInventory(
   const targets = aggregateStockTargets(items);
   const checks: string[] = [];
   const checkValues: number[] = [];
+
+  // Always enforce product.active === 1 and variant.active === 1 (digital & physical alike).
+  const uniqueProductIds = [...new Set(items.map((i) => i.productId))];
+  for (const pid of uniqueProductIds) {
+    checks.push('EXISTS (SELECT 1 FROM products WHERE id = ? AND active = 1)');
+    checkValues.push(pid);
+  }
+  const uniqueVariants = new Map<number, number>();
+  for (const item of items) {
+    if (item.variantId != null) uniqueVariants.set(item.variantId, item.productId);
+  }
+  for (const [vid, pid] of uniqueVariants) {
+    checks.push('EXISTS (SELECT 1 FROM product_variants WHERE id = ? AND product_id = ? AND active = 1)');
+    checkValues.push(vid, pid);
+  }
+
   for (const target of targets) {
     if (target.variantId == null) {
       checks.push('COALESCE((SELECT stock FROM products WHERE id = ? AND active = 1), -1) >= ?');

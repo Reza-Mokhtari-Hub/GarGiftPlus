@@ -10,14 +10,14 @@ import { MAX_PUBLIC_PAGE, paginate, queryHref, requestedPage } from '../paginati
 import Pagination from '../components/Pagination.astro';
 import { normalizeSearchQuery } from '../features/search/query';
 import { addCacheTags, productCacheTags } from '../features/cache/tags';
+import { fa } from '../i18n/fa';
+import { toPersianDigits } from '../lib/format';
 
 const q = normalizeSearchQuery(Astro.url.searchParams.get('q') ?? '');
 const PAGE_SIZE = 24;
 const requested = requestedPage(Astro.url.searchParams, MAX_PUBLIC_PAGE);
 const requestedOffset = (requested - 1) * PAGE_SIZE;
 
-// The active backend (FTS5 keyword by default, or semantic Vectorize when
-// configured) decides how to match — and whether it auto-corrected a typo.
 const provider = await getSearchProvider();
 let result = q
   ? await provider.search(q, { limit: PAGE_SIZE, offset: requestedOffset })
@@ -32,10 +32,6 @@ const hrefFor = (p: number) =>
   queryHref('/search', { q, page: p > 1 ? p : undefined });
 const autoCorrected = suggestion !== null;
 
-// Semantic search (with its relevance cutoff) can return only a handful of exact
-// matches — top the grid up to TARGET with products from the same categories so
-// it doesn't look sparse. Only when there's at least one match (an off-topic
-// query that matched nothing stays empty, not padded with random items).
 const TARGET = 12;
 const fillers =
   page === 1 && total < TARGET && products.length > 0 && products.length < TARGET
@@ -49,8 +45,7 @@ addCacheTags(
   Astro.response.headers,
   productCacheTags([...products, ...fillers].map((product) => product.public_id)),
 );
-// Cards are built here, where the store's image settings are known; the
-// template receives resolved models. Only the first result is the LCP image.
+
 const cardOptions = {
   baseUrl: getConfig().images.baseUrl,
   currency: getConfig().currency,
@@ -63,43 +58,51 @@ const cards = products.map((product, i) =>
 const fillerCards = fillers.map((product) => buildProductCard(product, cardOptions));
 ---
 
-<Layout title={q ? `Search: ${q}` : 'Search'}>
+<Layout title={q ? `${fa.navigation.search}: ${q}` : fa.navigation.search}>
   <div class="mb-8">
-    <p class="text-xs uppercase tracking-[0.25em] text-muted">Search</p>
-    <h1 class="mt-2 font-serif text-4xl tracking-tight sm:text-5xl">
-      {q ? q : 'Find something'}
+    <p class="text-xs font-semibold text-accent-fg">{fa.navigation.search}</p>
+    <h1 class="gg-h1 mt-2 text-ink">
+      {q ? q : fa.navigation.searchAriaLabel}
     </h1>
   </div>
 
-  <form method="GET" action="/search" class="mb-10 max-w-md" role="search">
-    <input
-      type="search"
-      name="q"
-      value={q}
-      placeholder="Search products…"
-      aria-label="Search products"
-      autofocus={!q}
-      class="w-full border-0 border-b border-line bg-transparent px-1 py-2 text-base transition-colors focus:border-brand focus:outline-none"
-    />
+  <form method="GET" action="/search" class="mb-10 max-w-lg" role="search">
+    <div class="flex gap-2">
+      <input
+        type="search"
+        name="q"
+        value={q}
+        placeholder={fa.navigation.searchPlaceholder}
+        aria-label={fa.navigation.searchAriaLabel}
+        autofocus={!q}
+        class="w-full rounded-lg border border-line bg-surface px-4 py-2.5 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+      />
+      <button
+        type="submit"
+        class="rounded-lg bg-brand px-5 py-2.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-hover"
+      >
+        {fa.navigation.search}
+      </button>
+    </div>
   </form>
 
   {
     q &&
       (autoCorrected ? (
         <p class="mb-8 text-sm text-muted">
-          No matches for “{q}” — showing results for{' '}
-          <strong class="font-medium text-ink">{suggestion}</strong>.
+          نتیجه‌ای برای «{q}» پیدا نشد — نمایش نتایج برای{' '}
+          <strong class="font-semibold text-ink">{suggestion}</strong>
         </p>
       ) : products.length > 0 ? (
-        <p class="mb-8 text-xs uppercase tracking-widest text-muted">
-          {total} result{total === 1 ? '' : 's'} for “{q}”
+        <p class="mb-6 text-xs font-medium text-muted">
+          {toPersianDigits(total)} نتیجه برای «{q}»
         </p>
       ) : null)
   }
 
   {
     products.length > 0 && (
-      <ul class="grid grid-cols-2 gap-x-6 gap-y-12 lg:grid-cols-3">
+      <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {cards.map((card, i) => (
           <ProductCard card={card} index={i} />
         ))}
@@ -110,10 +113,10 @@ const fillerCards = fillers.map((product) => buildProductCard(product, cardOptio
   {
     fillers.length > 0 && (
       <>
-        <p class="mb-8 mt-16 text-xs uppercase tracking-widest text-muted">
-          More from these categories
+        <p class="mb-6 mt-14 text-sm font-semibold text-muted">
+          محصولات بیشتر از همین دسته‌بندی‌ها
         </p>
-        <ul class="grid grid-cols-2 gap-x-6 gap-y-12 lg:grid-cols-3">
+        <ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {fillerCards.map((card, i) => (
             <ProductCard card={card} index={i} />
           ))}
@@ -124,7 +127,12 @@ const fillerCards = fillers.map((product) => buildProductCard(product, cardOptio
 
   {
     q && products.length === 0 && (
-      <p class="text-muted">No products match “{q}”. Try a different word.</p>
+      <div
+        role="status"
+        class="rounded-xl border border-dashed border-line bg-surface p-8 text-center text-sm text-muted"
+      >
+        محصولی مطابق با «{q}» پیدا نشد. عبارت دیگری را امتحان کنید.
+      </div>
     )
   }
 

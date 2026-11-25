@@ -2,83 +2,313 @@
 export const prerender = false;
 import { env } from 'cloudflare:workers';
 import Layout from '../../layouts/Layout.astro';
-import { formatPrice, formatDate, getConfig } from '../../config';
-import { accountsEnabled, getCustomerEmail } from '../../features/auth/customer';
-import { countOrdersByEmail, listOrdersByEmail } from '../../features/orders/db';
+import AccountShell from '../../features/account/AccountShell.astro';
+import { getConfig } from '../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../features/auth/customer';
+import { listOrdersByEmail, countOrdersByEmail } from '../../features/orders/db';
 import { orderReference } from '../../features/orders/number';
-import { guestOrderUrl } from '../../features/orders/guestAccess.ts';
-import { paginate, queryHref } from '../../pagination';
-import Pagination from '../../components/Pagination.astro';
+import {
+  getOrCreateWalletByCustomerId,
+  listWalletTransactionsByCustomer,
+} from '../../features/wallet/db';
+import { WALLET_TX_LABELS } from '../../features/wallet/rules';
+import { listPaymentTransactionsByCustomer } from '../../features/payments/transactionsDb';
+import { PAYMENT_TX_STATUS_LABELS } from '../../features/payments/transactions';
+import { formatMoney } from '../../money';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
 import { catalogPath } from '../../features/settings/home';
 
 if (!(await accountsEnabled())) return Astro.redirect('/', 303);
-const email = await getCustomerEmail(Astro.cookies);
-if (!email) return Astro.redirect('/account/login', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
 
-const PAGE_SIZE = 20;
-const { page, offset, totalPages } = paginate(
-  Astro.url.searchParams,
-  await countOrdersByEmail(env.DB, email),
-  PAGE_SIZE,
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+const totalSettledOrders = await countOrdersByEmail(env.DB, customer.email);
+const recentOrders = await listOrdersByEmail(env.DB, customer.email, 5, 0);
+const recentWalletTxs = await listWalletTransactionsByCustomer(env.DB, customer.id, 5, 0);
+const recentPaymentTxs = await listPaymentTransactionsByCustomer(
+  env.DB,
+  customer.id,
+  customer.email,
+  10,
 );
-const orders = await listOrdersByEmail(env.DB, email, PAGE_SIZE, offset);
-// Tokenized guest links for the customer's OWN orders — the authenticated
-// account view is an allowlisted token position, same as their emails. Orders
-// with no resolvable link render as plain text rather than a dead bare-id URL.
-const orderLinks = new Map(
-  await Promise.all(
-    orders.map(async (o) => [o.id, await guestOrderUrl(env.DB, o.public_id, '')] as const),
-  ),
+
+const pendingPayments = recentPaymentTxs.filter(
+  (tx) => tx.status === 'INITIATED' || tx.status === 'PAYMENT_REVIEW',
 );
-const hrefFor = (p: number) => queryHref('/account', { page: p > 1 ? p : undefined });
+const awaitingFulfillmentCount = recentOrders.filter(
+  (o) => o.fulfillment_status !== 'fulfilled' && o.status === 'paid',
+).length;
+
 const orderCfg = getConfig().orderNumber;
 const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
-// The catalog is at / until the home page is pointed elsewhere.
 const shopHref = catalogPath(Astro.locals.settings?.homePage);
+
+const paymentMethodLabels: Record<string, string> = {
+  wallet: 'کیف پول',
+  bank_transfer: 'کارت‌به‌کارت',
+  zarinpal: 'زرین‌پال',
+  zibal: 'زیبال',
+  demo: 'آزمایشی',
+  stripe: 'کارت بانکی',
+  lightning: 'لایتنینگ',
+};
 ---
 
-<Layout title="Your account">
-  <div class="mx-auto max-w-2xl">
-    <div class="mb-6 flex items-center justify-between">
-      <h1 class="font-serif text-3xl tracking-tight sm:text-4xl">Your orders</h1>
-      <a href="/account/logout" class="text-sm font-medium text-accent">Sign out</a>
-    </div>
-    <p class="mb-6 text-sm text-muted">Signed in as {email}</p>
-
-    {
-      orders.length === 0 ? (
-        <p class="rounded-lg border border-line bg-surface px-4 py-6 text-center text-sm text-muted">
-          No orders yet. <a href={shopHref} class="font-medium text-accent">Start shopping →</a>
+<Layout title="داشبورد حساب کاربری">
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="dashboard"
+    title="داشبورد من"
+  >
+    {/* کارت‌های خلاصه وضعیت */}
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <span class="text-xs font-medium text-muted">موجودی کیف پول</span>
+        <p class="gg-numeric mt-2 text-lg font-extrabold text-accent-fg">
+          {formatMoney(wallet.balance, wallet.currency)}
         </p>
-      ) : (
-        <ul class="divide-y divide-line overflow-hidden rounded-lg border border-line bg-surface">
-          {orders.map((o) => (
-            <li class="flex items-center justify-between gap-4 px-4 py-4 text-sm">
-              <div>
-                {orderLinks.get(o.id) ? (
-                  <a href={orderLinks.get(o.id)} class="font-medium text-ink hover:text-accent">
-                    Order #{orderReference(o.public_id, o.id, orderCfg)}
-                  </a>
-                ) : (
-                  <span class="font-medium text-ink">
-                    Order #{orderReference(o.public_id, o.id, orderCfg)}
+        <a
+          href="/account/wallet"
+          class="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-brand-fg hover:underline"
+        >
+          <span>افزایش موجودی</span>
+          <span aria-hidden="true">&larr;</span>
+        </a>
+      </div>
+
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <span class="text-xs font-medium text-muted">کل سفارش‌های ثبت‌شده</span>
+        <p class="gg-numeric mt-2 text-lg font-extrabold text-ink">
+          {toPersianDigits(totalSettledOrders)} سفارش
+        </p>
+        <a
+          href="/account/orders"
+          class="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-brand-fg hover:underline"
+        >
+          <span>مشاهده سفارش‌ها</span>
+          <span aria-hidden="true">&larr;</span>
+        </a>
+      </div>
+
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <span class="text-xs font-medium text-muted">پرداخت‌های در انتظار / بررسی</span>
+        <p class="gg-numeric mt-2 text-lg font-extrabold text-warning">
+          {toPersianDigits(pendingPayments.length)} مورد
+        </p>
+        <a
+          href="/account/transactions"
+          class="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-brand-fg hover:underline"
+        >
+          <span>پیگیری پرداخت‌ها</span>
+          <span aria-hidden="true">&larr;</span>
+        </a>
+      </div>
+
+      <div class="rounded-xl border border-line bg-surface p-4">
+        <span class="text-xs font-medium text-muted">در انتظار تحویل اپراتور</span>
+        <p class="gg-numeric mt-2 text-lg font-extrabold text-ink">
+          {toPersianDigits(awaitingFulfillmentCount)} سفارش
+        </p>
+        <a
+          href="/account/profile"
+          class="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-brand-fg hover:underline"
+        >
+          <span>تکمیل مشخصات تماس</span>
+          <span aria-hidden="true">&larr;</span>
+        </a>
+      </div>
+    </div>
+
+    {/* پرداخت‌های در انتظار بررسی فیش */}
+    {pendingPayments.length > 0 && (
+      <section class="mt-6 rounded-xl border border-warning/40 bg-surface p-5">
+        <div class="mb-3 flex items-center justify-between">
+          <h2 class="text-sm font-bold text-ink">پرداخت‌های در جریان / در انتظار تایید فیش</h2>
+          <a href="/account/transactions" class="text-xs font-semibold text-brand-fg hover:underline">
+            همه تراکنش‌ها &larr;
+          </a>
+        </div>
+        <div class="divide-y divide-line">
+          {pendingPayments.map((tx) => {
+            let payLink = '/account/transactions';
+            if (tx.target_type === 'wallet_topup') {
+              payLink = `/account/wallet?topup=${encodeURIComponent(tx.target_public_id)}`;
+            } else if (tx.payload_json) {
+              try {
+                const p = JSON.parse(tx.payload_json) as { accessToken?: string };
+                if (p.accessToken) payLink = `/pay/${p.accessToken}`;
+              } catch {}
+            }
+            return (
+              <div class="flex flex-wrap items-center justify-between gap-3 py-3 text-xs">
+                <div>
+                  <span class="font-bold text-ink">
+                    {tx.target_type === 'wallet_topup' ? 'شارژ کیف پول' : `سفارش ${tx.target_public_id}`}
                   </span>
-                )}
-                <div class="text-xs text-faint">{formatDate(o.created_at, undefined, timeZone)}</div>
-              </div>
-              <div class="text-right">
-                <div class="tabular-nums">{formatPrice(o.amount_total_cents, o.currency)}</div>
-                <div class="text-xs capitalize text-faint">
-                  {o.refunded_cents > 0 && o.refunded_cents < o.amount_total_cents
-                    ? 'Partially refunded'
-                    : o.status}
+                  <span class="mx-2 text-muted">•</span>
+                  <span class="text-muted">{paymentMethodLabels[tx.method] ?? tx.method}</span>
+                  <div class="mt-0.5 text-[11px] text-faint">
+                    {formatJalaliDateTime(tx.created_at, { timeZone })}
+                  </div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <span class="gg-numeric font-bold text-ink">
+                    {formatMoney(tx.amount, tx.currency)}
+                  </span>
+                  <span class="rounded-md bg-warning/15 px-2.5 py-1 text-[11px] font-semibold text-warning">
+                    {PAYMENT_TX_STATUS_LABELS[tx.status]}
+                  </span>
+                  <a
+                    href={payLink}
+                    class="rounded-lg bg-brand px-3 py-1.5 text-xs font-semibold text-on-brand hover:bg-brand-hover"
+                  >
+                    مشاهده / ارسال فیش
+                  </a>
                 </div>
               </div>
-            </li>
-          ))}
-        </ul>
-      )
-    }
-    <Pagination page={page} totalPages={totalPages} hrefFor={hrefFor} />
-  </div>
+            );
+          })}
+        </div>
+      </section>
+    )}
+
+    <div class="mt-6 grid gap-6 lg:grid-cols-2">
+      {/* سفارش‌های اخیر */}
+      <section class="rounded-xl border border-line bg-surface p-5">
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-sm font-bold text-ink">سفارش‌های اخیر من</h2>
+          <a href="/account/orders" class="text-xs font-semibold text-brand-fg hover:underline">
+            مشاهده همه &larr;
+          </a>
+        </div>
+
+        {recentOrders.length === 0 ? (
+          <div class="rounded-xl border border-line bg-paper p-6 text-center text-xs text-muted">
+            <p>هنوز سفارش تکمیل‌شده‌ای ندارید.</p>
+            <a
+              href={shopHref}
+              class="mt-3 inline-flex rounded-lg bg-brand px-4 py-2 font-semibold text-on-brand hover:bg-brand-hover"
+            >
+              مشاهده فروشگاه و خرید
+            </a>
+          </div>
+        ) : (
+          <ul class="divide-y divide-line">
+            {recentOrders.map((o) => (
+              <li class="flex items-center justify-between gap-3 py-3 text-xs">
+                <div>
+                  <a
+                    href={`/account/orders/${o.public_id}`}
+                    class="font-bold text-ink hover:text-brand-fg"
+                  >
+                    سفارش #{orderReference(o.public_id, o.id, orderCfg)}
+                  </a>
+                  <div class="mt-0.5 text-[11px] text-faint">
+                    {formatJalaliDateTime(o.created_at, { timeZone })}
+                  </div>
+                </div>
+                <div class="text-end">
+                  <div class="gg-numeric font-bold text-ink">
+                    {formatMoney(o.amount_total_cents, o.currency)}
+                  </div>
+                  <div class="mt-0.5 flex items-center justify-end gap-1.5 text-[11px]">
+                    <span class="text-muted">
+                      {paymentMethodLabels[o.payment_method ?? ''] ?? o.payment_method ?? 'آنلاین'}
+                    </span>
+                    <span>•</span>
+                    <span
+                      class={
+                        o.fulfillment_status === 'fulfilled'
+                          ? 'font-semibold text-success'
+                          : 'font-semibold text-warning'
+                      }
+                    >
+                      {o.fulfillment_status === 'fulfilled' ? 'تحویل‌شده' : 'در انتظار تحویل'}
+                    </span>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* تراکنش‌های اخیر کیف پول */}
+      <section class="rounded-xl border border-line bg-surface p-5">
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-sm font-bold text-ink">تراکنش‌های اخیر کیف پول</h2>
+          <a href="/account/transactions" class="text-xs font-semibold text-brand-fg hover:underline">
+            همه تراکنش‌ها &larr;
+          </a>
+        </div>
+
+        {recentWalletTxs.length === 0 ? (
+          <div class="rounded-xl border border-line bg-paper p-6 text-center text-xs text-muted">
+            <p>هنوز تراکنشی در کیف پول شما ثبت نشده است.</p>
+            <a
+              href="/account/wallet"
+              class="mt-3 inline-flex rounded-lg border border-brand bg-brand/10 px-4 py-2 font-semibold text-brand-fg hover:bg-brand hover:text-on-brand"
+            >
+              شارژ کیف پول
+            </a>
+          </div>
+        ) : (
+          <ul class="divide-y divide-line">
+            {recentWalletTxs.map((tx) => (
+              <li class="flex items-center justify-between gap-3 py-3 text-xs">
+                <div>
+                  <span class="font-bold text-ink">{WALLET_TX_LABELS[tx.type]}</span>
+                  {tx.reason && <p class="mt-0.5 text-[11px] text-muted">{tx.reason}</p>}
+                  <div class="mt-0.5 text-[11px] text-faint">
+                    {formatJalaliDateTime(tx.created_at, { timeZone })}
+                  </div>
+                </div>
+                <div class="text-end">
+                  <div
+                    class:list={[
+                      'gg-numeric font-bold',
+                      tx.amount > 0 ? 'text-success' : 'text-danger',
+                    ]}
+                  >
+                    {tx.amount > 0 ? '+' : ''}
+                    {formatMoney(tx.amount, tx.currency)}
+                  </div>
+                  <div class="gg-numeric mt-0.5 text-[11px] text-muted">
+                    مانده: {formatMoney(tx.balance_after, tx.currency)}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+
+    {/* خلاصه اطلاعات حساب */}
+    <section class="mt-6 rounded-xl border border-line bg-surface p-5">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="space-y-1 text-xs">
+          <h2 class="text-sm font-bold text-ink">مشخصات حساب کاربری</h2>
+          <p class="text-muted">
+            نام و نام خانوادگی:{' '}
+            <strong class="text-ink">{customer.full_name || 'ثبت‌نشده'}</strong>
+            <span class="mx-2">•</span>
+            شماره موبایل:{' '}
+            <strong dir="ltr" class="ltr-inline text-ink">{customer.phone || 'ثبت‌نشده'}</strong>
+            <span class="mx-2">•</span>
+            ایمیل:{' '}
+            <strong dir="ltr" class="ltr-inline text-ink">{customer.email}</strong>
+          </p>
+        </div>
+        <a
+          href="/account/profile"
+          class="rounded-lg border border-line bg-paper px-4 py-2 text-xs font-semibold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+        >
+          ویرایش اطلاعات حساب
+        </a>
+      </div>
+    </section>
+  </AccountShell>
 </Layout>

@@ -2,60 +2,88 @@
 export const prerender = false;
 import { env } from 'cloudflare:workers';
 import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
 import { getConfig } from '../../config';
 import { setSetting, getSetting, getStoreSettings } from '../../features/settings/db';
 import { normalizeTimeZone, allTimeZones } from '../../features/settings/timeZone';
 import { setAdminPassword, adminPasswordHash } from '../../features/auth/admin';
 import { signSession } from '../../features/auth/session';
-import { catalogIsEmpty, seedDemoCatalog } from '../../features/seed/demo';
+import { guardAdminApi } from '../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../features/audit/db';
 import { CACHE_TAG } from '../../features/cache/tags';
 import { purgeCacheTags } from '../../features/cache/purge';
+import { toPersianDigits } from '../../lib/format';
 
-// First-run setup wizard (onboarding). Reachable unauthenticated ONLY while no
-// admin password is set yet (bootstrap — see src/middleware.ts); once a password
-// exists the normal gate applies. A single form saves store basics + the admin
-// password, optionally seeds the demo catalog, then marks setup done. Payment
-// methods are configured later in Settings — not required to get running.
 const cfg = getConfig();
-const SESSION_TTL = 7 * 24 * 3600; // 7 days (matches /admin/login)
+const SESSION_TTL = 7 * 24 * 3600;
 const MIN_PW = 8;
+
+const [settings, existingHash] = await Promise.all([
+  getStoreSettings(env.DB),
+  getSetting(env.DB, 'admin_password_hash'),
+]);
+
+const hasPassword = Boolean(existingHash);
+const behindAccess = Boolean(Astro.locals.adminEmail);
+const isAlreadyInitialized = settings.setupComplete && (hasPassword || behindAccess);
+
+if (Astro.request.method === 'GET' && isAlreadyInitialized) {
+  return Astro.redirect('/admin?msg=setup-already-complete', 303);
+}
 
 let timeZoneError = '';
 let passwordError = '';
+let storeNameError = '';
 
 if (Astro.request.method === 'POST') {
-  const form = await Astro.request.formData();
-  const name = String(form.get('store_name') ?? '').trim();
-  const tz = normalizeTimeZone(String(form.get('time_zone') ?? ''));
-  const pw = String(form.get('admin_password') ?? '');
-  const hasPasswordAlready = !!(await getSetting(env.DB, 'admin_password_hash'));
-  // Middleware sets adminEmail only after verifying the Access JWT — a safe signal.
-  const behindAccess = !!Astro.locals.adminEmail;
-
-  // Validate everything BEFORE persisting anything, so a bad field never half-saves.
-  if (!tz) timeZoneError = 'Enter a valid IANA time zone, such as UTC or America/New_York.';
-  if (pw && pw.length < MIN_PW) passwordError = `Password must be at least ${MIN_PW} characters.`;
-  // Finishing without any admin credential would strand the operator (the bootstrap
-  // gate keeps bouncing /admin back here, and this page stays public). Require a
-  // password — unless one's already set, Access fronts /admin, or this is local dev.
-  const willHaveCredential = hasPasswordAlready || behindAccess || pw.length >= MIN_PW;
-  if (!import.meta.env.DEV && !willHaveCredential && !passwordError) {
-    passwordError =
-      'Set an admin password — without one the dashboard is unreachable and this page stays public.';
+  if (isAlreadyInitialized) {
+    return new Response(
+      'راه‌اندازی اولیه فروشگاه قبلاً تکمیل شده است. برای تغییر تنظیمات از بخش تنظیمات پنل مدیریت استفاده کنید.',
+      { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    );
   }
 
-  if (!timeZoneError && !passwordError) {
-    // Empty name → clear the override (fall back to the build-time STORE_NAME).
+  if (hasPassword) {
+    const auth = await guardAdminApi(
+      env.DB,
+      { locals: Astro.locals, cookies: Astro.cookies, request: Astro.request },
+      'admins.manage',
+    );
+    if (!auth.ok) return auth.response;
+  }
+
+  const form = await Astro.request.formData();
+  const name = String(form.get('store_name') ?? '').trim();
+  const tzInput = String(form.get('time_zone') ?? '').trim() || 'Asia/Tehran';
+  const tz = normalizeTimeZone(tzInput);
+  const pw = String(form.get('admin_password') ?? '');
+
+  if (name.length > 80) {
+    storeNameError = 'نام فروشگاه نمی‌تواند بیشتر از ۸۰ کاراکتر باشد.';
+  }
+  if (!tz) {
+    timeZoneError = 'یک منطقه زمانی معتبر IANA وارد کنید (پیشنهادی: Asia/Tehran).';
+  }
+  if (pw && pw.length < MIN_PW) {
+    passwordError = `گذرواژه مدیر باید حداقل ${toPersianDigits(MIN_PW)} کاراکتر باشد.`;
+  }
+
+  const willHaveCredential = hasPassword || behindAccess || pw.length >= MIN_PW;
+  if (!import.meta.env.DEV && !willHaveCredential && !passwordError) {
+    passwordError =
+      'تعیین گذرواژه مدیر الزامی است؛ بدون گذرواژه دسترسی به پنل مدیریت امکان‌پذیر نخواهد بود.';
+  }
+
+  if (!storeNameError && !timeZoneError && !passwordError) {
     await setSetting(env.DB, 'store_name', name || null);
     await setSetting(env.DB, 'time_zone', tz!);
+
     if (pw) {
-      // Hash + store the admin password (server-side min-length already enforced).
       await setAdminPassword(env.DB, pw);
-      // Setting the password activates the admin gate; issue a session now (auto-login)
-      // so the operator isn't locked out on the redirect to /admin.
       const hash = (await adminPasswordHash(env.DB))!;
       const signingKey = env.AUTH_SECRET || hash;
       const token = await signSession(signingKey, hash, SESSION_TTL, Date.now() / 1000);
+      Astro.cookies.delete('admin_actor', { path: '/' });
       Astro.cookies.set('admin_session', token, {
         httpOnly: true,
         secure: Astro.url.protocol === 'https:',
@@ -64,140 +92,148 @@ if (Astro.request.method === 'POST') {
         maxAge: SESSION_TTL,
       });
     }
-    // Optional demo catalog (guarded so it never clobbers an existing catalog; a
-    // seed failure shouldn't block finishing — the store just starts empty).
-    if (form.get('seed_demo') === 'on' && (await catalogIsEmpty(env.DB))) {
-      try {
-        await seedDemoCatalog(env.DB);
-      } catch (err) {
-        console.error('Demo catalog seed failed:', err);
-      }
-    }
+
     await setSetting(env.DB, 'setup_complete', '1');
     await purgeCacheTags([CACHE_TAG.shell, CACHE_TAG.catalog]);
+    await recordAdminAuditLog(env.DB, {
+      action: 'setup.completed',
+      module: 'settings',
+      targetType: 'store',
+      targetId: 'setup',
+      actor: Astro.locals.adminEmail || 'admin',
+      details: {
+        storeName: name || cfg.storeName,
+        timeZone: tz,
+        passwordConfigured: Boolean(pw || hasPassword),
+      },
+    });
+
     return Astro.redirect('/admin?msg=setup-complete', 303);
   }
 }
 
-const settings = await getStoreSettings(env.DB);
 const storeName = settings.storeName ?? cfg.storeName;
-const timeZone = settings.timeZone ?? cfg.timeZone;
+const timeZone = settings.timeZone ?? (cfg.timeZone || 'Asia/Tehran');
 const timeZones = allTimeZones();
-const hasPassword = !!(await getSetting(env.DB, 'admin_password_hash'));
-const catalogEmpty = await catalogIsEmpty(env.DB);
+const currencyDisplay =
+  cfg.currency.toLowerCase() === 'irt'
+    ? 'تومان (IRT)'
+    : cfg.currency.toLowerCase() === 'irr'
+      ? 'ریال (IRR)'
+      : cfg.currency.toUpperCase();
 ---
 
-<AdminLayout title="Setup" active="dashboard">
-  <div class="mx-auto max-w-2xl">
-    <h1 class="text-2xl font-bold">Set up your store</h1>
-    <p class="mt-1 text-sm text-gray-500">
-      A few first-run settings — you can change them any time in Settings. This just gets
-      you running.
-    </p>
+<AdminLayout title="راه‌اندازی اولیه فروشگاه" active="dashboard">
+  <div class="mx-auto max-w-3xl">
+    <AdminPageHeader
+      title="راه‌اندازی اولیه فروشگاه GarGift+"
+      subtitle="پیکربندی مشخصات پایه، منطقه زمانی ایران و دسترسی مدیر اصلی برای آغاز کار فروشگاه"
+      badge="مرحله نخست"
+    />
 
-    <form method="POST" class="mt-8 space-y-6">
-      {/* ── Store basics ─────────────────────────────────────────────────────── */}
-      <section class="rounded-lg border border-line bg-white p-5">
-        <h2 class="text-sm font-semibold uppercase tracking-widest text-gray-500">Store basics</h2>
-        <div class="mt-4 flex flex-wrap items-end gap-3">
-          <label class="flex flex-col gap-1 text-xs uppercase tracking-widest text-gray-400">
-            Store name
+    <form method="POST" class="space-y-6">
+      {/* مشخصات پایه فروشگاه */}
+      <section class="gg-admin-card p-6">
+        <h2 class="text-sm font-bold text-ink">مشخصات پایه فروشگاه</h2>
+        <p class="mt-1 text-xs text-muted">
+          این مقادیر در سراسر فروشگاه و پنل مدیریت نمایش داده می‌شوند و هر زمان از بخش تنظیمات قابل ویرایش هستند.
+        </p>
+
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
+          <label class="flex flex-col gap-1.5 text-xs font-semibold text-ink">
+            <span>نام فروشگاه</span>
             <input
               type="text"
               name="store_name"
               value={storeName}
-              class="w-64 rounded-md border border-gray-300 px-3 py-2 text-sm normal-case tracking-normal focus:border-brand focus:outline-none"
+              maxlength="80"
+              dir="auto"
+              placeholder="GarGift+"
+              class="gg-admin-input"
             />
+            {storeNameError && <span class="text-xs font-normal text-coral">{storeNameError}</span>}
           </label>
-          <label class="flex flex-col gap-1 text-xs uppercase tracking-widest text-gray-400">
-            Store time zone
+
+          <label class="flex flex-col gap-1.5 text-xs font-semibold text-ink">
+            <span>منطقه زمانی فروشگاه</span>
             <input
               type="text"
               name="time_zone"
               value={timeZone}
               required
+              dir="ltr"
               list="tz-list"
-              data-time-zone
-              data-auto-detect={settings.timeZone ? 'false' : 'true'}
-              placeholder="Search e.g. America/New_York"
-              class="w-64 rounded-md border border-gray-300 px-3 py-2 text-sm normal-case tracking-normal focus:border-brand focus:outline-none"
+              placeholder="Asia/Tehran"
+              class="gg-admin-input font-mono text-left"
             />
             <datalist id="tz-list">
               {timeZones.map((z) => <option value={z} />)}
             </datalist>
+            {timeZoneError && <span class="text-xs font-normal text-coral">{timeZoneError}</span>}
           </label>
         </div>
-        {timeZoneError && <p class="mt-2 text-xs text-red-600">{timeZoneError}</p>}
-        <p class="mt-3 text-xs text-gray-400">
-          Currency stays a build-time setting (it's wired through every price) — set
-          <code class="rounded bg-gray-100 px-1">currency</code> in
-          <code class="rounded bg-gray-100 px-1">src/config.ts</code>. Current:
-          {' '}{cfg.currency.toUpperCase()}.
+
+        <div class="mt-4 rounded-xl border border-line bg-surface-2 px-4 py-3 text-xs text-muted">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span>واحد پول فعال فروشگاه:</span>
+            <strong class="font-bold text-ink">{currencyDisplay}</strong>
+          </div>
+          <p class="mt-1 text-[11px] text-faint">
+            واحد پول از پیکربندی پایه فروشگاه (<span class="ltr-inline font-mono">src/store.config.ts</span>) خوانده می‌شود تا یکپارچگی تمامی قیمت‌ها، کیف پول و گزارش‌های مالی حفظ شود.
+          </p>
+        </div>
+      </section>
+
+      {/* گذرواژه مدیر اصلی */}
+      <section class="gg-admin-card p-6">
+        <h2 class="text-sm font-bold text-ink">گذرواژه مدیر اصلی سیستم</h2>
+        <p class="mt-1 text-xs leading-6 text-muted">
+          برای ورود به <span class="ltr-inline font-mono text-ink">/admin/login</span> استفاده می‌شود و به‌صورت هش امن (PBKDF2) در دیتابیس D1 ذخیره می‌گردد.{' '}
+          {hasPassword
+            ? 'گذرواژه قبلاً تنظیم شده است؛ در صورت تمایل به تغییر آن را وارد کنید.'
+            : 'تعیین گذرواژه برای قفل‌کردن دسترسی پنل و تکمیل راه‌اندازی الزامی است.'}
+        </p>
+
+        <div class="mt-4 max-w-sm">
+          <label class="flex flex-col gap-1.5 text-xs font-semibold text-ink">
+            <span>{hasPassword ? 'گذرواژه جدید (اختیاری)' : 'گذرواژه مدیر اصلی'}</span>
+            <input
+              type="password"
+              name="admin_password"
+              autocomplete="new-password"
+              minlength={MIN_PW}
+              required={!hasPassword && !behindAccess && !import.meta.env.DEV}
+              dir="ltr"
+              placeholder={`حداقل ${toPersianDigits(MIN_PW)} کاراکتر`}
+              class="gg-admin-input font-mono text-left placeholder:font-sans placeholder:text-right"
+            />
+          </label>
+          {passwordError && <p class="mt-2 text-xs font-medium text-coral">{passwordError}</p>}
+        </div>
+      </section>
+
+      {/* زیرساخت پرداخت‌های بومی GarGift+ */}
+      <section class="gg-admin-card p-6">
+        <h2 class="text-sm font-bold text-ink">درگاه‌های پرداخت و کیف پول بومی</h2>
+        <p class="mt-2 text-xs leading-6 text-muted">
+          فروشگاه <strong class="text-ink">GarGift+</strong> از پرداخت با{' '}
+          <strong class="text-ink">درگاه زرین‌پال</strong>،{' '}
+          <strong class="text-ink">درگاه زیبال</strong>،{' '}
+          <strong class="text-ink">کارت‌به‌کارت با آپلود و تایید فیش بانکی</strong> و{' '}
+          <strong class="text-ink">کیف پول اختصاصی مشتریان</strong> پشتیبانی می‌کند. پس از تکمیل راه‌اندازی، می‌توانید مرچنت‌کد درگاه‌ها، شماره‌کارت‌های بانکی و تنظیمات کیف پول را از بخش{' '}
+          <strong class="text-ink">تنظیمات ← پرداخت‌ها</strong> و{' '}
+          <strong class="text-ink">حساب‌های بانکی</strong> پیکربندی کنید.
         </p>
       </section>
 
-      {/* ── Admin password ───────────────────────────────────────────────────── */}
-      <section class="rounded-lg border border-line bg-white p-5">
-        <h2 class="text-sm font-semibold uppercase tracking-widest text-gray-500">Admin password</h2>
-        <p class="mt-1 text-sm text-gray-500">
-          Password for <code class="rounded bg-gray-100 px-1">/admin/login</code> — stored hashed
-          (PBKDF2), never plaintext.{' '}
-          {hasPassword ? 'A password is already set; leave blank to keep it.' : 'Required to finish.'}
-          {' '}Cloudflare Access is the recommended production auth; this is the simpler stopgap.
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <p class="text-xs text-faint">
+          پس از ثبت، صفحه راه‌اندازی به‌صورت خودکار قفل شده و به داشبورد مدیریت منتقل می‌شوید.
         </p>
-        <label class="mt-4 flex flex-col gap-1 text-xs uppercase tracking-widest text-gray-400">
-          {hasPassword ? 'New password (optional)' : 'New password'}
-          <input
-            type="password"
-            name="admin_password"
-            autocomplete="new-password"
-            minlength="8"
-            placeholder="at least 8 characters"
-            class="w-64 rounded-md border border-gray-300 px-3 py-2 text-sm normal-case tracking-normal focus:border-brand focus:outline-none"
-          />
-        </label>
-        {passwordError && <p class="mt-2 text-xs text-red-600">{passwordError}</p>}
-      </section>
-
-      {/* ── Payments (configured later in Settings — not needed to get running) ─ */}
-      <section class="rounded-lg border border-line bg-white p-5">
-        <h2 class="text-sm font-semibold uppercase tracking-widest text-gray-500">Payments</h2>
-        <p class="mt-2 text-sm text-gray-500">
-          <strong>Demo</strong> checkout works right away. Set up real payment methods (card via
-          Stripe, Bitcoin Lightning, or OpenNode) whenever you're ready in
-          {' '}<strong>Settings → Payments</strong> — no need to do it now.
-        </p>
-      </section>
-
-      {/* ── Optional demo catalog + single finish button ─────────────────────── */}
-      {catalogEmpty && (
-        <label class="flex items-start gap-2 text-sm text-gray-600">
-          <input
-            type="checkbox"
-            name="seed_demo"
-            class="mt-0.5 rounded border-gray-300 text-brand focus:ring-brand"
-          />
-          <span>
-            Load the <strong>demo catalog</strong> — 30 sample products across 6 categories,
-            to explore the storefront. Leave unchecked to start empty and add your own.
-          </span>
-        </label>
-      )}
-      <button
-        type="submit"
-        class="w-fit rounded-md bg-brand px-5 py-2.5 text-sm font-medium text-white hover:bg-brand-hover"
-      >
-        Finish setup
-      </button>
+        <button type="submit" class="gg-admin-btn-primary px-6 py-2.5 text-sm">
+          تکمیل راه‌اندازی و ورود به داشبورد
+        </button>
+      </div>
     </form>
   </div>
-
-  <script>
-    // Pre-fill the time zone with the browser's zone on a fresh store (no saved zone).
-    const input = document.querySelector<HTMLInputElement>('[data-time-zone]');
-    if (input?.dataset.autoDetect === 'true') {
-      const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      if (detected) input.value = detected;
-    }
-  </script>
 </AdminLayout>

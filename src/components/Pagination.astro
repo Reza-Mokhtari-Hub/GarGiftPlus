@@ -1,14 +1,15 @@
 ---
+import { fa } from '../i18n/fa';
+import { toPersianDigits } from '../lib/format';
+
 interface Props {
   page: number;
   totalPages: number;
-  /** Build the href for a given page (keeps existing query params, e.g. ?q=). */
   hrefFor: (page: number) => string;
 }
 
 const { page, totalPages, hrefFor } = Astro.props;
 
-// Compact page list with … gaps, e.g. 1 … 4 5 6 … 20
 function windowed(cur: number, total: number): (number | '…')[] {
   const keep = new Set<number>([1, total, cur, cur - 1, cur + 1]);
   const nums = [...keep].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
@@ -23,15 +24,16 @@ function windowed(cur: number, total: number): (number | '…')[] {
 }
 
 const items = totalPages > 1 ? windowed(page, totalPages) : [];
-const linkCls = 'px-3 py-1.5 text-xs uppercase tracking-widest text-muted hover:text-brand';
+const linkCls =
+  'rounded-md px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-surface-elevated hover:text-brand-fg';
 ---
 
 {
   totalPages > 1 && (
-    <nav class="mt-14 flex items-center justify-center gap-1" aria-label="Pagination">
+    <nav class="mt-14 flex items-center justify-center gap-1.5" aria-label={fa.navigation.paginationAria}>
       {page > 1 && (
         <a href={hrefFor(page - 1)} class={linkCls} rel="prev">
-          Prev
+          {fa.common.previous}
         </a>
       )}
       {items.map((it) =>
@@ -41,17 +43,20 @@ const linkCls = 'px-3 py-1.5 text-xs uppercase tracking-widest text-muted hover:
           <a
             href={hrefFor(it)}
             aria-current={it === page ? 'page' : undefined}
-            class={`${linkCls} ${it === page ? 'font-medium text-brand' : ''}`}
+            class={`${linkCls} tabular-nums ${
+              it === page ? 'bg-brand text-on-brand hover:bg-brand-hover hover:text-on-brand' : ''
+            }`}
           >
-            {it}
+            {toPersianDigits(it)}
           </a>
         ),
       )}
       {page < totalPages && (
         <a href={hrefFor(page + 1)} class={linkCls} rel="next">
-          Next
+          {fa.common.next}
         </a>
       )}
     </nav>
   )
 }
+

@@ -1,0 +1,246 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { formatPrice, getConfig } from '../../config';
+import { WALLET_TX_LABELS } from '../../features/wallet/rules';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+import { hasAdminPermission } from '../../features/fulfillment/permissions';
+
+const canAdjustWallet = hasAdminPermission(Astro.locals.adminActor, 'wallet.adjust');
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const currency = getConfig().currency;
+const typeFilter = (Astro.url.searchParams.get('type') ?? '').trim();
+const q = (Astro.url.searchParams.get('q') ?? '').trim().toLowerCase();
+
+const [summaryRow, walletsRes, txsRes] = await Promise.all([
+  env.DB
+    .prepare(
+      `SELECT COUNT(*) AS wallet_count,
+              COALESCE(SUM(balance), 0) AS total_balance,
+              SUM(CASE WHEN balance > 0 THEN 1 ELSE 0 END) AS funded_count
+         FROM wallets`,
+    )
+    .first<{ wallet_count: number; total_balance: number; funded_count: number | null }>(),
+  env.DB
+    .prepare(
+      `SELECT w.public_id, w.balance, w.currency, w.updated_at,
+              c.email, c.full_name
+         FROM wallets w
+         JOIN customers c ON c.id = w.customer_id
+        ORDER BY w.balance DESC, w.updated_at DESC
+        LIMIT 60`,
+    )
+    .all<{
+      public_id: string;
+      balance: number;
+      currency: string;
+      updated_at: string;
+      email: string;
+      full_name: string | null;
+    }>(),
+  env.DB
+    .prepare(
+      `SELECT wt.*, c.email AS customer_email
+         FROM wallet_transactions wt
+         JOIN customers c ON c.id = wt.customer_id
+        ORDER BY wt.created_at DESC, wt.id DESC
+        LIMIT 120`,
+    )
+    .all<{
+      public_id: string;
+      type: string;
+      amount: number;
+      balance_after: number;
+      currency: string;
+      reason: string | null;
+      actor_id: string | null;
+      created_at: string;
+      customer_email: string;
+    }>(),
+]);
+
+const wallets = walletsRes.results ?? [];
+const allTxs = txsRes.results ?? [];
+const filteredTxs = allTxs.filter((tx) => {
+  if (typeFilter && tx.type !== typeFilter) return false;
+  if (
+    q &&
+    !tx.customer_email.toLowerCase().includes(q) &&
+    !tx.public_id.toLowerCase().includes(q) &&
+    !(tx.reason ?? '').toLowerCase().includes(q)
+  ) {
+    return false;
+  }
+  return true;
+});
+
+const totalCredits = allTxs.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+const totalDebits = allTxs.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+---
+
+<AdminLayout
+  title="کیف پول و تراکنش‌های اعتباری"
+  active="wallets"
+  requiredPermission="wallet.view"
+  breadcrumbs={[{ label: 'مشتریان و مالی' }, { label: 'کیف پول‌ها' }]}
+>
+  <AdminPageHeader
+    title="مدیریت کیف پول مشتریان و دفتر کل (Wallet Ledger)"
+    subtitle="پایش مجموع تعهدات مالی کیف پول، مانده حساب مشتریان و تاریخچه کلیه تراکنش‌های شارژ، پرداخت و استرداد"
+  >
+    {canAdjustWallet && (
+      <a slot="actions" href="/admin/customers" class="gg-admin-btn-secondary text-xs">
+        انتخاب مشتری برای اصلاح دستی ←
+      </a>
+    )}
+  </AdminPageHeader>
+
+  <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+    <AdminKpiCard
+      label="مجموع موجودی کل کیف پول‌ها"
+      value={formatPrice(summaryRow?.total_balance ?? 0, currency)}
+      hint={`${toPersianDigits(summaryRow?.funded_count ?? 0)} کیف پول دارای مانده از ${toPersianDigits(summaryRow?.wallet_count ?? 0)}`}
+      tone="violet"
+    />
+    <AdminKpiCard
+      label="مجموع واریزهای اخیر (۱۲۰ تراکنش)"
+      value={formatPrice(totalCredits, currency)}
+      hint="شامل شارژ، استرداد و اعتبار دستی"
+      tone="turquoise"
+    />
+    <AdminKpiCard
+      label="مجموع برداشت‌های اخیر (۱۲۰ تراکنش)"
+      value={formatPrice(totalDebits, currency)}
+      hint="شامل خرید با کیف پول و کسر دستی"
+      tone="coral"
+    />
+  </div>
+
+  {/* بالاترین موجودی کیف پول‌ها */}
+  <section class="gg-admin-card mb-6 overflow-hidden p-5">
+    <h2 class="mb-4 text-sm font-bold text-ink">مانده کیف پول مشتریان (مرتب‌شده بر اساس موجودی)</h2>
+    {
+      wallets.length === 0 ? (
+        <AdminEmptyState
+          title="کیف پولی ثبت نشده است"
+          description="با ثبت‌نام اولین مشتری، کیف پول ریالی/تومانی به‌صورت خودکار ایجاد می‌شود."
+        />
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>شناسه کیف پول</th>
+                <th>ایمیل مشتری</th>
+                <th>نام</th>
+                <th>موجودی فعلی</th>
+                <th>آخرین تغییر</th>
+                <th class="text-end">مدیریت</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                wallets.map((w) => (
+                  <tr>
+                    <td><span class="ltr-inline font-mono text-xs text-muted">{w.public_id}</span></td>
+                    <td>
+                      <a href={`/admin/customers/${encodeURIComponent(w.email)}`} class="ltr-inline font-mono text-xs font-semibold text-brand-fg hover:underline">
+                        {w.email}
+                      </a>
+                    </td>
+                    <td class="text-ink">{w.full_name || '—'}</td>
+                    <td class="font-bold text-ink">{formatPrice(w.balance, w.currency)}</td>
+                    <td class="text-xs text-muted">{formatJalaliDateTime(w.updated_at, { timeZone })}</td>
+                    <td class="text-end">
+                      <a href={`/admin/customers/${encodeURIComponent(w.email)}`} class="text-xs font-semibold text-brand-fg hover:underline">
+                        {canAdjustWallet ? 'اصلاح موجودی / جزئیات' : 'مشاهده جزئیات'}
+                      </a>
+                    </td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      )
+    }
+  </section>
+
+  {/* دفتر کل تراکنش‌های کیف پول */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <h2 class="text-sm font-bold text-ink">دفتر کل تراکنش‌های کیف پول ({toPersianDigits(filteredTxs.length)})</h2>
+      <form method="GET" action="/admin/wallets" class="flex flex-wrap items-center gap-2">
+        <input
+          type="search"
+          name="q"
+          value={q}
+          placeholder="ایمیل یا شناسه تراکنش..."
+          class="gg-admin-input w-48 py-1.5 text-xs"
+        />
+        <select name="type" class="gg-admin-input w-44 py-1.5 text-xs">
+          <option value="">همه انواع تراکنش</option>
+          {Object.entries(WALLET_TX_LABELS).map(([k, label]) => (
+            <option value={k} selected={typeFilter === k}>{label}</option>
+          ))}
+        </select>
+        <button type="submit" class="gg-admin-btn-secondary py-1.5 text-xs">فیلتر</button>
+      </form>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="gg-admin-table">
+        <thead>
+          <tr>
+            <th>شناسه</th>
+            <th>مشتری</th>
+            <th>نوع تراکنش</th>
+            <th>مبلغ</th>
+            <th>مانده پس از تراکنش</th>
+            <th>توضیح / اپراتور</th>
+            <th class="text-end">تاریخ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            filteredTxs.map((tx) => {
+              const positive = tx.amount > 0;
+              return (
+                <tr>
+                  <td><span class="ltr-inline font-mono text-xs text-muted">{tx.public_id}</span></td>
+                  <td>
+                    <a href={`/admin/customers/${encodeURIComponent(tx.customer_email)}`} class="ltr-inline font-mono text-xs text-brand-fg hover:underline">
+                      {tx.customer_email}
+                    </a>
+                  </td>
+                  <td class="text-xs font-semibold text-ink">{(WALLET_TX_LABELS as Record<string, string>)[tx.type] ?? tx.type}</td>
+                  <td class={`font-bold ${positive ? 'text-accent' : 'text-coral'}`}>
+                    {positive ? '+' : ''}{formatPrice(tx.amount, tx.currency)}
+                  </td>
+                  <td class="text-ink">{formatPrice(tx.balance_after, tx.currency)}</td>
+                  <td class="max-w-[16rem] truncate text-xs text-muted">
+                    {tx.reason || '—'}
+                    {tx.actor_id && <span class="ms-1 text-[10px] text-faint">({tx.actor_id})</span>}
+                  </td>
+                  <td class="text-end text-xs text-muted">{formatJalaliDateTime(tx.created_at, { timeZone })}</td>
+                </tr>
+              );
+            })
+          }
+          {
+            filteredTxs.length === 0 && (
+              <tr>
+                <td colspan="7" class="py-8 text-center text-xs text-muted">
+                  تراکنش کیف پولی با این فیلتر یافت نشد.
+                </td>
+              </tr>
+            )
+          }
+        </tbody>
+      </table>
+    </div>
+  </section>
+</AdminLayout>

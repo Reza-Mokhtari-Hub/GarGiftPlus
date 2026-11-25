@@ -8,8 +8,12 @@ import {
   updateProduct,
   deleteProduct,
   setProductFile,
+  toggleProductActive,
+  duplicateProduct,
 } from '../../../../features/products/db';
 import { parseProductForm } from '../../../../features/products/form';
+import { parseCheckoutFieldsForm } from '../../../../features/products/customFields';
+import { replaceProductCheckoutFields } from '../../../../features/products/customFieldsDb';
 import { zonesRequireWeight } from '../../../../features/shipping/calculator';
 import { shippingFor } from '../../../../features/shipping/effective';
 import { uniqueSlug } from '../../../../features/products/slug';
@@ -37,16 +41,13 @@ import { indexProduct, unindexProduct } from '../../../../features/search';
 import { parsePublicId } from '../../../../features/ids/publicId';
 import { CACHE_TAG } from '../../../../features/cache/tags';
 import { purgeCacheTags } from '../../../../features/cache/purge';
+import { guardAdminApi } from '../../../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../../../features/audit/db';
+import { getConfig } from '../../../../config';
+import { fa } from '../../../../i18n/fa';
 
 export const prerender = false;
 
-/**
- * The variants/extras editor submits public IDs (var_/xtra_ rows, pimg_ photo
- * choices) in its positionally-aligned arrays. applyVariantForm works on the
- * product's integer row ids, so translate IN PLACE here at the boundary —
- * internal writes stay integer. Returns an error for a reference that does not
- * belong to this product (a stale or tampered form), rather than guessing.
- */
 async function resolveVariantFormIds(
   form: FormData,
   db: typeof env.DB,
@@ -87,69 +88,126 @@ async function resolveVariantFormIds(
   };
 
   if (!translate('v_id', variants, 'variant') || !translate('v_remove', variants, 'variant')) {
-    return 'One of the variants no longer exists — reload and try again.';
+    return 'یکی از تنوع‌های انتخاب‌شده دیگر وجود ندارد. صفحه را تازه‌سازی کنید.';
   }
   if (!translate('e_id', extras, 'extra') || !translate('e_remove', extras, 'extra')) {
-    return 'One of the add-ons no longer exists — reload and try again.';
+    return 'یکی از افزودنی‌های انتخاب‌شده دیگر وجود ندارد. صفحه را تازه‌سازی کنید.';
   }
   if (!translate('v_image', images, 'productImage')) {
-    return 'One of the variant photos no longer exists — reload and try again.';
+    return 'تصویر انتخاب‌شده برای تنوع یافت نشد. صفحه را تازه‌سازی کنید.';
   }
   return null;
 }
 
-// POST /api/admin/products/:id — update (with optional image replace), or delete
-// when `_action=delete`. :id is the prod_ public ID; numeric ids are not accepted.
-export const POST: APIRoute = async ({ request, params, redirect, locals }) => {
+export const POST: APIRoute = async ({ request, params, redirect, locals, cookies }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'products.manage');
+  if (!guard.ok) return guard.response;
+
   const publicId = parsePublicId(params.id, 'product');
   const existing = publicId ? await getProductByPublicId(env.DB, publicId) : null;
   if (!publicId || !existing) return new Response('Not found', { status: 404 });
   const id = existing.id;
 
   const form = await request.formData();
+  const actionType = String(form.get('_action') ?? '');
   const storage = getStorage();
 
-  if (String(form.get('_action')) === 'delete') {
-    // Removes the product and its image ASSOCIATIONS. The files stay in the
-    // media library — they may be used by other products or pages, and the
-    // library is the only place an object is deleted.
+  if (actionType === 'delete') {
     await deleteProduct(env.DB, id);
     try {
-      await unindexProduct(id); // no-op unless vector search is on
+      await unindexProduct(id);
     } catch (err) {
       console.error('Search unindex (delete) failed:', err);
     }
     await purgeCacheTags([CACHE_TAG.catalog, CACHE_TAG.product(publicId)]);
+    await recordAdminAuditLog(env.DB, {
+      action: 'product.deleted',
+      module: 'products',
+      targetType: 'product',
+      targetId: publicId,
+      actor: guard.actor.id,
+      details: { name: existing.name },
+    });
+    return redirect('/admin/products', 303);
+  }
+
+  if (actionType === 'toggle_active') {
+    const rawActive = form.get('active');
+    const nextActive: 0 | 1 =
+      rawActive === '1' || rawActive === '0'
+        ? rawActive === '1'
+          ? 1
+          : 0
+        : existing.active === 1
+          ? 0
+          : 1;
+    await toggleProductActive(env.DB, id, nextActive);
+    try {
+      const updated = await getProduct(env.DB, id);
+      if (updated) {
+        if (updated.active === 1) await indexProduct(updated);
+        else await unindexProduct(id);
+      }
+    } catch (err) {
+      console.error('Search index (toggle_active) failed:', err);
+    }
+    await purgeCacheTags([CACHE_TAG.catalog, CACHE_TAG.product(publicId)]);
+    await recordAdminAuditLog(env.DB, {
+      action: 'product.toggled_active',
+      module: 'products',
+      targetType: 'product',
+      targetId: publicId,
+      actor: guard.actor.id,
+      details: { active: nextActive === 1 },
+    });
+    return redirect(
+      `/admin/products?notice=${encodeURIComponent(fa.admin.products.toggledNotice)}`,
+      303,
+    );
+  }
+
+  if (actionType === 'duplicate') {
+    const newId = await duplicateProduct(env.DB, id);
+    const duplicated = newId ? await getProduct(env.DB, newId) : null;
+    await purgeCacheTags([CACHE_TAG.catalog]);
+    await recordAdminAuditLog(env.DB, {
+      action: 'product.duplicated',
+      module: 'products',
+      targetType: 'product',
+      targetId: duplicated?.public_id ?? publicId,
+      actor: guard.actor.id,
+      details: { sourcePublicId: publicId },
+    });
+    if (duplicated?.public_id) {
+      return redirect(
+        `/admin/products/${duplicated.public_id}/edit?notice=${encodeURIComponent(fa.admin.products.duplicatedNotice)}`,
+        303,
+      );
+    }
     return redirect('/admin/products', 303);
   }
 
   const fail = (msg: string) =>
     redirect(`/admin/products/${publicId}/edit?error=${encodeURIComponent(msg)}`, 303);
 
-  // The store's display unit, plus whether a blank weight would make this product
-  // unsellable (every enabled zone prices by weight). Both come from settings the
-  // request already loaded.
   const weightUnit = locals.settings?.weightUnit ?? 'g';
   const parsed = parseProductForm(form, {
     unit: weightUnit,
     requireWeight: zonesRequireWeight(shippingFor(locals.settings).config),
+    defaultCurrency: existing.currency || getConfig().currency,
   });
   if ('error' in parsed) return fail(parsed.error);
 
-  // Weights are checked before ANY write. applyVariantForm runs last, after the
-  // image, product, and category mutations — reporting the error from there left
-  // a half-saved edit behind the failure page.
+  // Validate custom checkout fields BEFORE committing any product/variant edits.
+  const parsedFields = parseCheckoutFieldsForm(form);
+  if ('error' in parsedFields) return fail(parsedFields.error);
+
   const badWeight = validateVariantWeights(form, weightUnit);
   if (badWeight) return fail(badWeight);
 
-  // Public-ID → row-id translation for the variants editor, before any write.
   const badReference = await resolveVariantFormIds(form, env.DB, id);
   if (badReference) return fail(badReference);
 
-  // The uploaded key is NOT written to products.image_key here: that reference
-  // would be unguarded, and the media row is deletable until something claims
-  // it. The gallery claim below is guarded, and syncPrimaryImage then derives
-  // products.image_key from it.
   const image_key = existing.image_key ?? null;
   let uploadedMediaId: number | null = null;
   const file = form.get('image');
@@ -165,24 +223,14 @@ export const POST: APIRoute = async ({ request, params, redirect, locals }) => {
     if (fileError) return fail(fileError);
   }
 
-  // Keep the slug stable on rename: use the form's slug field (pre-filled with
-  // the current slug), falling back to the existing slug, then the name.
   const slugBase = String(form.get('slug') ?? '').trim() || existing.slug || parsed.data.name;
   const slug = await uniqueSlug(env.DB, slugBase, id);
 
-  // Claim the image BEFORE committing anything else. A failed claim then aborts
-  // with nothing written; doing it afterwards reported an image error while the
-  // name, price, and stock edits had already been saved.
   if (uploadedMediaId !== null) {
-    // Repoint the gallery row at the new media, guarded on that row still
-    // existing. The replaced object is NOT deleted: it stays in the library,
-    // where it may be reused or removed deliberately once nothing uses it.
     const claimed = image_key
       ? await replaceProductImageFromMedia(env.DB, id, image_key, uploadedMediaId)
       : false;
     if (!claimed) {
-      // Either the product had no gallery row to repoint, or it did and the
-      // media vanished. Attaching distinguishes the two and reports properly.
       const attached = await attachMediaToProduct(env.DB, id, uploadedMediaId);
       if (!attached.ok) return fail(attached.error);
     }
@@ -194,11 +242,8 @@ export const POST: APIRoute = async ({ request, params, redirect, locals }) => {
   } else if (attachmentActive() && form.get('remove_deliverable') != null) {
     await setProductFile(env.DB, id, null);
   }
-  // products.image_key follows the gallery, so this runs after both.
   if (uploadedMediaId !== null) await syncPrimaryImage(env.DB, id);
 
-  // Replace category links (empty set clears them). Membership arrives as cat_
-  // public IDs and is resolved to row ids here at the boundary.
   const categoryPublicIds = form
     .getAll('category')
     .map((v) => parsePublicId(v, 'category'))
@@ -206,13 +251,11 @@ export const POST: APIRoute = async ({ request, params, redirect, locals }) => {
   const categoryIds = (await getCategoriesByPublicIds(env.DB, categoryPublicIds)).map((c) => c.id);
   await setProductCategories(env.DB, id, categoryIds);
 
-  // Variants + extras edited inline on the same form (no-op if none submitted).
-  // A bad variant weight is reported rather than dropped: applyVariantForm
-  // validates every weight before it writes anything.
   const variantResult = await applyVariantForm(env.DB, id, form, parsed.data.currency, weightUnit);
   if (variantResult.error) return fail(variantResult.error);
 
-  // Re-embed for semantic search (no-op unless vector search is on).
+  await replaceProductCheckoutFields(env.DB, id, parsedFields.fields);
+
   try {
     const updated = await getProduct(env.DB, id);
     if (updated) await indexProduct(updated);
@@ -221,5 +264,13 @@ export const POST: APIRoute = async ({ request, params, redirect, locals }) => {
   }
 
   await purgeCacheTags([CACHE_TAG.catalog, CACHE_TAG.product(publicId)]);
-  return redirect('/admin/products', 303);
+  await recordAdminAuditLog(env.DB, {
+    action: 'product.updated',
+    module: 'products',
+    targetType: 'product',
+    targetId: publicId,
+    actor: guard.actor.id,
+    details: { name: parsed.data.name, priceCents: parsed.data.price_cents },
+  });
+  return redirect(`/admin/products?notice=${encodeURIComponent(fa.notifications.savedSuccess)}`, 303);
 };

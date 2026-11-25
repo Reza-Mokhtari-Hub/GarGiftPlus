@@ -1,0 +1,229 @@
+---
+import type { ProductCardModel } from '../../features/storefront/models';
+import StoreImage from '../../features/storefront/controls/StoreImage.astro';
+
+/**
+ * کارت محصول دیجیتال GarGift+ با الهام از طراحی MonkeyGames در حالت روشن (کارت سفید، تصویر گرد داخلی،
+ * تگ‌های یاسی، باکس سبز وضعیت و دکمه آبی-بنفش سبد/قیمت) و طراحی Neon City در حالت تاریک
+ * (کارت ابسیدین با حاشیه نئونی فیروزه‌ای و دکمه درخشان Cyan).
+ */
+interface Props {
+  card: ProductCardModel;
+  index?: number;
+  headingLevel?: 'h2' | 'h3';
+}
+
+const { card, index = 0, headingLevel: Heading = 'h2' } = Astro.props;
+
+const isPlaceholder = card.image.src === '/placeholder.png';
+const brandKey = `${card.brand ?? ''} ${card.name}`.toLowerCase();
+
+const coverGradient = brandKey.includes('steam')
+  ? 'from-[#1b2838] via-[#2a475e] to-[#417a9b]'
+  : brandKey.includes('playstation') || brandKey.includes('psn')
+    ? 'from-[#003791] via-[#0055c4] to-[#0070d1]'
+    : brandKey.includes('chatgpt') || brandKey.includes('openai')
+      ? 'from-[#0b3b36] via-[#0f766e] to-[#14b8a6]'
+      : brandKey.includes('claude') || brandKey.includes('anthropic')
+        ? 'from-[#3b1d5e] via-[#6d28d9] to-[#c026d3]'
+        : brandKey.includes('gemini') || brandKey.includes('google')
+          ? 'from-[#1e3a8a] via-[#4338ca] to-[#06b6d4]'
+          : brandKey.includes('pubg')
+            ? 'from-[#451a03] via-[#b45309] to-[#f59e0b]'
+            : brandKey.includes('call of duty') || brandKey.includes('سی‌پی')
+              ? 'from-[#450a0a] via-[#b91c1c] to-[#f97316]'
+              : 'from-[#2e1065] via-[#5b63fe] to-[#06b6d4]';
+
+const brandMonogram = (card.brand || 'GG+')
+  .replace(/[^A-Za-z0-9\u0600-\u06FF+]/g, ' ')
+  .trim()
+  .slice(0, 6)
+  .toUpperCase();
+---
+
+<li
+  class={`reveal group relative flex flex-col rounded-3xl border border-[#e3e7f7] bg-white p-3.5 shadow-[0_12px_30px_-6px_rgba(91,99,254,0.09),0_4px_12px_-2px_rgba(25,28,50,0.04)] transition-all duration-200 hover:-translate-y-1 hover:border-[#5b63fe]/45 hover:shadow-[0_18px_38px_-8px_rgba(91,99,254,0.18)] dark:border-[#1b2a3b] dark:bg-[#0c111d]/95 dark:shadow-[0_10px_30px_rgba(2,5,12,0.65)] dark:hover:border-[#35d9cc]/55 dark:hover:shadow-[0_0_32px_rgba(53,217,204,0.12)]${card.inStock ? '' : ' opacity-70'}`}
+  style={`animation-delay:${Math.min(index, 11) * 40}ms`}
+>
+  <a href={card.href} class="flex flex-1 flex-col">
+    <!-- قاب تصویر داخلی گرد (سبک MonkeyGames / Neon City) -->
+    <div class="relative aspect-[16/10] overflow-hidden rounded-2xl bg-[#101528] dark:border dark:border-[#192838] dark:bg-[#070a12]">
+      <StoreImage
+        image={card.image}
+        fade={!card.image.priority}
+        class={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${isPlaceholder ? 'opacity-15 mix-blend-luminosity' : ''}`}
+      />
+
+      {
+        isPlaceholder && (
+          <div
+            aria-hidden="true"
+            class={`pointer-events-none absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br ${coverGradient} p-4 text-white dark:from-[#060910] dark:via-[#0a1320] dark:to-[#071922]`}
+          >
+            <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_75%_25%,rgba(255,255,255,0.22),transparent_55%)] dark:bg-[radial-gradient(circle_at_50%_50%,rgba(53,217,204,0.24),transparent_65%)]"></div>
+            <div class="relative flex h-14 w-14 items-center justify-center rounded-2xl border border-white/25 bg-white/15 shadow-lg backdrop-blur-md dark:border-[#35d9cc]/40 dark:bg-[#35d9cc]/10 dark:text-[#35d9cc] dark:shadow-[0_0_24px_rgba(53,217,204,0.28)]">
+              <svg
+                width="26"
+                height="26"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="3" y="8" width="18" height="13" rx="2" />
+                <path d="M12 8v13M3 12h18" />
+                <path d="M12 8H7.5a2.5 2.5 0 0 1 0-5C11 3 12 8 12 8Z" />
+                <path d="M12 8h4.5a2.5 2.5 0 0 0 0-5C13 3 12 8 12 8Z" />
+              </svg>
+            </div>
+            <span
+              dir="ltr"
+              class="relative mt-2 rounded-full bg-black/30 px-3 py-0.5 font-mono text-[11px] font-extrabold tracking-wider text-white/95 backdrop-blur-xs dark:border dark:border-[#35d9cc]/30 dark:bg-[#08171e]/80 dark:text-[#35d9cc]"
+            >
+              {card.brand || 'GarGift+'}
+            </span>
+          </div>
+        )
+      }
+
+      <!-- نشان‌های شناور بالای تصویر -->
+      <div class="pointer-events-none absolute inset-x-2.5 top-2.5 flex flex-wrap items-center justify-between gap-1.5">
+        <div class="flex flex-wrap items-center gap-1.5">
+          {
+            card.badge ? (
+              <span class="rounded-full bg-[#ff4370] px-2.5 py-0.5 text-[11px] font-extrabold text-white shadow-sm dark:bg-[#35d9cc] dark:text-[#041217] dark:shadow-[0_0_14px_rgba(53,217,204,0.45)]">
+                {card.badge}
+              </span>
+            ) : (
+              card.isFeatured && (
+                <span class="rounded-full bg-[#ff4370] px-2.5 py-0.5 text-[11px] font-extrabold text-white shadow-sm dark:bg-[#35d9cc] dark:text-[#041217]">
+                  ویژه
+                </span>
+              )
+            )
+          }
+          {
+            card.discountPercent && (
+              <span class="rounded-full bg-[#191c32]/85 px-2.5 py-0.5 text-[11px] font-extrabold text-white backdrop-blur-xs dark:border dark:border-[#ff5c8a]/40 dark:bg-[#ff5c8a]/20 dark:text-[#ff85ad]">
+                {card.discountPercent}٪ تخفیف
+              </span>
+            )
+          }
+        </div>
+
+        {
+          card.region && (
+            <span class="rounded-full bg-black/55 px-2.5 py-0.5 text-[11px] font-semibold text-white backdrop-blur-md dark:border dark:border-white/15 dark:bg-[#090d16]/85">
+              {card.region}
+            </span>
+          )
+        }
+      </div>
+
+      {
+        !card.inStock && (
+          <span class="gg-status-disabled absolute bottom-2.5 start-2.5 rounded-lg border px-2.5 py-1 text-xs font-semibold">
+            {card.availabilityLabel || 'غیرفعال'}
+          </span>
+        )
+      }
+    </div>
+
+    <!-- بدنه کارت: عنوان + تامبنیل برند + تگ‌های یاسی/نئونی + نوار دوگانه پایین -->
+    <div class="flex flex-1 flex-col justify-between pt-3.5">
+      <div>
+        <div class="flex items-start justify-between gap-2.5">
+          <Heading class="line-clamp-2 flex-1 text-sm font-extrabold leading-snug text-[#191c32] transition-colors group-hover:text-[#5b63fe] dark:text-white dark:group-hover:text-[#35d9cc]">
+            {card.name}
+          </Heading>
+
+          <!-- آواتار/تامبنیل مربعی برند در سمت چپ عنوان (مشابه MonkeyGames) -->
+          <span
+            dir="ltr"
+            aria-hidden="true"
+            class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#e3e7f7] bg-[#f4f6fd] font-mono text-[10px] font-extrabold text-[#5b63fe] shadow-2xs dark:border-[#1c2c3e] dark:bg-[#101928] dark:text-[#35d9cc]"
+          >
+            {brandMonogram}
+          </span>
+        </div>
+
+        <!-- ردیف تگ‌های متادیتا (یاسی ملایم در لایت مود / فیروزه‌ای تیره در دارک مود) -->
+        <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
+          <span class="rounded-lg bg-[#eef0ff] px-2.5 py-1 text-[11px] font-bold text-[#5258e8] dark:border dark:border-[#35d9cc]/25 dark:bg-[#0e222b] dark:text-[#35d9cc]">
+            {card.brand || 'سرویس دیجیتال'}
+          </span>
+          {
+            card.region && (
+              <span class="rounded-lg bg-[#f3f5fc] px-2.5 py-1 text-[11px] font-semibold text-[#5e6484] dark:bg-[#131c2b] dark:text-[#9eb0c7]">
+                {card.region}
+              </span>
+            )
+          }
+          {
+            card.variantSummary && (
+              <span class="max-w-full truncate rounded-lg bg-[#f3f5fc] px-2.5 py-1 text-[11px] font-medium text-[#5e6484] dark:bg-[#131c2b] dark:text-[#9eb0c7]">
+                {card.variantSummary}
+              </span>
+            )
+          }
+        </div>
+      </div>
+
+      <!-- نوار پایین کارت: باکس وضعیت سبز/نئونی + دکمه سبد خرید و قیمت -->
+      <div class="mt-4 flex items-center justify-between gap-2 pt-1">
+        <!-- باکس وضعیت (مشابه باکس سبز Rating در تصویر لایت مود) -->
+        <div class="flex shrink-0 items-center gap-2 rounded-2xl bg-[#f3f5fc] px-2.5 py-1.5 dark:border dark:border-[#192838] dark:bg-[#090e18]">
+          <span
+            class={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl text-xs font-extrabold ${
+              card.inStock
+                ? 'bg-[#84cc16] text-white shadow-2xs dark:bg-[#35d9cc]/15 dark:text-[#35d9cc]'
+                : 'bg-[#cbd5e1] text-[#475569] dark:bg-[#1e293b] dark:text-[#64748b]'
+            }`}
+            aria-hidden="true"
+          >
+            {card.inStock ? '✓' : '✕'}
+          </span>
+          <div class="flex flex-col gap-0.5 leading-none">
+            {
+              card.formattedComparePrice ? (
+                <span class="gg-numeric text-[10px] text-[#7c82a2] line-through dark:text-[#6e829c]">
+                  {card.formattedComparePrice}
+                </span>
+              ) : (
+                <span class="text-[10px] font-medium text-[#7c82a2] dark:text-[#6e829c]">
+                  وضعیت
+                </span>
+              )
+            }
+            <span class="text-[11px] font-extrabold text-[#191c32] dark:text-[#e2e8f0]">
+              {card.availabilityLabel || (card.inStock ? 'قابل سفارش' : 'غیرفعال')}
+            </span>
+          </div>
+        </div>
+
+        <!-- دکمه اصلی قیمت و خرید (آبی-بنفش MonkeyGames در لایت مود / فیروزه‌ای درخشان Neon City در دارک مود) -->
+        <span class="inline-flex min-h-10 flex-1 items-center justify-center gap-1.5 rounded-2xl bg-[#5b63fe] px-3 py-2 text-xs font-extrabold text-white shadow-[0_6px_16px_-3px_rgba(91,99,254,0.45)] transition-all group-hover:bg-[#4951ec] dark:bg-[#35d9cc] dark:text-[#041217] dark:shadow-[0_0_20px_rgba(53,217,204,0.28)] dark:group-hover:bg-[#22e5d5]">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+            class="shrink-0"
+          >
+            <circle cx="8" cy="21" r="1" />
+            <circle cx="19" cy="21" r="1" />
+            <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
+          </svg>
+          <span class="gg-numeric truncate">{card.formattedPrice}</span>
+        </span>
+      </div>
+    </div>
+  </a>
+</li>

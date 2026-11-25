@@ -1,0 +1,113 @@
+---
+import type { ChartBucketPoint, ChartGranularity, DashboardTimeframe } from '../../features/admin/dashboardMetrics';
+import { formatPrice } from '../../config';
+import { toPersianDigits } from '../../lib/format';
+
+interface Props {
+  points: ChartBucketPoint[];
+  currency: string;
+  timeframe: DashboardTimeframe;
+  granularity: ChartGranularity;
+}
+
+const { points, currency, timeframe, granularity } = Astro.props;
+
+const maxNet = Math.max(1, ...points.map((p) => Math.max(p.grossAmount, p.netAmount)));
+const totalNet = points.reduce((sum, p) => sum + p.netAmount, 0);
+const totalOrders = points.reduce((sum, p) => sum + p.orders, 0);
+
+const bars = points.map((p) => {
+  const netPct = Math.round((p.netAmount / maxNet) * 100);
+  const grossPct = Math.round((p.grossAmount / maxNet) * 100);
+  return {
+    ...p,
+    netHeight: p.netAmount > 0 ? Math.max(8, netPct) : 3,
+    grossHeight: p.grossAmount > 0 ? Math.max(8, grossPct) : 3,
+  };
+});
+
+// نمایش خوانا بدون شلوغی برچسب در بازه‌های ۳۰/۹۰ روزه
+const labelStep = bars.length > 20 ? Math.ceil(bars.length / 10) : 1;
+---
+
+<section class="gg-admin-card p-5">
+  <div class="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <h2 class="text-base font-bold text-ink">روند فروش و درآمد خالص</h2>
+      <p class="mt-0.5 text-xs text-muted">
+        مجموع درآمد خالص در بازه نمودار:
+        <strong class="font-bold text-ink">{formatPrice(totalNet, currency)}</strong>{' '}
+        ({toPersianDigits(totalOrders)} سفارش تاییدشده)
+      </p>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-1.5 rounded-xl border border-line bg-paper p-1 text-xs">
+      {
+        [
+          { key: 'daily', label: 'روزانه' },
+          { key: 'weekly', label: 'هفتگی' },
+          { key: 'monthly', label: 'ماهانه' },
+        ].map((item) => (
+          <a
+            href={`/admin?tf=${timeframe}&g=${item.key}`}
+            class={`rounded-lg px-3 py-1.5 font-medium transition ${
+              granularity === item.key
+                ? 'bg-brand text-on-brand shadow-xs'
+                : 'text-muted hover:text-ink'
+            }`}
+          >
+            {item.label}
+          </a>
+        ))
+      }
+    </div>
+  </div>
+
+  {
+    bars.length === 0 ? (
+      <div class="flex h-48 items-center justify-center rounded-xl border border-dashed border-line text-xs text-muted">
+        در این بازه زمانی هنوز تراکنش تاییدشده‌ای ثبت نشده است.
+      </div>
+    ) : (
+      <div class="space-y-3">
+        <div class="flex flex-wrap items-center gap-4 text-[11px] text-muted">
+          <span class="inline-flex items-center gap-1.5">
+            <span class="h-2.5 w-2.5 rounded-xs bg-brand" />
+            درآمد خالص (پس از کسر بازگشت وجه)
+          </span>
+          <span class="inline-flex items-center gap-1.5">
+            <span class="h-2.5 w-2.5 rounded-xs bg-coral/80" />
+            مبلغ مستردی (در صورت وجود)
+          </span>
+        </div>
+
+        <div class="flex h-52 items-end gap-1.5 overflow-x-auto rounded-xl border border-line bg-paper/60 px-3 pt-6 pb-2">
+          {
+            bars.map((bar, idx) => (
+              <div
+                class="group relative flex h-full min-w-[16px] flex-1 flex-col items-center justify-end gap-1.5"
+                title={`${bar.label}: ${formatPrice(bar.netAmount, currency)} (${toPersianDigits(bar.orders)} سفارش)`}
+              >
+                <div class="flex h-36 w-full items-end justify-center gap-0.5">
+                  <div
+                    class="w-2.5 rounded-t-md bg-brand transition-all duration-200 group-hover:opacity-90 sm:w-3.5"
+                    style={`height: ${bar.netHeight}%`}
+                  />
+                  {bar.refundedAmount > 0 && (
+                    <div
+                      class="w-1.5 rounded-t-md bg-coral/80 sm:w-2"
+                      style={`height: ${bar.grossHeight}%`}
+                    />
+                  )}
+                </div>
+                <span class="h-4 whitespace-nowrap text-[10px] text-faint">
+                  {idx % labelStep === 0 || idx === bars.length - 1 ? bar.label : ''}
+                </span>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    )
+  }
+</section>

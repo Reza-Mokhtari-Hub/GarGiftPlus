@@ -2,30 +2,32 @@
 //
 // Same contract as sort.ts: the query param selects a FIXED SQL fragment from a
 // whitelist and every value is bound, so nothing a caller types reaches SQL.
-//
-// The clause built here is shared by the list query and the count query on
-// purpose. Filtering one but not the other is the classic pagination bug — the
-// table shows 3 rows while the pager offers 12 pages of them.
+
+export type OrderFulfillmentFilter =
+  | 'unfulfilled'
+  | 'processing'
+  | 'ready_for_delivery'
+  | 'partially_fulfilled'
+  | 'fulfilled'
+  | 'cancelled';
 
 export interface OrderFilters {
   status: OrderStatusFilter | null;
-  fulfillment: 'fulfilled' | 'unfulfilled' | null;
+  fulfillment: OrderFulfillmentFilter | null;
   method: string | null;
   /** Only orders still needing refund reconciliation. */
   review: boolean;
 }
 
+export interface OrderAdvancedFilters {
+  dateFrom: string | null;
+  dateTo: string | null;
+  minTotal: number | null;
+  maxTotal: number | null;
+}
+
 export type OrderStatusFilter = 'paid' | 'partially_refunded' | 'refunded' | 'pending';
 
-/**
- * Payment states, as a merchant thinks of them.
- *
- * Refund state is DERIVED from the amounts rather than read from
- * `orders.status`, which only records 'pending' | 'paid' | 'refunded' and so
- * cannot express a partial refund at all. `refunded_cents > 0` guards the full
- * case because a zero-total order would otherwise satisfy `>= amount_total`.
- * The four are mutually exclusive and cover every row.
- */
 const STATUS: Record<OrderStatusFilter, string> = {
   paid: "status = 'paid' AND refunded_cents = 0",
   partially_refunded: 'refunded_cents > 0 AND refunded_cents < amount_total_cents',
@@ -34,21 +36,37 @@ const STATUS: Record<OrderStatusFilter, string> = {
 };
 
 export const ORDER_STATUS_OPTIONS: { value: OrderStatusFilter; label: string }[] = [
-  { value: 'paid', label: 'Paid' },
-  { value: 'partially_refunded', label: 'Partially refunded' },
-  { value: 'refunded', label: 'Refunded' },
-  { value: 'pending', label: 'Unpaid' },
+  { value: 'paid', label: 'پرداخت‌شده (Paid)' },
+  { value: 'partially_refunded', label: 'بازگشت جزئی (Partial Refund)' },
+  { value: 'refunded', label: 'مستردشده کامل (Refunded)' },
+  { value: 'pending', label: 'در انتظار پرداخت (Pending)' },
+];
+
+export const ORDER_FULFILLMENT_OPTIONS: { value: OrderFulfillmentFilter; label: string }[] = [
+  { value: 'unfulfilled', label: 'در انتظار پردازش (Unfulfilled)' },
+  { value: 'processing', label: 'در حال آماده‌سازی (Processing)' },
+  { value: 'ready_for_delivery', label: 'آماده تحویل (Ready)' },
+  { value: 'partially_fulfilled', label: 'تحویل ناقص (Partial)' },
+  { value: 'fulfilled', label: 'تحویل‌شده (Fulfilled)' },
+  { value: 'cancelled', label: 'لغو شده (Cancelled)' },
 ];
 
 export const ORDER_METHOD_OPTIONS: { value: string; label: string }[] = [
-  { value: 'stripe', label: 'Card (Stripe)' },
-  { value: 'lightning', label: 'Lightning' },
-  { value: 'opennode', label: 'Bitcoin (OpenNode)' },
-  { value: 'demo', label: 'Demo' },
+  { value: 'wallet', label: 'کیف پول GarGift+ (Wallet)' },
+  { value: 'bank_transfer', label: 'کارت‌به‌کارت بانکی (Bank Transfer)' },
+  { value: 'zarinpal', label: 'درگاه زرین‌پال (Zarinpal)' },
+  { value: 'zibal', label: 'درگاه زیبال (Zibal)' },
+  { value: 'stripe', label: 'کارت بین‌المللی (Stripe)' },
+  { value: 'lightning', label: 'لابتنینگ (Lightning)' },
+  { value: 'opennode', label: 'بیت‌کوین (OpenNode)' },
+  { value: 'demo', label: 'آزمایشی (Demo)' },
 ];
 
 const isStatus = (v: string | null): v is OrderStatusFilter =>
   v !== null && Object.prototype.hasOwnProperty.call(STATUS, v);
+
+const isFulfillment = (v: string | null): v is OrderFulfillmentFilter =>
+  v !== null && ORDER_FULFILLMENT_OPTIONS.some((o) => o.value === v);
 
 export function parseOrderFilters(params: URLSearchParams): OrderFilters {
   const status = params.get('status');
@@ -56,19 +74,40 @@ export function parseOrderFilters(params: URLSearchParams): OrderFilters {
   const method = params.get('method');
   return {
     status: isStatus(status) ? status : null,
-    fulfillment:
-      fulfillment === 'fulfilled' || fulfillment === 'unfulfilled' ? fulfillment : null,
+    fulfillment: isFulfillment(fulfillment) ? fulfillment : null,
     method: ORDER_METHOD_OPTIONS.some((o) => o.value === method) ? method : null,
     review: params.get('review') === '1',
   };
 }
 
-/** True when any filter is narrowing the list (drives the "clear" affordance). */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseNonNegInt(raw: string | null): number | null {
+  if (!raw || raw.trim() === '') return null;
+  const n = Number(raw.trim());
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.trunc(n);
+}
+
+export function parseOrderAdvancedFilters(params: URLSearchParams): OrderAdvancedFilters {
+  const fromRaw = (params.get('from') ?? '').trim();
+  const toRaw = (params.get('to') ?? '').trim();
+  return {
+    dateFrom: ISO_DATE_RE.test(fromRaw) ? fromRaw : null,
+    dateTo: ISO_DATE_RE.test(toRaw) ? toRaw : null,
+    minTotal: parseNonNegInt(params.get('min')),
+    maxTotal: parseNonNegInt(params.get('max')),
+  };
+}
+
 export function hasOrderFilters(f: OrderFilters): boolean {
   return f.status !== null || f.fulfillment !== null || f.method !== null || f.review;
 }
 
-/** The filters as query params, for building sort/pagination links that keep them. */
+export function hasOrderAdvancedFilters(f: OrderAdvancedFilters): boolean {
+  return f.dateFrom !== null || f.dateTo !== null || f.minTotal !== null || f.maxTotal !== null;
+}
+
 export function orderFilterParams(f: OrderFilters): Record<string, string | undefined> {
   return {
     status: f.status ?? undefined,
@@ -78,10 +117,17 @@ export function orderFilterParams(f: OrderFilters): Record<string, string | unde
   };
 }
 
-/**
- * `WHERE …` (or an empty string) plus its bound values. Pass the same result to
- * both the list and the count.
- */
+export function orderAdvancedFilterParams(
+  f: OrderAdvancedFilters,
+): Record<string, string | undefined> {
+  return {
+    from: f.dateFrom ?? undefined,
+    to: f.dateTo ?? undefined,
+    min: f.minTotal != null ? String(f.minTotal) : undefined,
+    max: f.maxTotal != null ? String(f.maxTotal) : undefined,
+  };
+}
+
 export function orderFilterClause(f: OrderFilters): { where: string; params: string[] } {
   const parts: string[] = [];
   const params: string[] = [];
@@ -92,13 +138,47 @@ export function orderFilterClause(f: OrderFilters): { where: string; params: str
     params.push(f.fulfillment);
   }
   if (f.method) {
-    // NULL payment_method predates the column and was Stripe-only, so a Stripe
-    // filter that ignored those would hide real card orders.
-    parts.push(f.method === 'stripe' ? '(payment_method = ? OR payment_method IS NULL)' : 'payment_method = ?');
+    parts.push(
+      f.method === 'stripe'
+        ? '(payment_method = ? OR payment_method IS NULL)'
+        : 'payment_method = ?',
+    );
     params.push(f.method);
   }
   if (f.review) parts.push('refund_review_reason IS NOT NULL AND refund_reviewed_at IS NULL');
 
+  return {
+    where: parts.length ? `WHERE ${parts.join(' AND ')}` : '',
+    params,
+  };
+}
+
+export function combineOrderFilterClauses(
+  base: OrderFilters,
+  adv: OrderAdvancedFilters,
+): { where: string; params: (string | number)[] } {
+  const baseClause = orderFilterClause(base);
+  const parts: string[] = [];
+  const params: (string | number)[] = [...baseClause.params];
+  if (baseClause.where) {
+    parts.push(baseClause.where.replace(/^WHERE\s+/, ''));
+  }
+  if (adv.dateFrom) {
+    parts.push('date(created_at) >= date(?)');
+    params.push(adv.dateFrom);
+  }
+  if (adv.dateTo) {
+    parts.push('date(created_at) <= date(?)');
+    params.push(adv.dateTo);
+  }
+  if (adv.minTotal != null) {
+    parts.push('amount_total_cents >= ?');
+    params.push(adv.minTotal);
+  }
+  if (adv.maxTotal != null) {
+    parts.push('amount_total_cents <= ?');
+    params.push(adv.maxTotal);
+  }
   return {
     where: parts.length ? `WHERE ${parts.join(' AND ')}` : '',
     params,

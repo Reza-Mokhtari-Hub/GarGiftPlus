@@ -1,0 +1,241 @@
+---
+import type { CatalogPageModel } from '../../features/storefront/models';
+import ProductCard from './ProductCard.astro';
+import CatalogSort from '../../features/storefront/controls/CatalogSort.astro';
+import CatalogPagination from '../../features/storefront/controls/CatalogPagination.astro';
+
+/**
+ * صفحه کاتالوگ فروشگاه GarGift+ (نمایش در / و /products)
+ * توجه: این فایل طبق قوانین مرز قالب‌ها فقط مدل‌های آماده و کنترل‌های مجاز را دریافت می‌کند.
+ */
+interface Props {
+  model: CatalogPageModel;
+}
+
+const { model } = Astro.props;
+const filters = model.filters;
+---
+
+<section class="mb-8 rounded-xl border border-line bg-surface p-6 sm:p-8">
+  <div class="flex flex-col justify-between gap-6 lg:flex-row lg:items-center">
+    <div>
+      <p class="text-xs font-semibold text-accent-fg">{model.eyebrow}</p>
+      <h1 class="gg-h1 mt-2 text-ink">{model.heading}</h1>
+      <p class="mt-2 max-w-2xl text-sm text-muted">
+        خرید فوری گیفت‌کارت‌های اورجینال، اشتراک‌های هوش مصنوعی و آیتم‌های بازی با پرداخت امن ریالی، کیف پول اختصاصی و تحویل سریع.
+      </p>
+    </div>
+
+    <div
+      data-home-account-card
+      class="flex flex-col gap-3 rounded-xl border border-brand/25 bg-paper p-4 sm:min-w-80"
+    >
+      <div class="flex items-center justify-between gap-3">
+        <div>
+          <p data-home-account-title class="text-xs font-bold text-ink">حساب کاربری و کیف پول</p>
+          <p data-home-account-subtitle class="mt-0.5 text-[11px] text-muted">
+            پیگیری سفارش‌ها، شارژ کیف پول و خرید سریع‌تر
+          </p>
+        </div>
+        <span
+          class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand-fg"
+          aria-hidden="true"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+        </span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2">
+        <a
+          href="/account"
+          data-home-account-cta
+          class="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-hover"
+        >
+          <span>ورود / حساب کاربری</span>
+        </a>
+        <a
+          href="/account/wallet"
+          class="inline-flex items-center justify-center rounded-lg border border-line bg-surface px-3 py-2 text-xs font-semibold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+        >
+          کیف پول
+        </a>
+        <a
+          href="/account/orders"
+          class="inline-flex items-center justify-center rounded-lg border border-line bg-surface px-3 py-2 text-xs font-medium text-muted transition-colors hover:border-brand hover:text-ink"
+        >
+          سفارش‌های من
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+{
+  model.categories.length > 0 && (
+    <div class="mb-6 flex flex-wrap gap-2 text-xs">
+      {model.categories.map((category) => (
+        <a
+          href={category.href}
+          class="rounded-lg border border-line bg-surface px-3.5 py-1.5 font-medium text-muted transition-colors hover:border-brand-accent hover:text-brand-fg"
+        >
+          {category.text}
+        </a>
+      ))}
+    </div>
+  )
+}
+
+{
+  filters && (
+    <form
+      method="GET"
+      action={filters.actionHref}
+      class="mb-6 rounded-xl border border-line bg-surface p-4 sm:p-5"
+    >
+      <input type="hidden" name="sort" value={filters.sort} />
+      <input type="hidden" name="dir" value={filters.dir} />
+
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+          <span>جستجو در محصولات</span>
+          <input
+            type="search"
+            name="q"
+            value={filters.q}
+            placeholder="نام محصول، برند یا ریجن..."
+            class="rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+          />
+        </label>
+
+        <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+          <span>دسته‌بندی</span>
+          <select
+            name="category"
+            class="rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+          >
+            <option value="">همه دسته‌بندی‌ها</option>
+            {filters.categories.map((cat) => (
+              <option value={cat.slug} selected={cat.selected}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+          <span>حداقل قیمت</span>
+          <input
+            type="text"
+            inputmode="decimal"
+            name="min_price"
+            value={filters.minPrice}
+            placeholder="۰"
+            dir="ltr"
+            class="ltr-inline rounded-lg border border-line bg-paper px-3 py-2 text-start text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+          />
+        </label>
+
+        <label class="flex flex-col gap-1 text-xs font-medium text-muted">
+          <span>حداکثر قیمت</span>
+          <input
+            type="text"
+            inputmode="decimal"
+            name="max_price"
+            value={filters.maxPrice}
+            placeholder="نامحدود"
+            dir="ltr"
+            class="ltr-inline rounded-lg border border-line bg-paper px-3 py-2 text-start text-sm text-ink transition-colors focus:border-brand focus:outline-none"
+          />
+        </label>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+        <div class="flex flex-wrap items-center gap-4 text-xs font-medium text-ink">
+          <label class="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              name="featured"
+              value="1"
+              checked={filters.featuredOnly}
+              class="accent-brand"
+            />
+            <span>فقط محصولات ویژه</span>
+          </label>
+          <label class="inline-flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              name="discounted"
+              value="1"
+              checked={filters.discountedOnly}
+              class="accent-brand"
+            />
+            <span>فقط تخفیف‌دار</span>
+          </label>
+          <span class="gg-numeric text-muted">{filters.resultsCountLabel}</span>
+        </div>
+
+        <div class="flex items-center gap-2">
+          {filters.hasActiveFilters && (
+            <a
+              href={filters.clearHref}
+              class="rounded-lg border border-line bg-paper px-3.5 py-2 text-xs font-medium text-muted transition-colors hover:border-brand hover:text-ink"
+            >
+              پاک کردن فیلترها
+            </a>
+          )}
+          <button
+            type="submit"
+            class="rounded-lg bg-brand px-4 py-2 text-xs font-semibold text-on-brand transition-colors hover:bg-brand-hover"
+          >
+            اعمال فیلتر
+          </button>
+        </div>
+      </div>
+    </form>
+  )
+}
+
+<CatalogSort model={model.sort} />
+
+{
+  model.products.length === 0 && (
+    <div
+      role="status"
+      class="flex flex-col items-center justify-center rounded-xl border border-dashed border-line bg-surface p-10 text-center"
+    >
+      <svg
+        width="40"
+        height="40"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        aria-hidden="true"
+        class="mb-3 text-faint"
+      >
+        <rect x="3" y="8" width="18" height="12" rx="2" />
+        <path d="M12 8v12M3 12h18" />
+        <path d="M12 8H8.5a2 2 0 1 1 0-4C11 4 12 8 12 8ZM12 8h3.5a2 2 0 1 0 0-4C13 4 12 8 12 8Z" />
+      </svg>
+      <p class="text-sm font-semibold text-ink">
+        {filters?.hasActiveFilters
+          ? 'محصولی با فیلترهای انتخاب‌شده پیدا نشد.'
+          : 'هنوز محصولی در این بخش ثبت نشده است.'}
+      </p>
+      <p class="mt-1 text-xs text-muted">
+        {filters?.hasActiveFilters
+          ? 'فیلترهای قیمت یا دسته‌بندی را تغییر دهید یا پاک کنید.'
+          : 'به‌زودی سرویس‌ها و گیفت‌کارت‌های جدید اضافه می‌شوند.'}
+      </p>
+    </div>
+  )
+}
+
+<ul class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+  {model.products.map((card, i) => <ProductCard card={card} index={i} />)}
+</ul>
+
+<CatalogPagination model={model.pagination} />

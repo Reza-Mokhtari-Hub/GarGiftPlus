@@ -8,6 +8,8 @@ import {
   type ProductExtra,
 } from '../products/variants';
 import { parseCartKey, lineUnitPriceCents } from './key';
+import { getCartLineInputsByPublicIds } from './inputsDb';
+import type { NormalizedCustomerInput } from '../products/customFields';
 
 const COOKIE = 'cart';
 /** Script-readable item count (see writeCart). Mirrors COOKIE's lifetime. */
@@ -33,6 +35,7 @@ export interface CartLine {
   unitPriceCents: number; // variant/base + selected extras
   lineTotalCents: number;
   availableStock: number; // variant stock when a variant, else product stock
+  customerInputs?: NormalizedCustomerInput[];
 }
 
 export function readCart(cookies: AstroCookies): Cart {
@@ -99,6 +102,7 @@ export function cartCount(cart: Cart): number {
 export async function resolveCart(
   db: D1Database,
   cart: Cart,
+  cartSession: string | null = null,
 ): Promise<{ lines: CartLine[]; subtotalCents: number }> {
   const requested = Object.entries(cart).flatMap(([key, qty]) => {
     const parsed = parseCartKey(key);
@@ -106,7 +110,11 @@ export async function resolveCart(
   });
   if (requested.length === 0) return { lines: [], subtotalCents: 0 };
 
-  const [products, variants, extras] = await Promise.all([
+  const inputIds = requested
+    .map((line) => line.parsed.inputPublicId)
+    .filter((id): id is string => Boolean(id));
+
+  const [products, variants, extras, inputsMap] = await Promise.all([
     getProductsByPublicIds(db, [...new Set(requested.map((line) => line.parsed.productPublicId))]),
     getActiveVariantsByPublicIds(
       db,
@@ -118,6 +126,9 @@ export async function resolveCart(
       db,
       requested.flatMap((line) => line.parsed.extraPublicIds),
     ),
+    inputIds.length > 0 && cartSession
+      ? getCartLineInputsByPublicIds(db, cartSession, inputIds)
+      : Promise.resolve(new Map<string, NormalizedCustomerInput[]>()),
   ]);
   const productsByPid = new Map(products.map((product) => [product.public_id, product]));
   const variantsByPid = new Map(variants.map((variant) => [variant.public_id, variant]));
@@ -143,6 +154,7 @@ export async function resolveCart(
       );
 
     const unitPriceCents = lineUnitPriceCents(product.price_cents, variant, lineExtras);
+    const customerInputs = parsed.inputPublicId ? inputsMap.get(parsed.inputPublicId) : undefined;
     lines.push({
       key,
       product,
@@ -152,6 +164,7 @@ export async function resolveCart(
       unitPriceCents,
       lineTotalCents: unitPriceCents * qty,
       availableStock: variant ? variant.stock : product.stock,
+      ...(customerInputs && customerInputs.length > 0 ? { customerInputs } : {}),
     });
   }
   const subtotalCents = lines.reduce((sum, l) => sum + l.lineTotalCents, 0);

@@ -1,60 +1,232 @@
 ---
 import type { Category, CategoryOption } from './db';
+import { CATEGORY_ACCENTS, CATEGORY_ICON_KEYS } from './form';
 
 interface Props {
   action: string;
   submitLabel: string;
   category?: Category | null;
-  /** Valid parent choices (depth-tagged). For edit, excludes self + descendants. */
+  /** گزینه‌های مجاز برای دسته والد (در ویرایش، خود دسته و زیردسته‌ها حذف می‌شوند) */
   parentOptions: CategoryOption[];
   error?: string | null;
 }
 
 const { action, submitLabel, category = null, parentOptions, error = null } = Astro.props;
-const inputClass =
-  'mt-1 w-full rounded-md border border-line px-3 py-2 focus:border-brand focus:outline-none';
+
+const ICON_LABELS: Record<(typeof CATEGORY_ICON_KEYS)[number], string> = {
+  gift: 'گیفت‌کارت (Gift)',
+  sparkles: 'ویژه / پریمیوم (Sparkles)',
+  gamepad: 'گیمینگ (Gamepad)',
+  music: 'موسیقی و استریم (Music)',
+  monitor: 'نرم‌افزار و اشتراک (Monitor)',
+  shield: 'سرویس امنیتی (Shield)',
+  globe: 'سرویس بین‌الملل (Globe)',
+  layers: 'بسته و پکیج (Layers)',
+};
+
+const ACCENT_LABELS: Record<(typeof CATEGORY_ACCENTS)[number], string> = {
+  violet: 'بنفش GarGift+',
+  turquoise: 'فیروزه‌ای',
+  coral: 'مرجانی',
+  amber: 'طلایی / کهربایی',
+  navy: 'سرمه‌ای',
+};
 ---
 
-<form method="POST" action={action} class="max-w-lg space-y-4">
+<form method="POST" action={action} class="gg-admin-card max-w-3xl space-y-5 p-6">
+  <input type="hidden" name="has_visibility_flags" value="1" />
+
   {
     error && (
-      <p class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+      <div class="gg-status-error rounded-xl border px-4 py-3 text-sm font-medium">
         {error}
-      </p>
+      </div>
     )
   }
 
-  <div>
-    <label class="block text-sm font-medium" for="name">Name</label>
-    <input id="name" name="name" type="text" required value={category?.name ?? ''} class={inputClass} />
+  <div class="grid gap-4 sm:grid-cols-2">
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-name">
+        عنوان دسته‌بندی <span class="text-coral">*</span>
+      </label>
+      <input
+        id="cat-name"
+        name="name"
+        type="text"
+        required
+        maxlength="120"
+        value={category?.name ?? ''}
+        placeholder="مثال: گیفت‌کارت پلی‌استیشن"
+        class="gg-admin-input"
+      />
+    </div>
+
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-slug">
+        نامک URL (Slug)
+      </label>
+      <input
+        id="cat-slug"
+        name="slug"
+        type="text"
+        dir="ltr"
+        value={category?.slug ?? ''}
+        placeholder="auto-from-name"
+        class="gg-admin-input font-mono text-xs"
+      />
+      <p class="mt-1 text-[11px] text-faint">در صورت خالی ماندن، به‌صورت خودکار از نام ساخته می‌شود.</p>
+    </div>
+  </div>
+
+  <div class="grid gap-4 sm:grid-cols-2">
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-parent">
+        دسته‌بندی والد
+      </label>
+      <select id="cat-parent" name="parent_id" class="gg-admin-input">
+        <option value="">— بدون والد (دسته اصلی) —</option>
+        {
+          parentOptions.map((o) => (
+            <option value={o.public_id ?? ''} selected={category?.parent_id === o.id}>
+              {'— '.repeat(o.depth) + o.name}
+            </option>
+          ))
+        }
+      </select>
+    </div>
+
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-order">
+        ترتیب نمایش
+      </label>
+      <input
+        id="cat-order"
+        name="display_order"
+        type="number"
+        min="-999"
+        max="9999"
+        value={category?.display_order ?? 0}
+        class="gg-admin-input ltr-inline font-mono"
+      />
+    </div>
   </div>
 
   <div>
-    <label class="block text-sm font-medium" for="slug">
-      Slug <span class="text-faint">(URL — blank to auto-generate from name)</span>
+    <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-desc">
+      توضیحات کوتاه دسته‌بندی
     </label>
-    <input id="slug" name="slug" type="text" value={category?.slug ?? ''} placeholder="auto-from-name" class={inputClass} />
+    <textarea
+      id="cat-desc"
+      name="description"
+      rows="3"
+      maxlength="600"
+      placeholder="توضیح مختصر درباره محصولات این دسته جهت نمایش در صفحه آرشیو..."
+      class="gg-admin-input"
+    >{category?.description ?? ''}</textarea>
   </div>
 
-  <div>
-    <label class="block text-sm font-medium" for="parent_id">Parent category</label>
-    <select id="parent_id" name="parent_id" class={inputClass}>
-      <option value="">— none (top level) —</option>
-      {
-        // Values are cat_ public IDs — resolved back to row ids server-side.
-        parentOptions.map((o) => (
-          <option value={o.public_id} selected={category?.parent_id === o.id}>
-            {'  '.repeat(o.depth) + o.name}
-          </option>
-        ))
-      }
-    </select>
+  <div class="grid gap-4 sm:grid-cols-3">
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-icon">آیکون نمایشی</label>
+      <select id="cat-icon" name="icon_key" class="gg-admin-input">
+        <option value="">بدون آیکون خاص</option>
+        {
+          CATEGORY_ICON_KEYS.map((key) => (
+            <option value={key} selected={category?.icon_key === key}>
+              {ICON_LABELS[key]}
+            </option>
+          ))
+        }
+      </select>
+    </div>
+
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-accent">رنگ تاکیدی کارت</label>
+      <select id="cat-accent" name="accent_color" class="gg-admin-input">
+        <option value="">پیش‌فرض سیستم</option>
+        {
+          CATEGORY_ACCENTS.map((acc) => (
+            <option value={acc} selected={category?.accent_color === acc}>
+              {ACCENT_LABELS[acc]}
+            </option>
+          ))
+        }
+      </select>
+    </div>
+
+    <div>
+      <label class="mb-1.5 block text-xs font-semibold text-ink" for="cat-image">
+        کلید تصویر (Media Key)
+      </label>
+      <input
+        id="cat-image"
+        name="image_key"
+        type="text"
+        dir="ltr"
+        value={category?.image_key ?? ''}
+        placeholder="media/category-cover.webp"
+        class="gg-admin-input font-mono text-xs"
+      />
+    </div>
   </div>
 
-  <div class="flex gap-3 pt-2">
-    <button type="submit" class="rounded-md bg-brand px-5 py-2 font-medium text-on-brand hover:bg-brand-hover">
+  <div class="flex flex-wrap gap-6 rounded-xl border border-line bg-paper/60 px-4 py-3">
+    <label class="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-ink">
+      <input
+        type="checkbox"
+        name="is_active"
+        value="1"
+        checked={category ? category.is_active !== 0 : true}
+        class="size-4 accent-brand"
+      />
+      دسته فعال باشد (نمایش در فروشگاه)
+    </label>
+
+    <label class="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-ink">
+      <input
+        type="checkbox"
+        name="is_featured"
+        value="1"
+        checked={category ? category.is_featured !== 0 : true}
+        class="size-4 accent-brand"
+      />
+      نمایش در بخش ویژه صفحه اصلی
+    </label>
+  </div>
+
+  <fieldset class="space-y-3 rounded-xl border border-line bg-paper/40 p-4">
+    <legend class="px-2 text-xs font-bold text-ink">تنظیمات سئو (SEO)</legend>
+    <div>
+      <label class="mb-1 block text-xs font-medium text-muted" for="cat-seo-title">عنوان متا (SEO Title)</label>
+      <input
+        id="cat-seo-title"
+        name="seo_title"
+        type="text"
+        maxlength="140"
+        value={category?.seo_title ?? ''}
+        placeholder="خرید آنلاین گیفت کارت با تحویل سریع | GarGift+"
+        class="gg-admin-input"
+      />
+    </div>
+    <div>
+      <label class="mb-1 block text-xs font-medium text-muted" for="cat-seo-desc">توضیحات متا (Meta Description)</label>
+      <textarea
+        id="cat-seo-desc"
+        name="seo_description"
+        rows="2"
+        maxlength="320"
+        placeholder="خلاصه‌ای جذاب برای موتورهای جستجو (حداکثر ۳۲۰ کاراکتر)"
+        class="gg-admin-input"
+      >{category?.seo_description ?? ''}</textarea>
+    </div>
+  </fieldset>
+
+  <div class="flex flex-wrap items-center gap-3 pt-2">
+    <button type="submit" class="gg-admin-btn-primary">
       {submitLabel}
     </button>
-    <a href="/admin/categories" class="rounded-md border border-line px-5 py-2 hover:bg-surface">Cancel</a>
+    <a href="/admin/categories" class="gg-admin-btn-secondary">
+      انصراف و بازگشت
+    </a>
   </div>
 </form>

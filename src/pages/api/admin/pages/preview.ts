@@ -1,5 +1,7 @@
 import type { APIRoute } from 'astro';
+import { env } from 'cloudflare:workers';
 import { getConfig } from '../../../../config';
+import { guardAdminApi } from '../../../../features/fulfillment/actor';
 import { renderMarkdown } from '../../../../features/pages/markdown';
 import {
   normalizePageLayout,
@@ -8,33 +10,18 @@ import {
 
 export const prerender = false;
 
-const MAX_BODY = 100_000; // same bound the page form enforces
+const MAX_BODY = 100_000;
 
-/**
- * POST /api/admin/pages/preview — render Markdown with the REAL storefront
- * renderer and return the fragment.
- *
- * The editor's Preview tab posts here instead of parsing Markdown in the
- * browser. That keeps markdown-it out of the admin JavaScript bundle and makes
- * preview/storefront parity structural rather than something two
- * implementations have to agree on.
- *
- * A static filename beats the sibling [id].ts route, so this never collides
- * with a page whose id is "preview".
- */
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, locals, cookies }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'content.manage');
+  if (!guard.ok) return guard.response;
+
   const form = await request.formData();
   const markdown = String(form.get('body_markdown') ?? '').slice(0, MAX_BODY);
-  // sourceMap is admin-only: it stamps data-source-line so a click in the
-  // preview can jump to the matching line in the editor.
   const html = renderMarkdown(markdown, {
     baseUrl: getConfig().images.baseUrl,
     sourceMap: true,
   });
-  // Wrap in the same article element the storefront uses, so the preview shows
-  // the chosen layout rather than always rendering at the default measure.
-  // The page title is deliberately NOT included: it is a form field right above
-  // the editor, so repeating it in the preview is noise rather than parity.
   const layout = normalizePageLayout(form.get('layout'));
   const wrapped =
     `<div class="markdown-content" data-page-layout="${layout}" ` +

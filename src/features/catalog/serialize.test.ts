@@ -92,4 +92,46 @@ describe('toCatalogProduct', () => {
       { id: 'xtra_q3vr8jm2np', label: 'Gift wrap', price_delta: { amount: 5, cents: 500, currency: 'USD' } },
     ]);
   });
+
+  it('decouples digital product availability from stock and exposes active checkout fields', () => {
+    const digital = {
+      ...base,
+      requires_shipping: 0,
+      stock: 0,
+      active: 1,
+      brand: 'OpenAI',
+      region: 'Global',
+      compare_price_cents: 3000,
+    };
+    const variants = [
+      { id: 1, public_id: 'var_n9fx2km7qc', product_id: 4, label: '1 Month', price_cents: 2400, stock: 0, sku: null, position: 0, active: 1, image_id: null, weight_grams: null },
+      { id: 2, public_id: 'var_b8nr4qx7km', product_id: 4, label: 'Disabled', price_cents: 2600, stock: 10, sku: null, position: 1, active: 0, image_id: null, weight_grams: null },
+    ];
+    const c = toCatalogProduct(digital, ['AI'], ORIGIN, {
+      variants,
+      checkoutFields: [
+        {
+          id: 5,
+          public_id: 'pfld_1234567890',
+          product_id: 4,
+          field_key: 'account_email',
+          label: 'ایمیل اکانت',
+          field_type: 'email',
+          placeholder: 'you@example.com',
+          help_text: null,
+          options_json: null,
+          is_required: 1,
+          min_length: null,
+          max_length: 100,
+          sort_order: 0,
+          is_active: 1,
+        },
+      ],
+    });
+    expect(c.in_stock).toBe(true);
+    expect(c.variants?.[0].in_stock).toBe(true);
+    expect(c.variants?.[1].in_stock).toBe(false);
+    expect(c.checkout_fields).toHaveLength(1);
+    expect(c.checkout_fields?.[0].key).toBe('account_email');
+  });
 });

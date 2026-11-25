@@ -4,13 +4,16 @@ import { getMediaByPublicId, deleteMediaRecord } from '../../../../features/medi
 import { mediaUsage, describeUsage } from '../../../../features/media/usage';
 import { getStorage } from '../../../../features/storage';
 import { parsePublicId } from '../../../../features/ids/publicId';
+import { guardAdminApi } from '../../../../features/fulfillment/actor';
+import { recordAdminAuditLog } from '../../../../features/audit/db';
 
 export const prerender = false;
 
-// POST /api/admin/media/:id — `_action=delete` removes a library item.
-// :id is the med_ public ID; numeric row ids are not accepted.
-// This is the ONLY place an object leaves storage.
-export const POST: APIRoute = async ({ request, params, redirect }) => {
+// POST /api/admin/media/:id — حذف فایل رسانه در صورت عدم استفاده
+export const POST: APIRoute = async ({ request, params, redirect, locals, cookies }) => {
+  const guard = await guardAdminApi(env.DB, { locals, cookies, request }, 'media.manage');
+  if (!guard.ok) return guard.response;
+
   const publicId = parsePublicId(params.id, 'media');
   if (!publicId) return new Response('Invalid id', { status: 400 });
 
@@ -24,13 +27,10 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
   if (!media) return new Response('Not found', { status: 404 });
   const id = media.id;
 
-  // One guarded statement: it deletes only while nothing references the row, so
-  // there is no window between checking and deleting. A null result means it
-  // refused — resolve usage afterwards purely to explain why.
   const deletedKey = await deleteMediaRecord(env.DB, id);
   if (!deletedKey) {
     const usage = await mediaUsage(env.DB, id);
-    const message = `Still used by ${describeUsage(usage)}. Remove it there first.`;
+    const message = `این فایل هنوز در «${describeUsage(usage)}» در حال استفاده است و قابل حذف نیست.`;
     return wantsJson
       ? new Response(JSON.stringify({ error: message }), {
           status: 409,
@@ -39,9 +39,6 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
       : redirect(`/admin/media?error=${encodeURIComponent(message)}`, 303);
   }
 
-  // Row first, object second. A failed object delete leaves an invisible orphan;
-  // the reverse order would leave a live row pointing at a missing file, which
-  // shows as a broken image everywhere it was used.
   try {
     await getStorage().delete(deletedKey);
   } catch (err) {
@@ -55,9 +52,18 @@ export const POST: APIRoute = async ({ request, params, redirect }) => {
     );
   }
 
+  await recordAdminAuditLog(env.DB, {
+    action: 'media.deleted',
+    module: 'media',
+    targetType: 'media',
+    targetId: publicId,
+    actor: guard.actor.id,
+    details: { imageKey: deletedKey, originalName: media.original_name },
+  });
+
   return wantsJson
     ? new Response(JSON.stringify({ deleted: publicId }), {
         headers: { 'content-type': 'application/json', 'cache-control': 'private, no-store' },
       })
-    : redirect('/admin/media', 303);
+    : redirect('/admin/media?deleted=1', 303);
 };

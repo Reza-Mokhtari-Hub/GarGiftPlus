@@ -1,200 +1,781 @@
 ---
+import '@fontsource/vazirmatn/arabic-400.css';
+import '@fontsource/vazirmatn/latin-400.css';
+import '@fontsource/vazirmatn/arabic-500.css';
+import '@fontsource/vazirmatn/latin-500.css';
+import '@fontsource/vazirmatn/arabic-600.css';
+import '@fontsource/vazirmatn/latin-600.css';
+import '@fontsource/vazirmatn/arabic-700.css';
+import '@fontsource/vazirmatn/latin-700.css';
+import '@fontsource/vazirmatn/arabic-800.css';
+import '@fontsource/vazirmatn/latin-800.css';
+import '@fontsource/jetbrains-mono/latin-400.css';
+import '@fontsource/jetbrains-mono/latin-500.css';
+import '@fontsource/jetbrains-mono/latin-600.css';
 import { getConfig } from '../config';
 import { paymentsInDemoMode } from '../features/payments';
 import { shippingFor } from '../features/shipping/effective';
 import { env } from 'cloudflare:workers';
-import { countUnresolvedInventoryExceptions } from '../features/orders/db';
-// Admin's OWN stylesheet — never global.css, which carries the active
-// storefront set's tokens and base-layer rules. A dark set would otherwise
-// restyle every authenticated Admin page (see src/styles/admin.css).
+import { resolveAdminActor } from '../features/fulfillment/actor';
+import {
+  ADMIN_ROLE_LABELS,
+  hasAnyAdminPermission,
+  type AdminPermission,
+} from '../features/fulfillment/permissions';
+import { getTopbarAlertsSummary } from '../features/admin/dashboardDb';
+import ThemeSwitcher from '../features/storefront/controls/ThemeSwitcher.astro';
+import AdminConfirmDialog from '../components/admin/AdminConfirmDialog.astro';
+import { fa } from '../i18n/fa';
+import { toPersianDigits } from '../lib/format';
+import { buildThemeInitScript } from '../lib/theme';
 import '../styles/admin.css';
 
-type Section =
+export type Section =
   | 'dashboard'
+  | 'fulfillment'
+  | 'homepage'
   | 'products'
   | 'orders'
+  | 'receipts'
+  | 'bankAccounts'
+  | 'payments'
+  | 'refunds'
   | 'customers'
+  | 'wallets'
   | 'categories'
+  | 'attributes'
   | 'media'
   | 'pages'
   | 'navigation'
   | 'shipping'
-  | 'settings';
+  | 'emails'
+  | 'tickets'
+  | 'theme'
+  | 'settings'
+  | 'admins'
+  | 'auditLogs'
+  | 'reports'
+  | 'maintenance';
 
 interface Props {
   title?: string;
   active?: Section;
+  breadcrumbs?: Array<{ label: string; href?: string }>;
+  requiredPermission?: AdminPermission;
 }
 
-const { title, active } = Astro.props;
+const { title, active, breadcrumbs, requiredPermission } = Astro.props;
 const config = getConfig();
 const storeName = Astro.locals.settings?.storeName ?? config.storeName;
-// Nudge to finish first-run setup — except while on the wizard itself.
 const showSetupNudge =
   !Astro.locals.settings?.setupComplete && Astro.url.pathname !== '/admin/setup';
-// Show "Log out" only when a password-login session cookie is present. Under
-// Cloudflare Access or local dev there's no minshop session to clear.
-const showLogout = !!Astro.cookies.get('admin_session')?.value;
-const pageTitle = title ? `${title} — ${storeName} admin` : `${storeName} admin`;
-// Configuration that fails closed blocks checkout for physical orders, and the only
-// other signal is a Worker log nobody is watching. Surface it on EVERY admin page,
-// not just the shipping one — the merchant should not have to go looking to find
-// out that they cannot take orders. Resolution is already loaded for this request,
-// so this costs no query.
-const shippingIssue = shippingFor(Astro.locals.settings).issue;
-const inventoryExceptionCount = await countUnresolvedInventoryExceptions(env.DB);
+const showLogout =
+  Boolean(Astro.cookies.get('admin_session')?.value) ||
+  Boolean(Astro.cookies.get('admin_actor')?.value);
 
-const nav: { key: Section; label: string; href: string }[] = [
-  { key: 'dashboard', label: 'Dashboard', href: '/admin' },
-  { key: 'products', label: 'Products', href: '/admin/products' },
-  { key: 'orders', label: 'Orders', href: '/admin/orders' },
-  { key: 'customers', label: 'Customers', href: '/admin/customers' },
-  { key: 'categories', label: 'Categories', href: '/admin/categories' },
-  { key: 'pages', label: 'Pages', href: '/admin/pages' },
-  { key: 'navigation', label: 'Navigation', href: '/admin/navigation' },
-  { key: 'shipping', label: 'Shipping', href: '/admin/shipping' },
-  { key: 'media', label: 'Media', href: '/admin/media' },
-  { key: 'settings', label: 'Settings', href: '/admin/settings' },
+const actor = await resolveAdminActor(env.DB, {
+  locals: Astro.locals,
+  cookies: Astro.cookies,
+  request: Astro.request,
+  signingSecret: env.AUTH_SECRET,
+});
+Astro.locals.adminActor = actor;
+
+const hasAccess = requiredPermission ? actor.permissions.has(requiredPermission) : actor.role !== 'none';
+if (!hasAccess) {
+  Astro.response.status = 403;
+}
+
+const pageTitle = title
+  ? `${title} — ${fa.admin.panelLabel} ${storeName}`
+  : `${fa.admin.panelLabel} ${storeName}`;
+const shippingIssue = shippingFor(Astro.locals.settings).issue;
+const alerts = await getTopbarAlertsSummary(env.DB);
+const themeInitScript = buildThemeInitScript('admin', 'system');
+
+interface NavItem {
+  key: Section;
+  label: string;
+  href: string;
+  icon: string;
+  permissions: readonly AdminPermission[];
+  badge?: number;
+}
+
+interface NavGroup {
+  id: string;
+  label: string;
+  items: NavItem[];
+}
+
+const navGroups: NavGroup[] = [
+  {
+    id: 'overview',
+    label: fa.admin.groups.overview,
+    items: [
+      {
+        key: 'dashboard',
+        label: fa.admin.nav.dashboard,
+        href: '/admin',
+        icon: 'dashboard',
+        permissions: ['dashboard.view'],
+      },
+      {
+        key: 'fulfillment',
+        label: fa.admin.nav.fulfillment,
+        href: '/admin/fulfillment',
+        icon: 'fulfillment',
+        permissions: ['orders.fulfill', 'orders.view'],
+        badge: alerts.pendingFulfillment,
+      },
+      {
+        key: 'orders',
+        label: fa.admin.nav.orders,
+        href: '/admin/orders',
+        icon: 'orders',
+        permissions: ['orders.view'],
+      },
+      {
+        key: 'receipts',
+        label: fa.admin.nav.receipts,
+        href: '/admin/receipts',
+        icon: 'receipts',
+        permissions: ['receipts.review'],
+        badge: alerts.pendingReceipts,
+      },
+      {
+        key: 'tickets',
+        label: fa.admin.nav.tickets,
+        href: '/admin/tickets',
+        icon: 'tickets',
+        permissions: ['tickets.manage'],
+        badge: alerts.openTickets,
+      },
+    ],
+  },
+  {
+    id: 'catalog',
+    label: fa.admin.groups.catalog,
+    items: [
+      {
+        key: 'products',
+        label: fa.admin.nav.products,
+        href: '/admin/products',
+        icon: 'products',
+        permissions: ['products.view', 'products.manage'],
+      },
+      {
+        key: 'categories',
+        label: fa.admin.nav.categories,
+        href: '/admin/categories',
+        icon: 'categories',
+        permissions: ['categories.manage'],
+      },
+      {
+        key: 'attributes',
+        label: fa.admin.nav.attributes,
+        href: '/admin/attributes',
+        icon: 'attributes',
+        permissions: ['attributes.manage'],
+      },
+      {
+        key: 'media',
+        label: fa.admin.nav.media,
+        href: '/admin/media',
+        icon: 'media',
+        permissions: ['media.manage'],
+      },
+    ],
+  },
+  {
+    id: 'customers',
+    label: fa.admin.groups.customers,
+    items: [
+      {
+        key: 'customers',
+        label: fa.admin.nav.customers,
+        href: '/admin/customers',
+        icon: 'customers',
+        permissions: ['customers.view', 'customers.manage'],
+      },
+      {
+        key: 'wallets',
+        label: fa.admin.nav.wallets,
+        href: '/admin/wallets',
+        icon: 'wallet',
+        permissions: ['wallet.view', 'wallet.adjust'],
+      },
+    ],
+  },
+  {
+    id: 'finance',
+    label: fa.admin.groups.finance,
+    items: [
+      {
+        key: 'payments',
+        label: fa.admin.nav.payments,
+        href: '/admin/payments',
+        icon: 'payments',
+        permissions: ['payments.view', 'payments.manage'],
+      },
+      {
+        key: 'bankAccounts',
+        label: fa.admin.nav.bankAccounts,
+        href: '/admin/bank-accounts',
+        icon: 'bank',
+        permissions: ['bank_accounts.manage'],
+      },
+      {
+        key: 'refunds',
+        label: fa.admin.nav.refunds,
+        href: '/admin/refunds',
+        icon: 'refunds',
+        permissions: ['orders.refund', 'payments.view'],
+      },
+    ],
+  },
+  {
+    id: 'content',
+    label: fa.admin.groups.content,
+    items: [
+      {
+        key: 'homepage',
+        label: fa.admin.nav.homepage,
+        href: '/admin/homepage',
+        icon: 'homepage',
+        permissions: ['content.manage'],
+      },
+      {
+        key: 'pages',
+        label: fa.admin.nav.pages,
+        href: '/admin/pages',
+        icon: 'pages',
+        permissions: ['content.manage'],
+      },
+      {
+        key: 'navigation',
+        label: fa.admin.nav.navigation,
+        href: '/admin/navigation',
+        icon: 'navigation',
+        permissions: ['content.manage'],
+      },
+      {
+        key: 'emails',
+        label: fa.admin.nav.emails,
+        href: '/admin/emails',
+        icon: 'emails',
+        permissions: ['emails.manage'],
+        badge: alerts.failedEmails,
+      },
+      {
+        key: 'theme',
+        label: fa.admin.nav.theme,
+        href: '/admin/theme',
+        icon: 'theme',
+        permissions: ['theme.manage'],
+      },
+    ],
+  },
+  {
+    id: 'system',
+    label: fa.admin.groups.system,
+    items: [
+      {
+        key: 'reports',
+        label: fa.admin.nav.reports,
+        href: '/admin/reports',
+        icon: 'reports',
+        permissions: ['reports.view'],
+      },
+      {
+        key: 'settings',
+        label: fa.admin.nav.settings,
+        href: '/admin/settings',
+        icon: 'settings',
+        permissions: ['settings.manage'],
+      },
+      {
+        key: 'admins',
+        label: fa.admin.nav.admins,
+        href: '/admin/admins',
+        icon: 'admins',
+        permissions: ['admins.manage'],
+      },
+      {
+        key: 'auditLogs',
+        label: fa.admin.nav.auditLogs,
+        href: '/admin/audit-logs',
+        icon: 'audit',
+        permissions: ['audit.view'],
+      },
+      {
+        key: 'maintenance',
+        label: fa.admin.nav.maintenance,
+        href: '/admin/maintenance',
+        icon: 'maintenance',
+        permissions: ['maintenance.manage'],
+      },
+    ],
+  },
 ];
-// Label of the section we're on — shown in the collapsed mobile disclosure.
-const currentLabel = nav.find((n) => n.key === active)?.label ?? 'Menu';
+
+const visibleGroups = navGroups
+  .map((g) => ({
+    ...g,
+    items: g.items.filter((item) => hasAnyAdminPermission(actor, item.permissions)),
+  }))
+  .filter((g) => g.items.length > 0);
+
+const activeNav = active ?? 'dashboard';
+const currentItem = navGroups.flatMap((g) => g.items).find((item) => item.key === activeNav);
+const currentLabel =
+  active === 'shipping' ? fa.admin.nav.shipping : (currentItem?.label ?? title ?? fa.admin.nav.dashboard);
+const searchInitial = Astro.url.pathname === '/admin/search' ? (Astro.url.searchParams.get('q') ?? '') : '';
+const roleDisplay = ADMIN_ROLE_LABELS[actor.role] ?? actor.role;
+
+const ICON_PATHS: Record<string, string> = {
+  dashboard: 'M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1v-9.5Z',
+  fulfillment: 'M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+  orders: 'M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12',
+  receipts: 'M9 14.25l6-6m4.5-3.493V21.75l-3.75-1.5-3.75 1.5-3.75-1.5-3.75 1.5V4.757c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0c1.1.128 1.907 1.077 1.907 2.185Z',
+  tickets: 'M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z',
+  products: 'M20.25 7.5l-.625 10.632a2.25 2.25 0 0 1-2.247 2.118H6.622a2.25 2.25 0 0 1-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125Z',
+  categories: 'M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z',
+  attributes: 'M9.568 3H5.25A2.25 2.25 0 0 0 3 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 0 0 5.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 0 0 9.568 3Z',
+  media: 'm2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 19.5h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75a1.5 1.5 0 0 0-1.5 1.5v12a1.5 1.5 0 0 0 1.5 1.5Z',
+  customers: 'M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z',
+  wallet: 'M21 12a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 12v6a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18v-6Zm0 0V8.25A2.25 2.25 0 0 0 18.75 6H5.25A2.25 2.25 0 0 0 3 8.25V12m14.25 3h.008v.008h-.008V15Z',
+  payments: 'M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 0 0 2.25-2.25V6.75A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25v10.5A2.25 2.25 0 0 0 4.5 19.5Z',
+  bank: 'M12 21v-8.25M15.75 21v-8.25M8.25 21v-8.25M3 9l9-6 9 6m-1.5 12V10.332A48.36 48.36 0 0 0 12 9.75c-2.551 0-5.056.2-7.5.582V21M3 21h18',
+  refunds: 'M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3',
+  homepage: 'M3.75 6A2.25 2.25 0 0 1 6 3.75h12A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h5.25v6.75H6a2.25 2.25 0 0 1-2.25-2.25v-2.25ZM14.25 13.5H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-3.75V13.5Z',
+  pages: 'M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z',
+  navigation: 'M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5',
+  emails: 'M21.75 6.75v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0 0 19.5 4.5h-15a2.25 2.25 0 0 0-2.25 2.25m19.5 0v.243a2.25 2.25 0 0 1-1.07 1.916l-7.5 4.615a2.25 2.25 0 0 1-2.36 0L3.32 8.91a2.25 2.25 0 0 1-1.07-1.916V6.75',
+  theme: 'M4.098 19.902a3.75 3.75 0 0 0 5.304 0l6.401-6.402M6.75 21A3.75 3.75 0 0 1 3 17.25V4.125C3 3.504 3.504 3 4.125 3h5.25c.621 0 1.125.504 1.125 1.125v4.072M6.75 21a3.75 3.75 0 0 0 3.75-3.75V8.197M6.75 21h13.125c.621 0 1.125-.504 1.125-1.125v-5.25c0-.621-.504-1.125-1.125-1.125h-4.072M10.5 8.197l2.88-2.88c.438-.439 1.15-.439 1.59 0l3.712 3.713c.44.44.44 1.152 0 1.59l-2.879 2.88',
+  reports: 'M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z',
+  settings: 'M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.56.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.893.149c-.425.07-.765.383-.93.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 0 1-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.397.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.107-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894Z',
+  admins: 'M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z',
+  audit: 'M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z',
+  maintenance: 'M5.25 14.25h13.5m-13.5 0a3 3 0 0 1-3-3m3 3a3 3 0 1 0 0 6h13.5a3 3 0 1 0 0-6m-16.5-3a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3m-19.5 0a4.5 4.5 0 0 1 .9-2.7L5.737 5.1a3.375 3.375 0 0 1 2.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 0 1 .9 2.7m0 0a3 3 0 0 1-3 3m0 3h.008v.008h-.008v-.008Zm0-6h.008v.008h-.008v-.008Z',
+};
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="fa" dir="rtl" data-theme="light" data-theme-mode="system">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script is:inline set:html={themeInitScript} />
     <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>{pageTitle}</title>
   </head>
-  <body class="min-h-screen bg-paper text-ink antialiased">
-    <div class="mx-auto flex max-w-6xl flex-col gap-8 px-6 py-8 sm:flex-row sm:gap-10">
-      <aside class="w-full shrink-0 sm:w-52 sm:border-r sm:border-line sm:pr-6">
-        <a href="/" class="mb-4 block font-serif text-xl tracking-tight sm:mb-8">{storeName}</a>
+  <body class="gg-admin-body min-h-screen overflow-x-clip bg-paper text-ink antialiased">
+    <div
+      data-admin-shell
+      data-collapsed="false"
+      class="gg-admin-shell flex min-h-screen flex-col overflow-x-clip lg:flex-row"
+    >
+      {/* Mobile drawer backdrop */}
+      <div
+        data-admin-backdrop
+        class="fixed inset-0 z-40 hidden bg-black/50 backdrop-blur-xs lg:hidden"
+        aria-hidden="true"
+      />
 
-        {/* Pure-CSS disclosure (a hidden checkbox toggle). On mobile the list is
-            collapsed by default and the labelled summary card expands it — no JS,
-            and each SSR page load resets it, so it always reflects the page you're
-            on. At sm+ the checkbox/summary are hidden and the list is shown inline
-            as the vertical sidebar. (We deliberately avoid <details>: Chromium
-            doesn't paint closed-<details> content even when CSS forces it visible,
-            which blanks the desktop sidebar.) */}
-        <input
-          type="checkbox"
-          id="admin-nav"
-          data-admin-nav-toggle
-          class="peer sr-only"
-          aria-label="Toggle admin sections"
-        />
-        <label
-          for="admin-nav"
-          data-admin-nav-summary
-          class="flex cursor-pointer select-none items-center justify-between gap-3 rounded-md border border-line bg-white/60 px-4 py-3 transition hover:border-brand sm:hidden"
-        >
-          <span class="flex flex-col gap-0.5">
-            <span class="text-[0.625rem] uppercase tracking-[0.25em] text-gray-400">Admin</span>
-            <span class="font-serif text-lg leading-none tracking-tight text-gray-900">{currentLabel}</span>
-          </span>
-          <svg
-            data-admin-nav-chevron
-            class="size-4 shrink-0 text-gray-400 transition-transform duration-300"
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            aria-hidden="true"
-          >
-            <path d="M5 7.5 10 12.5 15 7.5" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </label>
+      {/* Unified RTL Sidebar */}
+      <aside
+        data-admin-sidebar
+        aria-label={fa.admin.panelLabel}
+        class="gg-admin-sidebar fixed inset-y-0 start-0 z-50 flex w-72 max-w-[85vw] translate-x-full invisible pointer-events-none flex-col transition-all duration-200 lg:visible lg:pointer-events-auto lg:sticky lg:top-0 lg:z-20 lg:h-screen lg:w-64 lg:max-w-none lg:shrink-0 lg:translate-x-0"
+      >
+        {/* Brand Header */}
+        <div class="flex h-16 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
+          <a href="/admin" class="flex min-w-0 items-center gap-2.5 rounded-xl hover:opacity-90">
+            <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand text-sm font-black text-on-brand shadow-xs">
+              G+
+            </span>
+            <div class="gg-sidebar-brand-text min-w-0">
+              <p dir="auto" class="truncate text-xs font-extrabold text-ink">{storeName}</p>
+              <p class="truncate text-[11px] font-medium text-muted">مرکز کنترل مدیریت</p>
+            </div>
+          </a>
 
-        <nav
-          data-admin-nav-list
-          class="mt-2 hidden overflow-hidden rounded-md border border-line bg-white/60 text-xs uppercase tracking-widest peer-checked:block sm:mt-0 sm:block sm:space-y-0.5 sm:rounded-none sm:border-0 sm:bg-transparent"
-        >
+          <div class="flex items-center gap-1">
+            <button
+              type="button"
+              data-admin-collapse-btn
+              title="جمع/باز کردن منو"
+              aria-label="جمع یا باز کردن منوی کناری"
+              class="hidden h-8 w-8 items-center justify-center rounded-lg border border-line text-muted transition hover:border-brand hover:text-brand-fg lg:inline-flex"
+            >
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h10.5m-10.5 5.25h16.5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              data-admin-mobile-close
+              aria-label="بستن منو"
+              class="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-line text-muted lg:hidden"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
+
+        {/* Grouped Navigation */}
+        <nav class="flex-1 space-y-5 overflow-y-auto px-3 py-4">
           {
-            nav.map((n) => (
-              <a
-                href={n.href}
-                aria-current={active === n.key ? 'page' : undefined}
-                class={`flex items-center justify-between border-b border-l-2 border-line px-4 py-3 transition last:border-b-0 sm:block sm:border-b-0 sm:px-3 sm:py-1.5 ${
-                  active === n.key
-                    ? 'border-l-brand bg-paper font-medium text-brand sm:bg-transparent'
-                    : 'border-l-transparent text-gray-500 hover:bg-paper hover:text-brand sm:hover:bg-transparent'
-                }`}
-              >
-                <span>{n.label}</span>
-                {active === n.key && (
-                  <span aria-hidden="true" class="size-1.5 rounded-full bg-brand sm:hidden" />
-                )}
-              </a>
+            visibleGroups.map((group) => (
+              <div class="space-y-1">
+                <p class="gg-sidebar-group-title px-3 pb-1 text-[11px] font-bold tracking-wide text-faint">
+                  {group.label}
+                </p>
+                {group.items.map((item) => {
+                  const isActive =
+                    activeNav === item.key ||
+                    (activeNav === 'shipping' && item.key === 'settings');
+                  const iconPath = ICON_PATHS[item.icon] ?? ICON_PATHS.dashboard;
+                  return (
+                    <a
+                      href={item.href}
+                      aria-current={isActive ? 'page' : undefined}
+                      title={item.label}
+                      class={`gg-sidebar-link flex items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition-all ${
+                        isActive
+                          ? 'bg-brand text-on-brand shadow-xs font-semibold'
+                          : 'text-muted hover:bg-surface-elevated hover:text-ink'
+                      }`}
+                    >
+                      <span class="flex min-w-0 items-center gap-2.5">
+                        <svg
+                          class={`size-4 shrink-0 ${isActive ? 'text-on-brand' : 'text-brand-fg/80'}`}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.8"
+                          aria-hidden="true"
+                        >
+                          <path stroke-linecap="round" stroke-linejoin="round" d={iconPath} />
+                        </svg>
+                        <span class="gg-sidebar-label truncate">{item.label}</span>
+                      </span>
+                      {typeof item.badge === 'number' && item.badge > 0 && (
+                        <span
+                          class={`gg-sidebar-badge inline-flex min-w-[1.35rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                            isActive
+                              ? 'bg-white/20 text-on-brand'
+                              : 'bg-coral/15 text-coral'
+                          }`}
+                        >
+                          {toPersianDigits(item.badge)}
+                        </span>
+                      )}
+                    </a>
+                  );
+                })}
+              </div>
             ))
           }
         </nav>
 
-        <div class="mt-4 flex gap-4 text-xs uppercase tracking-widest text-gray-400 sm:mt-8 sm:flex-col sm:gap-2">
-          <a href="/" class="hover:text-brand">&larr; View store</a>
-          {showLogout && <a href="/admin/logout" class="hover:text-brand">Log out</a>}
+        {/* Bottom Storefront Link */}
+        <div class="shrink-0 border-t border-line p-3">
+          <div class="gg-sidebar-brand-text mb-2 hidden items-center justify-between gap-2 rounded-xl bg-surface-elevated px-3 py-2 text-[11px] lg:flex">
+            <span class="inline-flex shrink-0 items-center gap-1.5 text-muted">
+              <span class="h-2 w-2 rounded-full bg-accent"></span>
+              <span>فروشگاه فعال</span>
+            </span>
+            <strong dir="auto" class="truncate font-bold text-ink">{storeName}</strong>
+          </div>
+          <div class="flex flex-col gap-1.5">
+            <a
+              href="/"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="gg-sidebar-link flex items-center justify-center gap-2 rounded-xl border border-line bg-paper px-3 py-2 text-xs font-medium text-ink transition hover:border-brand hover:text-brand-fg"
+            >
+              <svg class="size-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+              </svg>
+              <span class="gg-sidebar-label">{fa.admin.viewStore}</span>
+            </a>
+          </div>
         </div>
       </aside>
 
-      <main class="min-w-0 flex-1">
-        {
-          showSetupNudge && (
-            <a
-              href="/admin/setup"
-              class="mb-6 flex items-center justify-between gap-3 rounded-md border border-brand/30 bg-brand/5 px-4 py-3 text-sm text-gray-700 transition hover:border-brand"
+      {/* Main Column */}
+      <div class="flex min-w-0 flex-1 flex-col">
+        {/* Top Utility Bar */}
+        <header class="gg-admin-topbar sticky top-0 z-30 flex h-16 items-center justify-between gap-3 px-4 sm:px-6">
+          <div class="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              data-admin-mobile-open
+              aria-label={fa.navigation.openMenu}
+              class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-line bg-surface text-ink lg:hidden"
             >
-              <span>
-                <strong class="font-semibold">Finish setting up your store</strong> — store name,
-                payment status, and more.
+              <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+              </svg>
+            </button>
+
+            <nav aria-label="مسیر صفحه" class="flex min-w-0 items-center gap-1.5 text-xs">
+              <a href="/admin" class="hidden text-muted hover:text-brand-fg sm:inline">
+                {fa.admin.panelLabel}
+              </a>
+              <span class="hidden text-faint sm:inline">/</span>
+              {
+                breadcrumbs && breadcrumbs.length > 0 ? (
+                  breadcrumbs.map((bc, idx) => (
+                    <>
+                      {bc.href ? (
+                        <a href={bc.href} class="truncate text-muted hover:text-brand-fg">
+                          {bc.label}
+                        </a>
+                      ) : (
+                        <span class="truncate font-bold text-ink">{bc.label}</span>
+                      )}
+                      {idx !== breadcrumbs.length - 1 && <span class="text-faint">/</span>}
+                    </>
+                  ))
+                ) : (
+                  <span class="truncate font-bold text-ink">{currentLabel}</span>
+                )
+              }
+            </nav>
+          </div>
+
+          <div class="flex items-center gap-2 sm:gap-3">
+            {/* Global Admin Search */}
+            <form action="/admin/search" method="GET" class="hidden md:block">
+              <label class="relative block">
+                <span class="sr-only">جستجو در پنل مدیریت</span>
+                <input
+                  type="search"
+                  name="q"
+                  value={searchInitial}
+                  placeholder="جستجوی سفارش، مشتری، محصول..."
+                  class="w-56 rounded-xl border border-line bg-paper py-1.5 ps-8 pe-3 text-xs text-ink placeholder:text-faint focus:border-brand focus:outline-none lg:w-64"
+                />
+                <svg
+                  class="pointer-events-none absolute start-2.5 top-2 size-3.5 text-faint"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
+                </svg>
+              </label>
+            </form>
+
+            {/* Operational Notifications Dropdown */}
+            <details class="relative">
+              <summary
+                aria-label="اعلان‌های عملیاتی"
+                class="relative flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-xl border border-line bg-surface text-ink transition hover:border-brand"
+              >
+                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0" />
+                </svg>
+                {alerts.totalAttention > 0 && (
+                  <span class="absolute -top-1 -end-1 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-coral px-1 text-[10px] font-bold text-white">
+                    {alerts.totalAttention > 99 ? '۹۹+' : toPersianDigits(alerts.totalAttention)}
+                  </span>
+                )}
+              </summary>
+              <div class="gg-admin-card absolute end-0 mt-2 w-72 p-3 shadow-xl">
+                <p class="mb-2 border-b border-line pb-2 text-xs font-bold text-ink">
+                  صف‌های عملیاتی نیازمند توجه
+                </p>
+                <ul class="space-y-1.5 text-xs">
+                  <li>
+                    <a href="/admin/receipts?status=pending_review" class="flex items-center justify-between rounded-lg px-2.5 py-1.5 hover:bg-surface-elevated">
+                      <span class="text-muted">فیش‌های بانکی در انتظار تایید</span>
+                      <span class="font-bold text-amber">{toPersianDigits(alerts.pendingReceipts)}</span>
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/admin/fulfillment" class="flex items-center justify-between rounded-lg px-2.5 py-1.5 hover:bg-surface-elevated">
+                      <span class="text-muted">سفارش‌های منتظر تحویل</span>
+                      <span class="font-bold text-brand-fg">{toPersianDigits(alerts.pendingFulfillment)}</span>
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/admin/tickets?status=open" class="flex items-center justify-between rounded-lg px-2.5 py-1.5 hover:bg-surface-elevated">
+                      <span class="text-muted">تیکت‌های پشتیبانی باز</span>
+                      <span class="font-bold text-accent-fg">{toPersianDigits(alerts.openTickets)}</span>
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/admin/emails?state=dead" class="flex items-center justify-between rounded-lg px-2.5 py-1.5 hover:bg-surface-elevated">
+                      <span class="text-muted">ایمیل‌های ناموفق (Outbox)</span>
+                      <span class="font-bold text-coral">{toPersianDigits(alerts.failedEmails)}</span>
+                    </a>
+                  </li>
+                  <li>
+                    <a href="/admin/orders#inventory-exceptions" class="flex items-center justify-between rounded-lg px-2.5 py-1.5 hover:bg-surface-elevated">
+                      <span class="text-muted">خطای رزرو موجودی</span>
+                      <span class="font-bold text-coral">{toPersianDigits(alerts.inventoryExceptions)}</span>
+                    </a>
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <ThemeSwitcher scope="admin" compact />
+
+            <div class="hidden items-center gap-2 rounded-xl border border-line bg-surface px-2.5 py-1 sm:flex">
+              <span class="flex h-6 w-6 items-center justify-center rounded-lg bg-brand-soft text-[11px] font-bold text-brand-fg">
+                {(actor.displayName || 'م').slice(0, 1)}
               </span>
-              <span aria-hidden="true" class="text-brand">&rarr;</span>
-            </a>
-          )
-        }
-        {
-          Astro.locals.settings && paymentsInDemoMode(Astro.locals.settings) && (
-            <div class="mb-6 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              <strong class="font-semibold">No real payment method configured.</strong> Only{' '}
-              <strong>Demo checkout</strong> can take orders right now — they're recorded and tagged{' '}
-              <code class="rounded bg-amber-100 px-1 text-xs">demo</code>. Shoppers see setup links
-              for Card &amp; Lightning until you add a key. Demo stays available alongside real rails.
+              <div class="leading-tight">
+                <p class="max-w-[8rem] truncate text-[11px] font-bold text-ink">
+                  {actor.displayName || actor.id}
+                </p>
+                <p class="max-w-[8rem] truncate text-[10px] text-faint">{roleDisplay}</p>
+              </div>
             </div>
-          )
-        }
-        {
-          shippingIssue && (
-            <a
-              href="/admin/shipping"
-              class="mb-6 flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 transition hover:border-red-500"
-            >
-              <span>
-                <strong class="font-semibold">Shipping checkout is blocked by invalid configuration:</strong>{' '}
-                {shippingIssue.reason}
-              </span>
-              <span aria-hidden="true">&rarr;</span>
-            </a>
-          )
-        }
-        {
-          inventoryExceptionCount > 0 && (
-            <a
-              href="/admin/orders#inventory-exceptions"
-              class="mb-6 flex items-center justify-between gap-3 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 transition hover:border-red-500"
-            >
-              <span>
-                <strong class="font-semibold">Inventory needs attention.</strong>{' '}
-                {inventoryExceptionCount} paid order line{inventoryExceptionCount === 1 ? '' : 's'} arrived after its stock hold ended and could not be fully deducted. Open the affected orders and reconcile stock.
-              </span>
-              <span aria-hidden="true">&rarr;</span>
-            </a>
-          )
-        }
-        <slot />
-      </main>
+
+            {
+              showLogout && (
+                <a
+                  href="/admin/logout"
+                  title={fa.admin.logout}
+                  class="inline-flex h-9 items-center gap-1 rounded-xl border border-line bg-surface px-2.5 text-xs font-medium text-muted transition hover:border-coral hover:text-coral"
+                >
+                  <span>خروج</span>
+                </a>
+              )
+            }
+          </div>
+        </header>
+
+        {/* Page Content */}
+        <main class="mx-auto w-full max-w-[1440px] flex-1 px-4 py-6 sm:px-6 lg:px-8">
+          {
+            showSetupNudge && (
+              <a
+                href="/admin/setup"
+                class="gg-status-info mb-5 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm transition-opacity hover:opacity-90"
+              >
+                <span>
+                  <strong class="font-semibold">{fa.admin.setupNudgeTitle}</strong> —{' '}
+                  {fa.admin.setupNudgeDesc}
+                </span>
+                <span aria-hidden="true">&larr;</span>
+              </a>
+            )
+          }
+          {
+            Astro.locals.settings && paymentsInDemoMode(Astro.locals.settings) && (
+              <div class="gg-status-warning mb-5 rounded-xl border px-4 py-3 text-sm">
+                <strong class="font-semibold">{fa.admin.demoModeTitle}</strong>{' '}
+                {fa.admin.demoModeDesc}
+              </div>
+            )
+          }
+          {
+            shippingIssue && (
+              <a
+                href="/admin/shipping"
+                class="gg-status-error mb-5 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm transition-opacity hover:opacity-90"
+              >
+                <span>
+                  <strong class="font-semibold">{fa.admin.shippingIssueTitle}</strong>{' '}
+                  {shippingIssue.reason}
+                </span>
+                <span aria-hidden="true">&larr;</span>
+              </a>
+            )
+          }
+          {
+            alerts.inventoryExceptions > 0 && (
+              <a
+                href="/admin/orders#inventory-exceptions"
+                class="gg-status-error mb-5 flex items-center justify-between gap-3 rounded-xl border px-4 py-3 text-sm transition-opacity hover:opacity-90"
+              >
+                <span>
+                  <strong class="font-semibold">{fa.admin.inventoryAttentionTitle}</strong>{' '}
+                  {alerts.inventoryExceptions === 1
+                    ? fa.admin.inventoryAttentionSingular
+                    : toPersianDigits(fa.admin.inventoryAttentionPlural(alerts.inventoryExceptions))}
+                </span>
+                <span aria-hidden="true">&larr;</span>
+              </a>
+            )
+          }
+
+          {
+            hasAccess ? (
+              <slot />
+            ) : (
+              <div class="gg-admin-card mx-auto my-12 max-w-lg p-8 text-center">
+                <h1 class="text-xl font-bold text-ink">عدم دسترسی به این بخش</h1>
+                <p class="mt-2 text-sm text-muted">
+                  نقش کاربری شما ({roleDisplay}) مجوز مشاهده یا تغییر این ماژول را ندارد.
+                </p>
+                <a href="/admin" class="gg-admin-btn-primary mt-5">
+                  بازگشت به داشبورد
+                </a>
+              </div>
+            )
+          }
+        </main>
+      </div>
     </div>
+
+    <AdminConfirmDialog />
+
+    <script is:inline>
+      (() => {
+        const shell = document.querySelector('[data-admin-shell]');
+        const sidebar = document.querySelector('[data-admin-sidebar]');
+        const backdrop = document.querySelector('[data-admin-backdrop]');
+        const openBtn = document.querySelector('[data-admin-mobile-open]');
+        const closeBtn = document.querySelector('[data-admin-mobile-close]');
+        const collapseBtn = document.querySelector('[data-admin-collapse-btn]');
+        const COLLAPSE_KEY = 'gg_admin_sidebar_collapsed';
+
+        try {
+          if (localStorage.getItem(COLLAPSE_KEY) === '1' && shell) {
+            shell.setAttribute('data-collapsed', 'true');
+          }
+        } catch {}
+
+        collapseBtn?.addEventListener('click', () => {
+          if (!shell) return;
+          const next = shell.getAttribute('data-collapsed') === 'true' ? 'false' : 'true';
+          shell.setAttribute('data-collapsed', next);
+          try {
+            localStorage.setItem(COLLAPSE_KEY, next === 'true' ? '1' : '0');
+          } catch {}
+        });
+
+        const openDrawer = () => {
+          sidebar?.classList.remove('translate-x-full', 'invisible', 'pointer-events-none');
+          backdrop?.classList.remove('hidden');
+          document.body.style.overflow = 'hidden';
+        };
+        const closeDrawer = () => {
+          sidebar?.classList.add('translate-x-full', 'invisible', 'pointer-events-none');
+          backdrop?.classList.add('hidden');
+          document.body.style.overflow = '';
+        };
+
+        openBtn?.addEventListener('click', openDrawer);
+        closeBtn?.addEventListener('click', closeDrawer);
+        backdrop?.addEventListener('click', closeDrawer);
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && backdrop && !backdrop.classList.contains('hidden')) {
+            closeDrawer();
+          }
+        });
+      })();
+    </script>
   </body>
 </html>

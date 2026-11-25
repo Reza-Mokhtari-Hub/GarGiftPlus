@@ -48,11 +48,29 @@ export type SettingKey =
   | 'email_notify_to' // owner "new order" alert recipient; absent = store.config.ts notifyTo
   | 'turnstile_enabled' // '1' = bot challenge on (admin login + customer sign-in); absent = off
   | 'turnstile_site_key' // Turnstile public sitekey
-  | 'payment_provider' // 'stripe' | 'lightning' | 'opennode' | 'demo'; absent = stripe
+  | 'payment_provider' // 'stripe' | 'lightning' | 'opennode' | 'zarinpal' | 'zibal' | 'bank_transfer' | 'wallet' | 'demo'; absent = stripe
   | 'lightning_backend' // 'phoenixd' | 'lnbits'; absent = phoenixd
   | 'lnbits_url' // LNbits node URL (the invoice/read key is in the vault)
   | 'phoenixd_url' // phoenixd node URL (the password is in the vault)
   | 'opennode_api_url' // OpenNode API base override (testnet); absent = live default
+  | 'zarinpal_sandbox' // '1' = use sandbox.zarinpal.com
+  | 'zibal_sandbox' // '1' = use Zibal sandbox ('zibal' merchant)
+  | 'bank_transfer_enabled' // '0' = disable card-to-card/bank transfer; absent/'1' = enabled when active bank accounts exist
+  | 'bank_accounts_ready' // '1' when at least one active bank account exists in bank_accounts
+  | 'wallet_enabled' // '0' = disable customer wallet; absent/'1' = enabled
+  | 'wallet_min_topup' // minimum integer Toman top-up
+  | 'wallet_max_topup' // maximum integer Toman top-up
+  | 'store_currency' // runtime currency override ('irt' | 'irr' | 'usd')
+  | 'admin_default_role' // fallback RBAC role when CF Access/primary session doesn't specify one
+  | 'admin_session_ttl_hours' // admin login cookie lifetime in hours
+  | 'customer_session_ttl_days' // customer magic-link session lifetime in days
+  | 'theme_appearance_config' // validated JSON customization for storefront theme appearance
+  | 'seo_meta_title' // default storefront SEO title suffix/override
+  | 'seo_meta_description' // default storefront meta description
+  | 'seo_og_image_key' // default storefront OpenGraph image media key
+  | 'seo_robots_disallow_admin' // '0' to customize, default '1' keeps /admin Disallow
+  | 'email_reply_to' // optional Reply-To email address
+  | 'email_test_mode' // '1' logs or labels emails cleanly without breaking flows
   | `enc:${string}`; // AES-GCM-encrypted secret (see features/secrets/store.ts), e.g. 'enc:stripe_secret_key'. Never loaded as plaintext into locals.
 
 /** The storefront features that can be flipped at runtime (default on). */
@@ -121,7 +139,15 @@ export interface StoreSettings {
   /** Turnstile public sitekey, or null. (The secret lives in the vault.) */
   turnstileSiteKey: string | null;
   /** Default payment rail (Settings → Payments). Default 'stripe'. */
-  paymentProvider: 'stripe' | 'lightning' | 'opennode' | 'demo';
+  paymentProvider:
+    | 'stripe'
+    | 'lightning'
+    | 'opennode'
+    | 'zarinpal'
+    | 'zibal'
+    | 'bank_transfer'
+    | 'wallet'
+    | 'demo';
   /** Self-hosted Lightning node (when provider/rail is lightning). Default 'phoenixd'. */
   lightningBackend: 'phoenixd' | 'lnbits';
   /** Lightning node URLs, or null. (The key/password live in the vault.) */
@@ -129,6 +155,40 @@ export interface StoreSettings {
   phoenixdUrl: string | null;
   /** OpenNode API base override (testnet), or null for the live default. */
   opennodeApiUrl: string | null;
+  /** Zarinpal sandbox mode ('1' = sandbox.zarinpal.com). */
+  zarinpalSandbox: boolean;
+  /** Zibal sandbox mode ('1' = merchant 'zibal'). */
+  zibalSandbox: boolean;
+  /** Bank Transfer (Card-to-Card) enabled toggle (default true). */
+  bankTransferEnabled: boolean;
+  /** True when at least one active destination bank account is configured. */
+  hasActiveBankAccounts: boolean;
+  /** Customer Wallet enabled toggle (default true). */
+  walletEnabled: boolean;
+  /** True when wallet_enabled was explicitly turned on ('1') in settings. */
+  walletExplicitlyEnabled: boolean;
+  /** Minimum wallet top-up in integer Toman (default 10,000). */
+  walletMinTopup: number;
+  /** Maximum wallet top-up in integer Toman (default 50,000,000). */
+  walletMaxTopup: number;
+  /** Optional runtime store currency ('irt' | 'irr' | 'usd'). */
+  storeCurrency: string | null;
+  /** Default RBAC role fallback when not derived from operator user row. */
+  adminDefaultRole: string | null;
+  /** Admin cookie session TTL in hours (default 168 = 7 days). */
+  adminSessionTtlHours: number;
+  /** Customer session TTL in days (default 30 days). */
+  customerSessionTtlDays: number;
+  /** Raw validated storefront theme appearance JSON string. */
+  themeAppearanceConfig: string | null;
+  /** Storefront SEO defaults. */
+  seoMetaTitle: string | null;
+  seoMetaDescription: string | null;
+  seoOgImageKey: string | null;
+  seoRobotsDisallowAdmin: boolean;
+  /** Email settings extensions. */
+  emailReplyTo: string | null;
+  emailTestMode: boolean;
 }
 
 /** One setting value, or null if unset. */
@@ -177,6 +237,9 @@ export function parseStoreSettings(
   results: Array<{ key: string; value: string }>,
 ): StoreSettings {
   const map = new Map((results ?? []).map((r) => [r.key, r.value]));
+  const rawMinTopup = Number(map.get('wallet_min_topup') ?? '');
+  const rawMaxTopup = Number(map.get('wallet_max_topup') ?? '');
+  const rawCurrency = (map.get('store_currency') ?? '').trim().toLowerCase();
   return {
     setupComplete: map.get('setup_complete') === '1',
     storeName: map.get('store_name') ?? null,
@@ -220,12 +283,43 @@ export function parseStoreSettings(
     paymentProvider:
       map.get('payment_provider') === 'lightning' ? 'lightning'
       : map.get('payment_provider') === 'opennode' ? 'opennode'
+      : map.get('payment_provider') === 'zarinpal' ? 'zarinpal'
+      : map.get('payment_provider') === 'zibal' ? 'zibal'
+      : map.get('payment_provider') === 'bank_transfer' ? 'bank_transfer'
+      : map.get('payment_provider') === 'wallet' ? 'wallet'
       : map.get('payment_provider') === 'demo' ? 'demo'
       : 'stripe',
     lightningBackend: map.get('lightning_backend') === 'lnbits' ? 'lnbits' : 'phoenixd',
     lnbitsUrl: map.get('lnbits_url') ?? null,
     phoenixdUrl: map.get('phoenixd_url') ?? null,
     opennodeApiUrl: map.get('opennode_api_url') ?? null,
+    zarinpalSandbox: map.get('zarinpal_sandbox') === '1',
+    zibalSandbox: map.get('zibal_sandbox') === '1',
+    bankTransferEnabled: map.get('bank_transfer_enabled') !== '0',
+    hasActiveBankAccounts: map.get('bank_accounts_ready') === '1',
+    walletEnabled: map.get('wallet_enabled') !== '0',
+    walletExplicitlyEnabled: map.get('wallet_enabled') === '1',
+    walletMinTopup:
+      Number.isSafeInteger(rawMinTopup) && rawMinTopup > 0 ? rawMinTopup : 10_000,
+    walletMaxTopup:
+      Number.isSafeInteger(rawMaxTopup) && rawMaxTopup >= 10_000 ? rawMaxTopup : 50_000_000,
+    storeCurrency: /^[a-z]{3}$/.test(rawCurrency) ? rawCurrency : null,
+    adminDefaultRole: map.get('admin_default_role') ?? null,
+    adminSessionTtlHours: (() => {
+      const n = Number(map.get('admin_session_ttl_hours') ?? '');
+      return Number.isSafeInteger(n) && n >= 1 && n <= 720 ? n : 168;
+    })(),
+    customerSessionTtlDays: (() => {
+      const n = Number(map.get('customer_session_ttl_days') ?? '');
+      return Number.isSafeInteger(n) && n >= 1 && n <= 180 ? n : 30;
+    })(),
+    themeAppearanceConfig: map.get('theme_appearance_config') ?? null,
+    seoMetaTitle: map.get('seo_meta_title') ?? null,
+    seoMetaDescription: map.get('seo_meta_description') ?? null,
+    seoOgImageKey: map.get('seo_og_image_key') ?? null,
+    seoRobotsDisallowAdmin: map.get('seo_robots_disallow_admin') !== '0',
+    emailReplyTo: map.get('email_reply_to') ?? null,
+    emailTestMode: map.get('email_test_mode') === '1',
   };
 }
 

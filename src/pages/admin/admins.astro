@@ -1,0 +1,224 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminEmptyState from '../../components/admin/AdminEmptyState.astro';
+import { getConfig } from '../../config';
+import { resolveAdminActor } from '../../features/fulfillment/actor';
+import {
+  ADMIN_ALL_PERMISSIONS,
+  ADMIN_ROLES,
+  ADMIN_ROLE_DESCRIPTIONS,
+  ADMIN_ROLE_LABELS,
+  PERMISSION_LABELS,
+  canAssignAdminRole,
+  getPermissionsForRole,
+} from '../../features/fulfillment/permissions';
+import { listAdminUsers } from '../../features/auth/rbac';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+const actor = await resolveAdminActor(env.DB, {
+  locals: Astro.locals,
+  cookies: Astro.cookies,
+  request: Astro.request,
+  signingSecret: env.AUTH_SECRET,
+});
+
+const admins = await listAdminUsers(env.DB);
+const assignableRoles = ADMIN_ROLES.filter((role) => canAssignAdminRole(actor, role));
+const grantablePermissions = ADMIN_ALL_PERMISSIONS.filter((p) => actor.permissions.has(p));
+const timeZone = Astro.locals.settings?.timeZone ?? getConfig().timeZone;
+const msg = Astro.url.searchParams.get('msg');
+const err = Astro.url.searchParams.get('error');
+---
+
+<AdminLayout
+  title="مدیران و سطوح دسترسی (RBAC)"
+  active="admins"
+  requiredPermission="admins.manage"
+  breadcrumbs={[{ label: 'سیستم و گزارش‌ها' }, { label: 'مدیران و دسترسی‌ها' }]}
+>
+  <AdminPageHeader
+    title="مدیریت اپراتورها و سطوح دسترسی (RBAC)"
+    subtitle="تعریف مدیران چندگانه، تعیین نقش‌های تخصصی، صدور مجوزهای اضافی و تعلیق آنی نشست‌ها"
+    badge={`${toPersianDigits(admins.length)} اپراتور`}
+  />
+
+  {msg && <div class="gg-status-success mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{msg}</div>}
+  {err && <div class="gg-status-error mb-5 rounded-xl border px-4 py-3 text-xs font-semibold">{err}</div>}
+
+  {/* معرفی نقش‌ها */}
+  <details class="gg-admin-card mb-6 p-5">
+    <summary class="cursor-pointer text-sm font-bold text-ink">
+      مشاهده راهنمای نقش‌ها و مجوزهای استاندارد پنل GarGift+
+    </summary>
+    <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {ADMIN_ROLES.filter((r) => r !== 'none').map((role) => (
+        <div class="rounded-xl border border-line bg-paper p-3.5 text-xs">
+          <p class="font-bold text-ink">{ADMIN_ROLE_LABELS[role]}</p>
+          <p class="mt-1 leading-5 text-muted">{ADMIN_ROLE_DESCRIPTIONS[role]}</p>
+          <p class="mt-2 text-[11px] font-semibold text-brand-fg">
+            {toPersianDigits(getPermissionsForRole(role).size)} مجوز فعال
+          </p>
+        </div>
+      ))}
+    </div>
+  </details>
+
+  {/* فرم افزودن مدیر جدید */}
+  <section class="gg-admin-card mb-6 p-5">
+    <h2 class="mb-4 text-sm font-bold text-ink">افزودن مدیر یا اپراتور جدید</h2>
+    <form method="POST" action="/api/admin/admins" class="space-y-4">
+      <input type="hidden" name="_action" value="create" />
+      <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div>
+          <label for="new-username" class="mb-1 block text-xs font-medium text-muted">نام کاربری (انگلیسی)</label>
+          <input id="new-username" type="text" name="username" required pattern="[a-z0-9._-]{3,40}" placeholder="ops_reza" class="gg-admin-input ltr-inline font-mono text-xs" />
+        </div>
+        <div>
+          <label for="new-email" class="mb-1 block text-xs font-medium text-muted">ایمیل سازمانی</label>
+          <input id="new-email" type="email" name="email" required placeholder="reza@gargift.ir" class="gg-admin-input ltr-inline font-mono text-xs" />
+        </div>
+        <div>
+          <label for="new-name" class="mb-1 block text-xs font-medium text-muted">نام نمایشی</label>
+          <input id="new-name" type="text" name="display_name" required placeholder="رضا محمدی" class="gg-admin-input text-xs" />
+        </div>
+        <div>
+          <label for="new-role" class="mb-1 block text-xs font-medium text-muted">نقش اصلی</label>
+          <select id="new-role" name="role" class="gg-admin-input text-xs">
+            {assignableRoles.map((r) => (
+              <option value={r} selected={r === 'fulfillment_operator'}>{ADMIN_ROLE_LABELS[r]}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label for="new-pass" class="mb-1 block text-xs font-medium text-muted">گذرواژه ورود (حداقل ۸ کاراکتر)</label>
+          <input id="new-pass" type="password" name="password" minlength="8" autocomplete="new-password" placeholder="••••••••" class="gg-admin-input ltr-inline font-mono text-xs" />
+        </div>
+      </div>
+
+      <details class="rounded-xl border border-line bg-paper p-3">
+        <summary class="cursor-pointer text-xs font-semibold text-muted">
+          افزودن مجوزهای اختصاصی مازاد بر نقش (اختیاری)
+        </summary>
+        <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {grantablePermissions.map((perm) => (
+            <label class="flex items-center gap-2 text-[11px] text-ink">
+              <input type="checkbox" name="custom_permissions" value={perm} class="accent-brand" />
+              <span>{PERMISSION_LABELS[perm]}</span>
+            </label>
+          ))}
+        </div>
+      </details>
+
+      <button type="submit" class="gg-admin-btn-primary text-xs">
+        + ایجاد حساب مدیر
+      </button>
+    </form>
+  </section>
+
+  {/* جدول مدیران */}
+  <section class="gg-admin-card overflow-hidden p-5">
+    <h2 class="mb-4 text-sm font-bold text-ink">فهرست اپراتورها و مدیران ثبت‌شده</h2>
+    {admins.length === 0 ? (
+      <AdminEmptyState
+        title="هنوز اپراتور جداگانه‌ای ثبت نشده است"
+        description="در حال حاضر دسترسی از طریق گذرواژه مالک اصلی پنل انجام می‌شود. از فرم بالا برای ایجاد مدیران جدید با دسترسی کنترل‌شده استفاده کنید."
+      />
+    ) : (
+      <div class="space-y-4">
+        {admins.map((adm) => {
+          const isSelf = Boolean(actor.publicId && actor.publicId === adm.public_id);
+          return (
+            <div class="rounded-xl border border-line bg-paper p-4">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-sm font-extrabold text-ink">{adm.display_name}</span>
+                    <span class="ltr-inline font-mono text-xs text-brand-fg">@{adm.username}</span>
+                    <span class="ltr-inline font-mono text-xs text-muted">{adm.email}</span>
+                    <span class={`rounded-md px-2 py-0.5 text-[10px] font-bold ${adm.is_active === 1 ? 'gg-status-success' : 'gg-status-error'}`}>
+                      {adm.is_active === 1 ? 'فعال' : 'مسدود'}
+                    </span>
+                    {isSelf && (
+                      <span class="rounded-md bg-brand-soft px-2 py-0.5 text-[10px] font-bold text-brand-fg">
+                        حساب فعلی شما
+                      </span>
+                    )}
+                  </div>
+                  <p class="text-[11px] text-muted">
+                    نقش: <strong class="text-ink">{ADMIN_ROLE_LABELS[adm.role]}</strong> • آخرین ورود:{' '}
+                    {adm.last_login_at ? formatJalaliDateTime(adm.last_login_at, { timeZone }) : 'هنوز وارد نشده'}
+                    {adm.custom_permissions.length > 0 && ` • +${toPersianDigits(adm.custom_permissions.length)} مجوز ویژه`}
+                  </p>
+                </div>
+                <span class="ltr-inline font-mono text-[10px] text-faint">{adm.public_id}</span>
+              </div>
+
+              {!isSelf && (
+                <details class="mt-3 border-t border-line pt-3">
+                  <summary class="cursor-pointer text-xs font-semibold text-brand-fg">
+                    ویرایش نقش، وضعیت، مجوزها و بازنشانی رمز
+                  </summary>
+                  <form method="POST" action="/api/admin/admins" class="mt-3 space-y-3">
+                    <input type="hidden" name="_action" value="update" />
+                    <input type="hidden" name="public_id" value={adm.public_id} />
+                    <input type="hidden" name="custom_permissions_submitted" value="1" />
+
+                    <div class="grid gap-3 sm:grid-cols-4">
+                      <div>
+                        <label class="mb-1 block text-[11px] text-muted">نام نمایشی</label>
+                        <input type="text" name="display_name" value={adm.display_name} required class="gg-admin-input py-1.5 text-xs" />
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-[11px] text-muted">نقش</label>
+                        <select name="role" class="gg-admin-input py-1.5 text-xs">
+                          {assignableRoles.map((r) => (
+                            <option value={r} selected={adm.role === r}>{ADMIN_ROLE_LABELS[r]}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label class="mb-1 block text-[11px] text-muted">رمز عبور جدید (اختیاری)</label>
+                        <input type="password" name="new_password" minlength="8" autocomplete="new-password" placeholder="خالی = بدون تغییر" class="gg-admin-input ltr-inline py-1.5 font-mono text-xs" />
+                      </div>
+                      <div class="flex items-end pb-1">
+                        <label class="flex items-center gap-2 text-xs text-ink">
+                          <input type="checkbox" name="is_active" value="1" checked={adm.is_active === 1} class="accent-brand" />
+                          <span>حساب فعال باشد</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="grid gap-2 rounded-xl border border-line bg-surface p-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {grantablePermissions.map((perm) => (
+                        <label class="flex items-center gap-2 text-[11px] text-muted">
+                          <input
+                            type="checkbox"
+                            name="custom_permissions"
+                            value={perm}
+                            checked={adm.custom_permissions.includes(perm)}
+                            class="accent-brand"
+                          />
+                          <span>{PERMISSION_LABELS[perm]}</span>
+                        </label>
+                      ))}
+                    </div>
+
+                    <button
+                      type="submit"
+                      data-confirm-message="تغییرات سطح دسترسی یا رمز این اپراتور ذخیره و نشست‌های قدیمی باطل شود؟"
+                      class="gg-admin-btn-primary py-1.5 text-xs"
+                    >
+                      ذخیره تغییرات مدیر
+                    </button>
+                  </form>
+                </details>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </section>
+</AdminLayout>

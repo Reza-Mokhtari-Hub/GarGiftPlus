@@ -1,48 +1,82 @@
 import type { ProductFields } from './db';
 import { toMinorUnits } from '../../money';
 import { toGrams, type WeightUnit } from '../shipping/weight';
+import { toEnglishDigits } from '../../lib/format.ts';
+import { parseFaqForm } from './customFields.ts';
 
 export interface ProductFormOptions {
   /** Admin's display unit. Storage is always grams. */
   unit?: WeightUnit;
   /**
    * True when at least one enabled zone prices by weight with no flat fallback —
-   * i.e. when a missing weight would make this product unsellable. The merchant is
-   * told at the field rather than discovering it as lost checkouts.
+   * i.e. when a missing weight would make this product unsellable.
    */
   requireWeight?: boolean;
+  /** Store default currency fallback when the form omits `currency`. */
+  defaultCurrency?: string;
 }
 
 /**
- * Parse + validate the scalar product form fields. Prices arrive in major units
- * (e.g. dollars) and are stored as integer minor units, scaled by the product's
- * currency (×100 for USD, ×1 for JPY). Weight arrives in the store's display unit
- * and is stored as integer grams. The image upload is handled by the endpoint, not
- * here. Returns either the clean fields or a user-facing error.
+ * Parse + validate the scalar product form fields.
  */
 export function parseProductForm(
   form: FormData,
   options: ProductFormOptions = {},
 ): { data: ProductFields } | { error: string } {
-  const { unit = 'g', requireWeight = false } = options;
+  const { unit = 'g', requireWeight = false, defaultCurrency = 'usd' } = options;
 
   const name = String(form.get('name') ?? '').trim();
-  if (!name) return { error: 'Name is required.' };
+  if (!name) return { error: 'عنوان محصول الزامی است.' };
 
-  const price = Number(String(form.get('price') ?? '').trim());
-  if (!Number.isFinite(price) || price < 0) {
-    return { error: 'Price must be a non-negative number.' };
+  const rawPrice = toEnglishDigits(String(form.get('price') ?? '').trim());
+  const price = Number(rawPrice);
+  if (rawPrice === '' || !Number.isFinite(price) || price < 0) {
+    return { error: 'قیمت باید یک عدد غیرمنفی معتبر باشد.' };
   }
 
-  const stock = Number(String(form.get('stock') ?? '0').trim());
+  const rawStock = toEnglishDigits(String(form.get('stock') ?? '0').trim() || '0');
+  const stock = Number(rawStock);
   if (!Number.isInteger(stock) || stock < 0) {
-    return { error: 'Stock must be a non-negative whole number.' };
+    return { error: 'موجودی باید عدد صحیح نامنفی باشد.' };
   }
 
-  const currency = String(form.get('currency') ?? 'usd').trim().toLowerCase() || 'usd';
-  // Scale by the chosen currency's minor units (so 1000 JPY stores as 1000, not 100000).
+  const currency =
+    String(form.get('currency') ?? defaultCurrency).trim().toLowerCase() ||
+    defaultCurrency.trim().toLowerCase() ||
+    'usd';
   const price_cents = toMinorUnits(price, currency);
+
+  // Optional compare-at (original) price for showing discount badge.
+  const rawCompare = toEnglishDigits(String(form.get('compare_price') ?? '').trim());
+  let compare_price_cents: number | null = null;
+  if (rawCompare !== '') {
+    const cmp = Number(rawCompare);
+    if (!Number.isFinite(cmp) || cmp < 0) {
+      return { error: 'قیمت قبل از تخفیف باید عدد غیرمنفی باشد.' };
+    }
+    compare_price_cents = cmp > 0 ? toMinorUnits(cmp, currency) : null;
+  }
+
   const description = String(form.get('description') ?? '').trim() || null;
+  const short_description = String(form.get('short_description') ?? '').trim() || null;
+  const brand = String(form.get('brand') ?? '').trim() || null;
+  const region = String(form.get('region') ?? '').trim() || null;
+  const badge = String(form.get('badge') ?? '').trim() || null;
+  const instructions = String(form.get('instructions') ?? '').trim() || null;
+  const estimated_delivery = String(form.get('estimated_delivery') ?? '').trim() || null;
+  const seo_title = String(form.get('seo_title') ?? '').trim() || null;
+  const seo_description = String(form.get('seo_description') ?? '').trim() || null;
+
+  const is_featured = form.get('is_featured') != null ? 1 : 0;
+  const rawOrder = toEnglishDigits(String(form.get('display_order') ?? '0').trim() || '0');
+  const display_order = Number(rawOrder);
+  if (!Number.isInteger(display_order)) {
+    return { error: 'ترتیب نمایش باید عدد صحیح باشد.' };
+  }
+
+  const faqParsed = parseFaqForm(form);
+  if ('error' in faqParsed) return { error: faqParsed.error };
+
   // Unchecked checkboxes submit nothing, so absence means inactive.
   const active = form.get('active') != null ? 1 : 0;
   const requires_shipping = form.get('requires_shipping') != null ? 1 : 0;
@@ -56,13 +90,33 @@ export function parseProductForm(
   } else if (requireWeight && requires_shipping === 1 && active === 1) {
     return {
       error:
-        'This product needs a shipping weight: every shipping zone prices by weight, ' +
-        'so without one it cannot be purchased.',
+        'برای کالاهای نیازمند ارسال پستی، وارد کردن وزن الزامی است.',
     };
   }
 
   return {
-    data: { name, description, price_cents, currency, stock, active, weight_grams, requires_shipping },
+    data: {
+      name,
+      description,
+      price_cents,
+      currency,
+      stock,
+      active,
+      weight_grams,
+      requires_shipping,
+      short_description,
+      brand,
+      region,
+      badge,
+      is_featured,
+      display_order,
+      faq_json: faqParsed.faqJson,
+      instructions,
+      seo_title,
+      seo_description,
+      compare_price_cents,
+      estimated_delivery,
+    },
   };
 }
 
@@ -72,12 +126,12 @@ function weightFieldError(
 ): string {
   switch (reason) {
     case 'negative':
-      return 'Weight cannot be negative.';
+      return 'وزن نمی‌تواند منفی باشد.';
     case 'precision':
-      return `Weight has too many decimal places for ${unit}.`;
+      return `تعداد رقم اعشار وزن برای واحد ${unit} بیش از حد مجاز است.`;
     case 'over_limit':
-      return 'Weight is too heavy for parcel shipping.';
+      return 'وزن واردشده برای ارسال بسته‌ای بیش از حد مجاز است.';
     default:
-      return 'Weight must be a number.';
+      return 'وزن باید یک عدد معتبر باشد.';
   }
 }

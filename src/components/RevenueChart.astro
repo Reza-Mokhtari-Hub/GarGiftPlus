@@ -1,6 +1,7 @@
 ---
 import { formatPrice } from '../config';
 import type { DailyTotal } from '../features/orders/db';
+import { toPersianDigits } from '../lib/format';
 
 interface Props {
   data: DailyTotal[];
@@ -16,16 +17,16 @@ const n = Math.max(data.length, 1);
 const max = Math.max(1, ...data.map((d) => d.total_cents));
 const total = data.reduce((s, d) => s + d.total_cents, 0);
 const orders = data.reduce((s, d) => s + d.orders, 0);
-const md = (day: string) => day.slice(5); // MM-DD
+const md = (day: string) => toPersianDigits(day.slice(5)); // MM-DD
 ---
 
 <div>
-  <div class="mb-3 flex items-baseline justify-between">
-    <h2 class="text-xs uppercase tracking-widest text-faint">
-      Revenue &middot; last {data.length} days
+  <div class="mb-3 flex items-baseline justify-between gap-3">
+    <h2 class="text-xs font-semibold text-faint">
+      درآمد &middot; {toPersianDigits(data.length)} روز گذشته
     </h2>
-    <span class="text-xs text-faint">
-      {formatPrice(total)} &middot; {orders} {orders === 1 ? 'order' : 'orders'}
+    <span class="text-xs tabular-nums text-faint">
+      {formatPrice(total)} &middot; {toPersianDigits(orders)} سفارش
     </span>
   </div>
 
@@ -34,21 +35,21 @@ const md = (day: string) => day.slice(5); // MM-DD
     preserveAspectRatio="none"
     class="h-40 w-full"
     role="img"
-    aria-label={`Daily revenue for the last ${data.length} days`}
+    aria-label={`نمودار درآمد روزانه در ${toPersianDigits(data.length)} روز گذشته`}
   >
     {
       data.map((d, i) => {
         const h = (d.total_cents / max) * H;
         return (
           <rect x={i + 0.12} y={H - h} width={0.76} height={h} class="fill-brand">
-            <title>{`${d.day}: ${formatPrice(d.total_cents)} · ${d.orders} ${d.orders === 1 ? 'order' : 'orders'}`}</title>
+            <title>{`${d.day}: ${formatPrice(d.total_cents)} · ${toPersianDigits(d.orders)} سفارش`}</title>
           </rect>
         );
       })
     }
   </svg>
 
-  <div class="mt-2 flex justify-between text-xs tabular-nums text-faint">
+  <div class="mt-2 flex justify-between text-xs tabular-nums text-faint" dir="ltr">
     <span>{data[0] && md(data[0].day)}</span>
     <span>{data[data.length - 1] && md(data[data.length - 1].day)}</span>
   </div>

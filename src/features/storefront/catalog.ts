@@ -1,13 +1,21 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { listProducts, countProducts } from '../products/db';
+import {
+  listFilteredStoreProducts,
+  countFilteredStoreProducts,
+  type StoreCatalogFilter,
+} from '../products/db';
 import { listCategories, childrenOf } from '../categories/db';
 import { orderByClause, parseStoreSortQuery, STORE_SORTS } from '../products/sort';
 import { MAX_PUBLIC_PAGE, paginate, queryHref } from '../../pagination';
 import { addCacheTags, productCacheTags } from '../cache/tags';
 import type { ImageDelivery } from '../products/image';
+import { toMinorUnits } from '../../money';
+import { toEnglishDigits, toPersianDigits } from '../../lib/format';
+import { fa } from '../../i18n/fa';
 import { buildProductCard } from './productCard';
 import type {
   CatalogPageModel,
+  StorefrontCatalogFilters,
   StorefrontPaginationItem,
   StorefrontPaginationModel,
   StorefrontSortModel,
@@ -16,37 +24,34 @@ import type {
 /**
  * The catalog loader.
  *
- * Everything a catalog template must not do lives here: parsing and bounding
- * query input, reading D1, tagging the response for cache invalidation, and
- * constructing URLs that keep the catalog's query semantics intact. The template
- * receives a finished model and decides only how it looks.
+ * Parses and bounds filter/sort/page queries, reads D1, attaches cache tags,
+ * and constructs clean canonical URLs for templates.
  */
 
 const PAGE_SIZE = 24;
-
-/** Matches the card slot in the default three-column grid. */
 const CARD_SIZES = '(min-width: 1024px) 352px, calc(50vw - 36px)';
 
-/**
- * Sort links deliberately drop `page`: changing the ordering while holding page
- * 7 lands the shopper in the middle of a list they have not seen.
- *
- * They always carry an explicit `sort` and `dir`, including the defaults — so
- * the default option links to `?sort=newest&dir=desc` rather than to the bare
- * path. That is pre-existing behavior, preserved here deliberately; the bare
- * path renders the same list, which is a duplicate-URL question worth revisiting
- * separately rather than changing inside an extraction.
- */
-export function buildSortModel(base: string, sort: string, dir: 'asc' | 'desc'): StorefrontSortModel {
+function parseFilterPriceInput(raw: string | null, currency: string): { text: string; cents: number | null } {
+  const cleaned = toEnglishDigits((raw ?? '').trim()).replace(/[,٬\s]/g, '');
+  if (!cleaned) return { text: '', cents: null };
+  const n = Number(cleaned);
+  if (!Number.isFinite(n) || n < 0) return { text: '', cents: null };
+  return { text: String(Math.round(n)), cents: toMinorUnits(n, currency) };
+}
+
+export function buildSortModel(
+  base: string,
+  sort: string,
+  dir: 'asc' | 'desc',
+  extraParams: Record<string, string | number | undefined> = {},
+): StorefrontSortModel {
   return {
     options: STORE_SORTS.map((option) => {
       const current = sort === option.sort;
-      // Re-clicking the active field flips it; an inactive field applies its own
-      // natural direction (price ascending, newest descending).
       const nextDir = current ? (dir === 'asc' ? 'desc' : 'asc') : option.dir;
       return {
         label: option.label,
-        href: queryHref(base, { sort: option.sort, dir: nextDir }),
+        href: queryHref(base, { ...extraParams, sort: option.sort, dir: nextDir }),
         current,
         direction: current ? dir : null,
       };
@@ -54,7 +59,6 @@ export function buildSortModel(base: string, sort: string, dir: 'asc' | 'desc'):
   };
 }
 
-/** Compact page list with gaps, e.g. 1 … 4 5 6 … 20. */
 function windowed(current: number, total: number): (number | null)[] {
   const keep = new Set<number>([1, total, current, current - 1, current + 1]);
   const pages = [...keep].filter((p) => p >= 1 && p <= total).sort((a, b) => a - b);
@@ -74,11 +78,11 @@ export function buildPaginationModel(
   totalPages: number,
   sort: string,
   dir: 'asc' | 'desc',
+  extraParams: Record<string, string | number | undefined> = {},
 ): StorefrontPaginationModel {
-  // Defaults are omitted from the query so page 1 of the default sort is the
-  // bare path — the same URL the canonical points at.
   const hrefFor = (target: number) =>
     queryHref(base, {
+      ...extraParams,
       sort: sort === 'newest' ? undefined : sort,
       dir: dir === 'desc' ? undefined : dir,
       page: target > 1 ? target : undefined,
@@ -103,15 +107,11 @@ export function buildPaginationModel(
 }
 
 export interface CatalogPageOptions {
-  /** The path currently rendering — sort and page links stay on it, so the
-   *  catalog works at both `/` and `/products` without hardcoding either. */
   base: string;
   searchParams: URLSearchParams;
-  /** Response headers, so product cache tags are attached where they belong. */
   responseHeaders: Headers;
   imageBaseUrl: string;
   delivery: ImageDelivery | undefined;
-  /** The store's configured currency, for price display. */
   currency: string;
   eyebrow: string;
   heading: string;
@@ -127,38 +127,126 @@ export async function loadCatalogPage(
   );
   const order = orderByClause(sort, dir);
 
-  const [total, categories] = await Promise.all([countProducts(db), listCategories(db)]);
+  const selectedCategory = (options.searchParams.get('category') ?? '').trim();
+  const minParsed = parseFilterPriceInput(options.searchParams.get('min_price'), options.currency);
+  const maxParsed = parseFilterPriceInput(options.searchParams.get('max_price'), options.currency);
+  const q = (options.searchParams.get('q') ?? '').trim().slice(0, 100);
+  const featuredParam = options.searchParams.get('featured');
+  const discountedParam = options.searchParams.get('discounted');
+  const featuredOnly = featuredParam === '1' || featuredParam === 'true';
+  const discountedOnly = discountedParam === '1' || discountedParam === 'true';
+
+  const dbFilter: StoreCatalogFilter = {
+    categorySlug: selectedCategory || null,
+    minPriceCents: minParsed.cents,
+    maxPriceCents: maxParsed.cents,
+    searchQuery: q || null,
+    featuredOnly,
+    discountedOnly,
+  };
+
+  const extraParams: Record<string, string | undefined> = {
+    category: selectedCategory || undefined,
+    min_price: minParsed.text || undefined,
+    max_price: maxParsed.text || undefined,
+    q: q || undefined,
+    featured: featuredOnly ? '1' : undefined,
+    discounted: discountedOnly ? '1' : undefined,
+  };
+
+  const [total, categories] = await Promise.all([
+    countFilteredStoreProducts(db, dbFilter),
+    listCategories(db),
+  ]);
   const { page, offset, totalPages } = paginate(
     options.searchParams,
     total,
     PAGE_SIZE,
     MAX_PUBLIC_PAGE,
   );
-  const products = await listProducts(db, PAGE_SIZE, offset, order);
+  const products = await listFilteredStoreProducts(db, dbFilter, PAGE_SIZE, offset, order);
 
   addCacheTags(
     options.responseHeaders,
     productCacheTags(products.map((product) => product.public_id)),
   );
 
+  // Enrich product cards with variant summary when product_variants rows exist
+  const variantSummaryByProduct = new Map<number, { count: number; labels: string[] }>();
+  if (products.length > 0) {
+    try {
+      const ph = products.map(() => '?').join(',');
+      const { results: vRows } = await db
+        .prepare(
+          `SELECT product_id, label FROM product_variants
+            WHERE product_id IN (${ph})
+            ORDER BY product_id ASC, position ASC, id ASC`,
+        )
+        .bind(...products.map((p) => p.id))
+        .all<{ product_id: number; label: string }>();
+      for (const r of vRows ?? []) {
+        const entry = variantSummaryByProduct.get(r.product_id) ?? { count: 0, labels: [] };
+        entry.count += 1;
+        if (entry.labels.length < 2) entry.labels.push(r.label);
+        variantSummaryByProduct.set(r.product_id, entry);
+      }
+    } catch {
+      // Ignore if product_variants is absent in minimal test fixtures
+    }
+  }
+
+  const topCategories = childrenOf(categories, null);
+  const hasActiveFilters = Boolean(
+    selectedCategory || minParsed.text || maxParsed.text || q || featuredOnly || discountedOnly,
+  );
+
+  const filters: StorefrontCatalogFilters = {
+    actionHref: options.base,
+    clearHref: options.base,
+    hasActiveFilters,
+    resultsCountLabel: toPersianDigits(fa.catalog.resultsCount(total)),
+    categories: topCategories.map((c) => ({
+      slug: c.slug,
+      name: c.name,
+      selected: selectedCategory === c.slug,
+    })),
+    selectedCategory,
+    minPrice: minParsed.text,
+    maxPrice: maxParsed.text,
+    q,
+    featuredOnly,
+    discountedOnly,
+    sort,
+    dir,
+  };
+
   return {
     eyebrow: options.eyebrow,
     heading: options.heading,
-    categories: childrenOf(categories, null).map((category) => ({
+    categories: topCategories.map((category) => ({
       text: category.name,
       href: `/categories/${category.slug}`,
     })),
-    products: products.map((product, index) =>
-      buildProductCard(product, {
+    products: products.map((product, index) => {
+      const card = buildProductCard(product, {
         baseUrl: options.imageBaseUrl,
         delivery: options.delivery,
         currency: options.currency,
         sizes: CARD_SIZES,
-        // Only the first card is the page's likely LCP image.
         priority: index === 0,
-      }),
-    ),
-    sort: buildSortModel(options.base, sort, dir),
-    pagination: buildPaginationModel(options.base, page, totalPages, sort, dir),
+      });
+      const v = variantSummaryByProduct.get(product.id);
+      if (v && v.count > 0) {
+        return {
+          ...card,
+          variantCount: v.count,
+          variantSummary: v.labels.length > 0 ? v.labels.join(' · ') : `${v.count} گزینه`,
+        };
+      }
+      return card;
+    }),
+    sort: buildSortModel(options.base, sort, dir, extraParams),
+    pagination: buildPaginationModel(options.base, page, totalPages, sort, dir, extraParams),
+    filters,
   };
 }

@@ -1,0 +1,225 @@
+---
+import { env } from 'cloudflare:workers';
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AdminPageHeader from '../../components/admin/AdminPageHeader.astro';
+import AdminKpiCard from '../../components/admin/AdminKpiCard.astro';
+import { formatPrice, getConfig } from '../../config';
+import { generateAdminReports } from '../../features/admin/reportsDb';
+import { toPersianDigits } from '../../lib/format';
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const rawFrom = (Astro.url.searchParams.get('from') ?? '').trim();
+const rawTo = (Astro.url.searchParams.get('to') ?? '').trim();
+const dateFrom = DATE_RE.test(rawFrom) ? rawFrom : null;
+const dateTo = DATE_RE.test(rawTo) ? rawTo : null;
+
+const report = await generateAdminReports(env.DB, dateFrom, dateTo);
+const currency = getConfig().currency;
+const exportHref = `/admin/reports/export.csv?${new URLSearchParams({
+  ...(dateFrom ? { from: dateFrom } : {}),
+  ...(dateTo ? { to: dateTo } : {}),
+}).toString()}`;
+
+const METHOD_NAMES: Record<string, string> = {
+  wallet: 'کیف پول GarGift+',
+  bank_transfer: 'کارت‌به‌کارت بانکی',
+  zarinpal: 'درگاه زرین‌پال',
+  zibal: 'درگاه زیبال',
+  stripe: 'کارت بین‌المللی',
+  lightning: 'لایتنینگ',
+  opennode: 'بیت‌کوین',
+  demo: 'سفارش تستی (دمو)',
+  unknown: 'نامشخص',
+};
+---
+
+<AdminLayout
+  title="گزارش‌های تحلیلی و مالی"
+  active="reports"
+  requiredPermission="reports.view"
+  breadcrumbs={[{ label: 'سیستم و گزارش‌ها' }, { label: 'گزارش‌ها و آمار' }]}
+>
+  <AdminPageHeader
+    title="گزارش‌های مالی، تحویل و کیف پول"
+    subtitle="آمار دقیق فروش تسویه‌شده، ترکیب روش‌های پرداخت، فروش دسته‌بندی‌ها و شاخص‌های زمان تحویل (SLA)"
+    badge={dateFrom || dateTo ? 'بازه فیلترشده' : 'کل بازه زمانی'}
+  >
+    <a slot="actions" href={exportHref} class="gg-admin-btn-primary text-xs">
+      خروجی اکسل (CSV ایمن)
+    </a>
+  </AdminPageHeader>
+
+  {/* فیلتر تاریخ */}
+  <form method="GET" action="/admin/reports" class="gg-admin-card mb-6 flex flex-wrap items-end gap-3 p-4">
+    <div>
+      <label for="rep-from" class="mb-1 block text-[11px] font-medium text-muted">از تاریخ (میلادی برای دقت SQL)</label>
+      <input id="rep-from" type="date" name="from" value={dateFrom ?? ''} class="gg-admin-input ltr-inline w-44 py-2 font-mono text-xs" />
+    </div>
+    <div>
+      <label for="rep-to" class="mb-1 block text-[11px] font-medium text-muted">تا تاریخ</label>
+      <input id="rep-to" type="date" name="to" value={dateTo ?? ''} class="gg-admin-input ltr-inline w-44 py-2 font-mono text-xs" />
+    </div>
+    <button type="submit" class="gg-admin-btn-primary py-2 text-xs">اعمال بازه</button>
+    {(dateFrom || dateTo) && (
+      <a href="/admin/reports" class="gg-admin-btn-secondary py-2 text-xs">نمایش کل تاریخچه</a>
+    )}
+    <p class="ms-auto text-[11px] text-faint">
+      منبع محاسبه: سفارش‌های تاییدشده (paid/refunded) پس از کسر مستردی‌ها؛ فیش‌های در انتظار تایید محاسبه نمی‌شوند.
+    </p>
+  </form>
+
+  {/* کارت‌های خلاصه فروش */}
+  <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <AdminKpiCard label="درآمد خالص (Net Sales)" value={formatPrice(report.summary.netSales, currency)} hint={`فروش ناخالص: ${formatPrice(report.summary.grossSales, currency)}`} tone="violet" />
+    <AdminKpiCard label="سفارش‌های تسویه‌شده" value={`${toPersianDigits(report.summary.totalOrders)} سفارش`} hint={`میانگین سبد: ${formatPrice(report.summary.averageOrderValue, currency)}`} tone="turquoise" />
+    <AdminKpiCard label="کل مبالغ مستردشده" value={formatPrice(report.summary.refundedAmount, currency)} hint="شامل استرداد کامل و جزئی" tone="coral" />
+    <AdminKpiCard label="تکمیل تحویل سفارش‌ها" value={`${toPersianDigits(report.summary.fulfilledOrders)} / ${toPersianDigits(report.summary.totalOrders)}`} hint={`${toPersianDigits(report.summary.unfulfilledOrders)} سفارش در صف یا در جریان`} tone="amber" />
+  </div>
+
+  <div class="mb-6 grid gap-6 lg:grid-cols-2">
+    {/* تفکیک روش پرداخت */}
+    <section class="gg-admin-card p-5">
+      <h2 class="mb-4 text-sm font-bold text-ink">فروش بر اساس روش پرداخت</h2>
+      {report.byMethod.length === 0 ? (
+        <p class="py-6 text-center text-xs text-muted">داده‌ای در این بازه ثبت نشده است.</p>
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>روش پرداخت</th>
+                <th>سفارش</th>
+                <th>ناخالص</th>
+                <th>مستردشده</th>
+                <th class="text-end">خالص</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.byMethod.map((row) => (
+                <tr>
+                  <td class="font-semibold text-ink">{METHOD_NAMES[row.method] ?? row.method}</td>
+                  <td>{toPersianDigits(row.orders)}</td>
+                  <td>{formatPrice(row.gross, currency)}</td>
+                  <td class="text-coral">{formatPrice(row.refunded, currency)}</td>
+                  <td class="text-end font-bold text-ink">{formatPrice(row.net, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+
+    {/* جریان کیف پول و SLA */}
+    <section class="space-y-6">
+      <div class="gg-admin-card p-5">
+        <h2 class="mb-3 text-sm font-bold text-ink">جریان مالی کیف پول مشتریان</h2>
+        <dl class="grid gap-3 text-xs sm:grid-cols-2">
+          <div class="rounded-xl border border-line bg-paper p-3">
+            <dt class="text-muted">موجودی در گردش کل کیف پول‌ها</dt>
+            <dd class="mt-1 text-base font-extrabold text-brand-fg">{formatPrice(report.walletSummary.circulatingBalance, currency)}</dd>
+          </div>
+          <div class="rounded-xl border border-line bg-paper p-3">
+            <dt class="text-muted">تعداد کل کیف پول‌ها</dt>
+            <dd class="mt-1 text-base font-extrabold text-ink">{toPersianDigits(report.walletSummary.totalWallets)} کیف پول</dd>
+          </div>
+          <div class="rounded-xl border border-line bg-paper p-3">
+            <dt class="text-muted">مجموع شارژهای موفق درگاه و بانکی</dt>
+            <dd class="mt-1 font-bold text-accent-fg">{formatPrice(report.walletSummary.totalTopupsCompleted, currency)}</dd>
+          </div>
+          <div class="rounded-xl border border-line bg-paper p-3">
+            <dt class="text-muted">مجموع خرید مستقیم از کیف پول</dt>
+            <dd class="mt-1 font-bold text-ink">{formatPrice(report.walletSummary.totalOrderDebits, currency)}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <div class="gg-admin-card p-5">
+        <h2 class="mb-3 text-sm font-bold text-ink">شاخص‌های سرعت عملیات (SLA)</h2>
+        <div class="grid gap-3 text-xs sm:grid-cols-2">
+          <div class="rounded-xl border border-line bg-paper p-3">
+            <p class="text-muted">میانگین زمان تحویل سفارش</p>
+            <p class="mt-1 text-base font-extrabold text-ink">
+              {report.sla.avgFulfillmentMinutes !== null
+                ? `${toPersianDigits(report.sla.avgFulfillmentMinutes)} دقیقه`
+                : 'بدون داده'}
+            </p>
+          </div>
+          <div class="rounded-xl border border-line bg-paper p-3">
+            <p class="text-muted">میانگین زمان بررسی فیش بانکی</p>
+            <p class="mt-1 text-base font-extrabold text-ink">
+              {report.sla.avgReceiptReviewMinutes !== null
+                ? `${toPersianDigits(report.sla.avgReceiptReviewMinutes)} دقیقه`
+                : 'بدون داده'}
+            </p>
+            <p class="mt-0.5 text-[11px] text-faint">
+              تایید: {toPersianDigits(report.sla.approvedReceipts)} • رد: {toPersianDigits(report.sla.rejectedReceipts)} • منتظر: {toPersianDigits(report.sla.pendingReceipts)}
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="grid gap-6 lg:grid-cols-2">
+    {/* پرفروش‌ترین محصولات */}
+    <section class="gg-admin-card p-5">
+      <h2 class="mb-4 text-sm font-bold text-ink">پرفروش‌ترین محصولات دیجیتال</h2>
+      {report.topProducts.length === 0 ? (
+        <p class="py-6 text-center text-xs text-muted">داده‌ای موجود نیست.</p>
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>محصول</th>
+                <th>واحد فروخته‌شده</th>
+                <th>سفارش</th>
+                <th class="text-end">فروش</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.topProducts.map((p) => (
+                <tr>
+                  <td class="font-semibold text-ink">{p.name}</td>
+                  <td>{toPersianDigits(p.units)}</td>
+                  <td class="text-muted">{toPersianDigits(p.orders)}</td>
+                  <td class="text-end font-bold text-ink">{formatPrice(p.revenue, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+
+    {/* فروش بر اساس دسته‌بندی */}
+    <section class="gg-admin-card p-5">
+      <h2 class="mb-4 text-sm font-bold text-ink">فروش به تفکیک دسته‌بندی</h2>
+      {report.byCategory.length === 0 ? (
+        <p class="py-6 text-center text-xs text-muted">داده‌ای موجود نیست.</p>
+      ) : (
+        <div class="overflow-x-auto">
+          <table class="gg-admin-table">
+            <thead>
+              <tr>
+                <th>دسته‌بندی</th>
+                <th>تعداد واحد</th>
+                <th class="text-end">درآمد</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.byCategory.map((c) => (
+                <tr>
+                  <td class="font-semibold text-ink">{c.category_name}</td>
+                  <td>{toPersianDigits(c.units_sold)}</td>
+                  <td class="text-end font-bold text-ink">{formatPrice(c.revenue_total, currency)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  </div>
+</AdminLayout>

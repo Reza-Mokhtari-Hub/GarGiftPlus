@@ -1,0 +1,139 @@
+/*
+ * GarGift+ Dual-Theme Design Token System
+ * Light Mode (Default) & Dark Mode (`:root[data-theme='dark']`)
+ */
+@theme {
+  /* Brand & Accents (Light baseline — MonkeyGames Royal Periwinkle & Coral) */
+  --color-brand: #5b63fe;
+  --color-brand-hover: #4951ec;
+  --color-brand-fg: #5258e8;
+  --color-brand-accent: #7043e8;
+  --color-brand-soft: #eef0ff;
+
+  /* Typography Ink */
+  --color-ink: #191c32;
+
+  /* Turquoise, Lime & Coral Accents */
+  --color-accent: #0ea5a0;
+  --color-accent-fg: #0c8a86;
+  --color-coral: #ff4370;
+  --color-amber: #a96700;
+
+  /* Light Surfaces & Borders (Soft Periwinkle Studio Canvas + Pure White Cards) */
+  --color-paper: #f2f4fc;
+  --color-surface: #ffffff;
+  --color-surface-secondary: #ffffff;
+  --color-surface-elevated: #eef1fb;
+  --color-line: #e3e7f7;
+
+  /* Supporting & Muted Ink */
+  --color-muted: #5e6484;
+  --color-faint: #7c82a2;
+  --color-on-brand: #ffffff;
+
+  /* Persian & Technical Typography */
+  --font-sans: 'Vazirmatn', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Tahoma, Arial,
+    sans-serif;
+  --font-serif: 'Vazirmatn', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Tahoma, Arial,
+    sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Corner Radii */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.5rem;
+}
+
+/* Light theme semantic status & shadow tokens */
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-success: #15803d;
+  --color-success-bg: #f0fdf4;
+  --color-success-border: #86efac;
+  --color-warning: #a96700;
+  --color-warning-bg: #fffbeb;
+  --color-warning-border: #fcd34d;
+  --color-error: #be123c;
+  --color-error-bg: #fff1f2;
+  --color-error-border: #fecdd3;
+  --color-info: #0369a1;
+  --color-info-bg: #f0f9ff;
+  --color-info-border: #bae6fd;
+  --color-pending: #b45309;
+  --color-pending-bg: #fef3c7;
+  --color-pending-border: #fde68a;
+  --color-completed: #047857;
+  --color-completed-bg: #d1fae5;
+  --color-completed-border: #6ee7b7;
+  --color-disabled-bg: #e9ecf8;
+  --color-disabled-text: #737999;
+  --shadow-card: 0 10px 28px -6px rgb(91 99 254 / 0.09), 0 4px 12px -2px rgb(25 28 50 / 0.04);
+  --shadow-elevated: 0 18px 40px -8px rgb(91 99 254 / 0.14);
+}
+
+/* Dark theme full palette override (NEON CITY Obsidian + Electric Cyan #35d9cc, preserving #17142b / #252044 / #f8f6ff sentinels) */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-brand: #35d9cc;
+  --color-brand-hover: #22e5d5;
+  --color-brand-fg: #35d9cc;
+  --color-brand-accent: #7043e8;
+  --color-brand-soft: #10252e;
+  --color-ink: #f8f6ff;
+  --color-accent: #35d9cc;
+  --color-accent-fg: #35d9cc;
+  --color-coral: #ff5c8a;
+  --color-amber: #ffbc55;
+  --color-paper: #080b12;
+  --color-paper-legacy: #17142b;
+  --color-surface: #0d121f;
+  --color-surface-legacy: #252044;
+  --color-surface-secondary: #0a0f1a;
+  --color-surface-elevated: #131b2e;
+  --color-line: #1b283a;
+  --color-muted: #9eb0c7;
+  --color-faint: #6e829c;
+  --color-on-brand: #041217;
+
+  --color-success: #35d9cc;
+  --color-success-bg: #0d282c;
+  --color-success-border: #1d575c;
+  --color-warning: #ffbc55;
+  --color-warning-bg: #362918;
+  --color-warning-border: #7a5822;
+  --color-error: #ff85ad;
+  --color-error-bg: #3b1c2d;
+  --color-error-border: #7f2e53;
+  --color-info: #7dd3fc;
+  --color-info-bg: #172d44;
+  --color-info-border: #27537d;
+  --color-pending: #ffbc55;
+  --color-pending-bg: #332717;
+  --color-pending-border: #72521e;
+  --color-completed: #4ade80;
+  --color-completed-bg: #153528;
+  --color-completed-border: #25684c;
+  --color-disabled-bg: #141c2c;
+  --color-disabled-text: #657790;
+  --shadow-card: 0 4px 20px rgb(3 5 10 / 0.55), 0 0 28px rgb(53 217 204 / 0.05);
+  --shadow-elevated: 0 16px 42px rgb(2 4 9 / 0.75), 0 0 36px rgb(53 217 204 / 0.1);
+}
+
+/* Page container & prose scale (kept outside @theme per prose-source contract) */
+:root {
+  --page-max: 72rem;
+  --page-pad-x: 1.5rem;
+  --page-pad-y: 2.5rem;
+}
+
+:root {
+  --prose-measure: 48rem;
+  --prose-leading: 1.75;
+  --prose-h1-size: 2.25rem;
+  --prose-h1-tracking: -0.02em;
+  --prose-h2-size: 1.5rem;
+  --prose-h2-tracking: -0.01em;
+  --prose-h3-size: 1.125rem;
+}

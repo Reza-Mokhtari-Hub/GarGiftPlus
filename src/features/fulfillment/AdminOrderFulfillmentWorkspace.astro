@@ -1,0 +1,989 @@
+---
+import type { Order, OrderItem } from '../orders/db';
+import type {
+  DeliveryAttachmentRow,
+  DeliveryNotificationEventRow,
+  DeliveryVersionRow,
+  OrderItemDeliveryRow,
+  OrderStatusHistoryRow,
+} from './db';
+import type { AdminActor } from './permissions';
+import { hasAdminPermission } from './permissions';
+import {
+  DELIVERY_SECTION_TYPE_LABELS,
+  parseStoredDeliverySections,
+  type DeliverySection,
+} from './sections';
+import {
+  canOrderBeFulfilled,
+  FULFILLMENT_STATE_LABELS,
+  ITEM_FULFILLMENT_STATE_LABELS,
+  ORDER_PAYMENT_STATE_LABELS,
+  toDbItemFulfillmentStatus,
+  toDbOrderFulfillmentStatus,
+  toOrderFulfillmentState,
+} from './status';
+import { parseStoredCustomerInputs } from '../products/customFields';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+import { formatMoney } from '../../money';
+import type { AdminAuditLogRow } from '../audit/db';
+
+interface Props {
+  order: Order;
+  items: OrderItem[];
+  deliveries: OrderItemDeliveryRow[];
+  versions: DeliveryVersionRow[];
+  attachments: DeliveryAttachmentRow[];
+  statusHistory: OrderStatusHistoryRow[];
+  notificationEvents: DeliveryNotificationEventRow[];
+  auditLogs: AdminAuditLogRow[];
+  actor: AdminActor;
+  timeZone: string;
+  latestPaymentTx?: {
+    status: string;
+    method: string;
+    receipt_status?: string | null;
+    ref_id?: string | null;
+  } | null;
+  customerPhone?: string | null;
+}
+
+const {
+  order,
+  items,
+  deliveries,
+  versions,
+  attachments,
+  statusHistory,
+  notificationEvents,
+  auditLogs,
+  actor,
+  timeZone,
+  latestPaymentTx = null,
+  customerPhone = null,
+} = Astro.props;
+
+const fulfillmentGate = canOrderBeFulfilled(order, latestPaymentTx);
+const paymentState = fulfillmentGate.paymentState;
+const orderDbFulfillment = toDbOrderFulfillmentStatus(order.fulfillment_status);
+const orderCanonicalFulfillment = toOrderFulfillmentState(orderDbFulfillment);
+
+const canViewCustomerInputs = hasAdminPermission(actor, 'orders.view_customer_inputs');
+const canFulfill = hasAdminPermission(actor, 'orders.fulfill');
+const canEditPublished = hasAdminPermission(actor, 'orders.edit_published_delivery');
+const canDownloadFiles = hasAdminPermission(actor, 'orders.download_private_files');
+const canSendNotifications = hasAdminPermission(actor, 'orders.send_delivery_notifications');
+
+const deliveryByItemId = new Map<number, OrderItemDeliveryRow>();
+for (const d of deliveries) {
+  deliveryByItemId.set(d.order_item_id, d);
+}
+
+const versionsByItemId = new Map<number, DeliveryVersionRow[]>();
+for (const v of versions) {
+  const list = versionsByItemId.get(v.order_item_id) ?? [];
+  list.push(v);
+  versionsByItemId.set(v.order_item_id, list);
+}
+
+const attachmentsByItemId = new Map<number, DeliveryAttachmentRow[]>();
+for (const att of attachments) {
+  if (att.removed_at) continue;
+  const list = attachmentsByItemId.get(att.order_item_id) ?? [];
+  list.push(att);
+  attachmentsByItemId.set(att.order_item_id, list);
+}
+
+function getEditableSectionsForItem(delivery: OrderItemDeliveryRow | undefined): DeliverySection[] {
+  if (!delivery) {
+    return [
+      {
+        id: 'sec_1',
+        type: 'gift_card_code',
+        title: 'کد گیفت کارت / پین شارژ',
+        value: '',
+        instructions: '',
+        copyable: true,
+      },
+    ];
+  }
+  const draft = parseStoredDeliverySections(delivery.draft_sections_json);
+  if (draft.length > 0) return draft;
+  const pub = parseStoredDeliverySections(delivery.published_sections_json);
+  if (pub.length > 0) return pub;
+  return [
+    {
+      id: 'sec_1',
+      type: 'gift_card_code',
+      title: 'کد گیفت کارت / پین شارژ',
+      value: '',
+      instructions: '',
+      copyable: true,
+    },
+  ];
+}
+
+function getFulfillmentBadgeClass(status: string): string {
+  const s = toDbOrderFulfillmentStatus(status);
+  switch (s) {
+    case 'fulfilled':
+      return 'bg-success/15 text-success border-success/35';
+    case 'partially_fulfilled':
+      return 'bg-brand/15 text-brand-fg border-brand/35';
+    case 'ready_for_delivery':
+      return 'bg-accent/15 text-accent-fg border-accent/35';
+    case 'processing':
+      return 'bg-info/15 text-info border-info/35';
+    case 'cancelled':
+      return 'bg-danger/15 text-danger border-danger/35';
+    default:
+      return 'bg-warning/15 text-warning border-warning/35';
+  }
+}
+
+function getPaymentBadgeClass(state: string): string {
+  switch (state) {
+    case 'PAID':
+      return 'bg-success/15 text-success border-success/35';
+    case 'PAYMENT_REVIEW':
+    case 'PENDING_PAYMENT':
+      return 'bg-warning/15 text-warning border-warning/35';
+    default:
+      return 'bg-danger/15 text-danger border-danger/35';
+  }
+}
+
+const hasItems = items.length > 0;
+const hasStatusHistory = statusHistory.length > 0;
+const hasNotificationEvents = notificationEvents.length > 0;
+const hasAuditLogs = auditLogs.length > 0;
+---
+
+<section id="fulfillment-workspace" class="mb-10 space-y-6">
+  {/* ۱. نوار وضعیت کلی پرداخت و تحویل سفارش + فرم متادیتای سفارش */}
+  <div class="rounded-2xl border border-line bg-surface p-5 shadow-xs sm:p-6">
+    <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-4">
+      <div>
+        <div class="flex flex-wrap items-center gap-2.5">
+          <h2 class="text-lg font-extrabold text-ink">میز کار تحویل دستی و مدیریت سفارش دیجیتال</h2>
+          <span
+            class:list={[
+              'inline-flex items-center rounded-lg border px-2.5 py-1 text-xs font-bold',
+              getPaymentBadgeClass(paymentState),
+            ]}
+          >
+            وضعیت پرداخت: {ORDER_PAYMENT_STATE_LABELS[paymentState]}
+          </span>
+          <span
+            class:list={[
+              'inline-flex items-center rounded-lg border px-2.5 py-1 text-xs font-bold',
+              getFulfillmentBadgeClass(orderDbFulfillment),
+            ]}
+          >
+            وضعیت تحویل: {FULFILLMENT_STATE_LABELS[orderCanonicalFulfillment]}
+          </span>
+        </div>
+        <p class="mt-1.5 text-xs text-muted">
+          تحویل هر ردیف سفارش به‌صورت مستقل مدیریت می‌شود. اطلاعات واردشده ابتدا در «پیش‌نویس» ذخیره شده و تنها پس از کلیک روی «تایید و انتشار تحویل» برای مشتری نمایش داده خواهد شد.
+        </p>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        <a
+          href="/admin/fulfillment"
+          class="rounded-xl border border-line bg-paper px-3.5 py-2 font-bold text-ink transition hover:border-brand hover:text-brand-fg"
+        >
+          صف تحویل سفارش‌ها &larr;
+        </a>
+      </div>
+    </div>
+
+    {!fulfillmentGate.allowed && (
+      <div class="mt-4 rounded-xl border border-danger/40 bg-danger/10 p-4 text-xs text-danger">
+        <p class="font-extrabold">امکان تحویل این سفارش در حال حاضر قفل است:</p>
+        <p class="mt-1">{fulfillmentGate.reason}</p>
+      </div>
+    )}
+
+    {/* خلاصه اطلاعات مشتری و وضعیت کلی */}
+    <div class="mt-5 grid gap-4 lg:grid-cols-3">
+      <div class="rounded-xl border border-line bg-paper p-4 text-xs">
+        <h3 class="font-bold text-ink">مشخصات خریدار</h3>
+        <dl class="mt-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <dt class="text-muted">ایمیل مشتری:</dt>
+            <dd dir="ltr" class="ltr-inline font-mono font-semibold text-ink">
+              {order.email ? (
+                <a
+                  href={`/admin/customers/${encodeURIComponent(order.email)}`}
+                  class="text-brand-fg hover:underline"
+                >
+                  {order.email}
+                </a>
+              ) : (
+                '—'
+              )}
+            </dd>
+          </div>
+          {customerPhone && (
+            <div class="flex items-center justify-between gap-2">
+              <dt class="text-muted">شماره تماس:</dt>
+              <dd dir="ltr" class="ltr-inline font-mono font-semibold text-ink">{customerPhone}</dd>
+            </div>
+          )}
+          <div class="flex items-center justify-between gap-2">
+            <dt class="text-muted">زمان ثبت سفارش:</dt>
+            <dd class="font-semibold text-ink">
+              {formatJalaliDateTime(order.created_at, { timeZone })}
+            </dd>
+          </div>
+          {order.processing_started_at && (
+            <div class="flex items-center justify-between gap-2">
+              <dt class="text-muted">شروع آماده‌سازی:</dt>
+              <dd class="font-semibold text-ink">
+                {formatJalaliDateTime(order.processing_started_at, { timeZone })}
+              </dd>
+            </div>
+          )}
+          {order.fulfilled_at && (
+            <div class="flex items-center justify-between gap-2">
+              <dt class="text-muted">تکمیل نهایی تحویل:</dt>
+              <dd class="font-semibold text-success">
+                {formatJalaliDateTime(order.fulfilled_at, { timeZone })}
+              </dd>
+            </div>
+          )}
+        </dl>
+      </div>
+
+      {/* فرم مدیریت وضعیت پردازش، اپراتور مسئول و یادداشت داخلی */}
+      <form
+        method="POST"
+        action="/api/admin/fulfillment/item"
+        class="rounded-xl border border-line bg-paper p-4 text-xs lg:col-span-2"
+      >
+        <input type="hidden" name="_action" value="update_order_meta" />
+        <input type="hidden" name="order_public_id" value={order.public_id ?? ''} />
+        <input type="hidden" name="return_to" value={`/admin/orders/${order.public_id}`} />
+
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <h3 class="font-bold text-ink">وضعیت کلی پردازش، کارشناس مسئول و یادداشت داخلی</h3>
+          <span class="text-[11px] text-muted">یادداشت داخلی صرفاً مخصوص تیم مدیریت است</span>
+        </div>
+
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="mb-1 block font-semibold text-ink">وضعیت کلی تحویل سفارش</label>
+            <select
+              name="fulfillment_status"
+              disabled={!canFulfill}
+              class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+            >
+              <option value="unfulfilled" selected={orderDbFulfillment === 'unfulfilled'}>
+                در انتظار پردازش (UNFULFILLED)
+              </option>
+              <option value="processing" selected={orderDbFulfillment === 'processing'}>
+                در حال آماده‌سازی توسط کارشناس (PROCESSING)
+              </option>
+              <option value="ready_for_delivery" selected={orderDbFulfillment === 'ready_for_delivery'}>
+                آماده تحویل (READY_FOR_DELIVERY)
+              </option>
+              <option value="partially_fulfilled" selected={orderDbFulfillment === 'partially_fulfilled'}>
+                تحویل ناقص / مرحله‌ای (PARTIALLY_FULFILLED)
+              </option>
+              <option value="fulfilled" selected={orderDbFulfillment === 'fulfilled'}>
+                تحویل‌شده کامل (FULFILLED)
+              </option>
+              <option value="cancelled" selected={orderDbFulfillment === 'cancelled'}>
+                لغو تحویل (CANCELLED)
+              </option>
+            </select>
+          </div>
+
+          <div>
+            <label class="mb-1 block font-semibold text-ink">کارشناس / اپراتور مسئول</label>
+            <input
+              type="text"
+              name="assigned_admin"
+              value={order.assigned_admin ?? ''}
+              disabled={!canFulfill}
+              placeholder="نام یا شناسه اپراتور مسئول..."
+              class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+            />
+          </div>
+
+          <div class="sm:col-span-2">
+            <label class="mb-1 block font-semibold text-ink">
+              یادداشت داخلی مدیریت (غیرقابل مشاهده برای مشتری)
+            </label>
+            <textarea
+              name="internal_notes"
+              rows="2"
+              disabled={!canFulfill}
+              placeholder="توضیحات داخلی برای اپراتورها (مثلاً ریجن تامین‌کننده، وضعیت استعلام اکانت و...)"
+              class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+            >{order.internal_notes ?? ''}</textarea>
+          </div>
+        </div>
+
+        <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <label class="inline-flex items-center gap-2 text-xs text-muted">
+            <input
+              type="checkbox"
+              name="send_notification"
+              value="1"
+              checked
+              disabled={!canSendNotifications}
+              class="size-4 rounded border-line text-brand focus:ring-brand"
+            />
+            <span>ارسال اعلان تغییر وضعیت پردازش به ایمیل مشتری (در صورت تغییر مرحله)</span>
+          </label>
+
+          {canFulfill && (
+            <button
+              type="submit"
+              class="rounded-xl bg-brand px-4 py-2 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+            >
+              ذخیره وضعیت و یادداشت داخلی
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  </div>
+
+  {/* ۲. میز کار تحویل هر ردیف محصول (Per-Item Fulfillment Workspace) */}
+  <div class="space-y-6">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h3 class="text-base font-extrabold text-ink">
+        اقلام سفارش و پنل تحویل اختصاصی ({toPersianDigits(items.length)} ردیف)
+      </h3>
+      <span class="text-xs text-muted">
+        امکان تحویل مستقل هر آیتم (تحویل مرحله‌ای یا کامل)
+      </span>
+    </div>
+
+    {!hasItems ? (
+      <div class="rounded-2xl border border-line bg-surface p-8 text-center text-sm text-muted">
+        هیچ ردیف محصولی برای این سفارش ثبت نشده است.
+      </div>
+    ) : (
+      items.map((item, idx) => {
+        const delivery = deliveryByItemId.get(item.id);
+        const itemVersions = versionsByItemId.get(item.id) ?? [];
+        const itemAttachments = attachmentsByItemId.get(item.id) ?? [];
+        const itemStatus = toDbItemFulfillmentStatus(item.fulfillment_status);
+        const isPublished = delivery?.status === 'published' && delivery.current_version > 0;
+        const hasDraftChanges =
+          delivery &&
+          delivery.draft_sections_json &&
+          delivery.draft_sections_json !== delivery.published_sections_json;
+        const sections = getEditableSectionsForItem(delivery);
+        const customerInputs = parseStoredCustomerInputs(item.customer_inputs_json);
+        const itemFormDisabled =
+          !fulfillmentGate.allowed ||
+          !canFulfill ||
+          (isPublished && !canEditPublished);
+
+        return (
+          <article
+            id={`fulfill-item-${item.public_id ?? item.id}`}
+            class="rounded-2xl border border-line bg-surface p-5 shadow-xs sm:p-6"
+          >
+            {/* هدر آیتم */}
+            <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-4">
+              <div>
+                <div class="flex flex-wrap items-center gap-2.5">
+                  <span class="inline-flex size-6 items-center justify-center rounded-full bg-brand/15 text-xs font-extrabold text-brand-fg">
+                    {toPersianDigits(idx + 1)}
+                  </span>
+                  <h4 class="text-base font-extrabold text-ink">{item.name}</h4>
+                  <span class="gg-numeric rounded-md border border-line bg-paper px-2 py-0.5 text-xs font-bold text-muted">
+                    تعداد: {toPersianDigits(item.quantity)}
+                  </span>
+                  <span class="gg-numeric text-xs font-bold text-accent-fg">
+                    {formatMoney(item.price_cents * item.quantity, order.currency)}
+                  </span>
+                </div>
+                {item.public_id && (
+                  <p dir="ltr" class="mt-1 font-mono text-[11px] text-muted">
+                    Item ID: {item.public_id}
+                  </p>
+                )}
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <span
+                  class:list={[
+                    'inline-flex items-center rounded-lg border px-2.5 py-1 text-xs font-bold',
+                    itemStatus === 'fulfilled'
+                      ? 'border-success/35 bg-success/15 text-success'
+                      : itemStatus === 'ready_for_delivery'
+                        ? 'border-accent/35 bg-accent/15 text-accent-fg'
+                        : itemStatus === 'processing'
+                          ? 'border-info/35 bg-info/15 text-info'
+                          : 'border-warning/35 bg-warning/15 text-warning',
+                  ]}
+                >
+                  {ITEM_FULFILLMENT_STATE_LABELS[itemStatus]}
+                </span>
+
+                {isPublished && (
+                  <span class="rounded-lg border border-success/35 bg-success/10 px-2.5 py-1 text-xs font-bold text-success">
+                    منتشرشده برای مشتری (نسخه {toPersianDigits(delivery?.current_version ?? 1)})
+                  </span>
+                )}
+
+                {!isPublished && delivery && (
+                  <span class="rounded-lg border border-warning/35 bg-warning/10 px-2.5 py-1 text-xs font-bold text-warning">
+                    پیش‌نویس منتشرنشده (مخفی از مشتری)
+                  </span>
+                )}
+
+                {isPublished && hasDraftChanges && (
+                  <span class="rounded-lg border border-brand/35 bg-brand/10 px-2.5 py-1 text-xs font-bold text-brand-fg">
+                    دارای تغییرات پیش‌نویس جدید
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* نمایش اسنپ‌شات تغییرناپذیر اطلاعات ثبت‌شده مشتری (Customer Input Snapshot) */}
+            <div class="mt-4 rounded-xl border border-line bg-paper p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h5 class="text-xs font-bold text-ink">
+                  اطلاعات ثبت‌شده خریدار در لحظه خرید (اسنپ‌شات غیرقابل تغییر)
+                </h5>
+                <span class="text-[11px] text-muted">order_items.customer_inputs_json</span>
+              </div>
+
+              {!canViewCustomerInputs ? (
+                <p class="mt-2 text-xs text-danger">
+                  نقش کاربری شما مجوز مشاهده اطلاعات اختصاصی مشتری را ندارد.
+                </p>
+              ) : customerInputs.length === 0 ? (
+                <p class="mt-2 text-xs text-muted">
+                  این محصول فاقد فیلد اطلاعات اختصاصی مشتری در زمان خرید بوده است (تحویل مستقیم کد / فایل).
+                </p>
+              ) : (
+                <dl class="mt-3 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                  {customerInputs.map((ci) => (
+                    <div class="rounded-lg border border-line bg-surface px-3 py-2 text-xs">
+                      <dt class="text-[11px] font-medium text-muted">{ci.label}</dt>
+                      <dd
+                        dir={ci.type === 'email' || ci.type === 'number' ? 'ltr' : 'auto'}
+                        class:list={[
+                          'mt-1 font-bold text-ink break-all',
+                          (ci.type === 'email' || ci.type === 'number') && 'ltr-inline font-mono',
+                        ]}
+                      >
+                        {ci.value}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
+
+            {/* فرم تحویل آیتم (بخش‌های کد، لایسنس، لینک، توضیحات و آپلود پیوست) */}
+            <form
+              method="POST"
+              action="/api/admin/fulfillment/item"
+              enctype="multipart/form-data"
+              class="mt-5 space-y-5"
+              data-delivery-item-form
+            >
+              <input type="hidden" name="order_public_id" value={order.public_id ?? ''} />
+              <input type="hidden" name="item_public_id" value={item.public_id ?? ''} />
+              <input type="hidden" name="order_item_id" value={String(item.id)} />
+              <input
+                type="hidden"
+                name="return_to"
+                value={`/admin/orders/${order.public_id}#fulfill-item-${item.public_id ?? item.id}`}
+              />
+
+              <div>
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <h5 class="text-xs font-extrabold text-ink">
+                    بخش‌های محتوای تحویل دیجیتال به مشتری
+                  </h5>
+                  {!itemFormDisabled && (
+                    <button
+                      type="button"
+                      data-add-delivery-section
+                      class="rounded-lg border border-brand/40 bg-brand/10 px-3 py-1.5 text-xs font-bold text-brand-fg transition hover:bg-brand hover:text-on-brand"
+                    >
+                      + افزودن بخش تحویل جدید (کد / لایسنس / لینک / راهنما)
+                    </button>
+                  )}
+                </div>
+
+                <div class="space-y-4" data-delivery-sections-container>
+                  {sections.map((sec, sIdx) => (
+                    <div
+                      class="rounded-xl border border-line bg-paper p-4 transition"
+                      data-delivery-section-row
+                    >
+                      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <span class="text-xs font-bold text-ink">
+                          بخش تحویل #{toPersianDigits(sIdx + 1)}
+                        </span>
+                        {!itemFormDisabled && (
+                          <button
+                            type="button"
+                            data-remove-delivery-section
+                            class="text-[11px] font-bold text-danger hover:underline"
+                          >
+                            حذف این بخش
+                          </button>
+                        )}
+                      </div>
+
+                      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        <div>
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            نوع محتوای تحویلی
+                          </label>
+                          <select
+                            name="section_type"
+                            disabled={itemFormDisabled}
+                            class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                          >
+                            {Object.entries(DELIVERY_SECTION_TYPE_LABELS).map(([val, label]) => (
+                              <option value={val} selected={sec.type === val}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            عنوان نمایشی برای مشتری
+                          </label>
+                          <input
+                            type="text"
+                            name="section_title"
+                            value={sec.title ?? ''}
+                            disabled={itemFormDisabled}
+                            placeholder="مثال: کد گیفت کارت ۱۰ دلاری استیم"
+                            class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            قابلیت کپی سریع (Copy Button)
+                          </label>
+                          <select
+                            name="section_copyable"
+                            disabled={itemFormDisabled}
+                            class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                          >
+                            <option value="1" selected={sec.copyable !== false}>
+                              فعال (نمایش دکمه کپی کد/مقدار)
+                            </option>
+                            <option value="0" selected={sec.copyable === false}>
+                              غیرفعال
+                            </option>
+                          </select>
+                        </div>
+
+                        <div class="sm:col-span-2 lg:col-span-3">
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            کد گیفت کارت / کلید لایسنس / متن تحویل یا راهنمای گام‌به‌گام
+                          </label>
+                          <textarea
+                            name="section_value"
+                            rows="2"
+                            disabled={itemFormDisabled}
+                            placeholder="کد دیجیتال، کلید لایسنس، رسید شارژ اکانت یا متن راهنما را اینجا وارد کنید..."
+                            class="w-full rounded-xl border border-line bg-surface px-3 py-2 font-mono text-xs text-ink focus:border-brand focus:outline-none"
+                          >{sec.value ?? ''}</textarea>
+                        </div>
+
+                        <div class="sm:col-span-2">
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            لینک مستقیم فعال‌سازی / دعوت‌نامه (فقط برای نوع لینک فعال‌سازی — https://)
+                          </label>
+                          <input
+                            type="url"
+                            name="section_url"
+                            dir="ltr"
+                            value={sec.url ?? ''}
+                            disabled={itemFormDisabled}
+                            placeholder="https://store.steampowered.com/account/registerkey"
+                            class="ltr-inline w-full rounded-xl border border-line bg-surface px-3 py-2 font-mono text-xs text-ink focus:border-brand focus:outline-none"
+                          />
+                        </div>
+
+                        <div>
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            متن دکمه لینک فعال‌سازی (اختیاری)
+                          </label>
+                          <input
+                            type="text"
+                            name="section_link_label"
+                            value={sec.linkLabel ?? ''}
+                            disabled={itemFormDisabled}
+                            placeholder="مثال: ورود به صفحه فعال‌سازی"
+                            class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                          />
+                        </div>
+
+                        <div class="sm:col-span-2 lg:col-span-3">
+                          <label class="mb-1 block text-[11px] font-semibold text-muted">
+                            نکات و راهنمای تکمیلی این بخش برای مشتری (اختیاری)
+                          </label>
+                          <input
+                            type="text"
+                            name="section_instructions"
+                            value={sec.instructions ?? ''}
+                            disabled={itemFormDisabled}
+                            placeholder="مثال: پیش از وارد کردن کد، ریجن اکانت خود را روی آمریکا (US) تنظیم نمایید."
+                            class="w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* یادداشت مشتری، یادداشت داخلی اپراتور و فایل‌های پیوست */}
+              <div class="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">
+                    پیام تحویل مخصوص مشتری (قابل مشاهده برای مشتری پس از انتشار)
+                  </label>
+                  <textarea
+                    name="customer_note"
+                    rows="2"
+                    disabled={itemFormDisabled}
+                    placeholder="مثال: شارژ اکانت شما با موفقیت انجام شد. لطفاً یک‌بار از بازی خارج و مجدداً وارد شوید."
+                    class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                  >{delivery?.customer_note ?? ''}</textarea>
+                </div>
+
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">
+                    یادداشت محرمانه اپراتور برای این آیتم (فقط مدیران — مخفی از مشتری)
+                  </label>
+                  <textarea
+                    name="admin_note"
+                    rows="2"
+                    disabled={itemFormDisabled}
+                    placeholder="مثال: خریداری‌شده از تامین‌کننده B — شماره پیگیری تامین‌کننده #9821"
+                    class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                  >{delivery?.admin_note ?? ''}</textarea>
+                </div>
+              </div>
+
+              {/* آپلود پیوست خصوصی در R2 */}
+              <div class="rounded-xl border border-line bg-paper p-4">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h5 class="text-xs font-bold text-ink">
+                      فایل‌های پیوست خصوصی تحویل (ذخیره امن در باکت خصوصی R2)
+                    </h5>
+                    <p class="mt-0.5 text-[11px] text-muted">
+                      فرمت‌های مجاز: PDF، PNG، JPG، WebP، GIF و فایل متنی TXT (حداکثر ۱۰ مگابایت). فایل‌ها تا پیش از انتشار تحویل، برای مشتری قابل دانلود نیستند.
+                    </p>
+                  </div>
+                  <input
+                    type="file"
+                    name="attachments"
+                    multiple
+                    accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.txt,application/pdf,image/png,image/jpeg,image/webp,image/gif,text/plain"
+                    disabled={itemFormDisabled}
+                    class="text-xs text-muted file:me-3 file:rounded-lg file:border-0 file:bg-brand/15 file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-brand-fg hover:file:bg-brand/25"
+                  />
+                </div>
+              </div>
+
+              {isPublished && (
+                <div>
+                  <label class="mb-1 block text-xs font-bold text-ink">
+                    علت ویرایش تحویل منتشرشده (ثبت در تاریخچه نسخه‌ها و لاگ حسابرسی)
+                  </label>
+                  <input
+                    type="text"
+                    name="change_reason"
+                    disabled={itemFormDisabled}
+                    placeholder="مثال: اصلاح کد ارسالی یا افزودن فایل راهنمای جدید به درخواست مشتری"
+                    class="w-full rounded-xl border border-line bg-paper px-3 py-2 text-xs text-ink focus:border-brand focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* دکمه‌های عملیات: ذخیره پیش‌نویس / آماده تحویل / تایید و انتشار نهایی */}
+              {!itemFormDisabled && (
+                <div class="flex flex-wrap items-center justify-end gap-3 border-t border-line pt-4">
+                  <button
+                    type="submit"
+                    name="_action"
+                    value="save_draft"
+                    class="rounded-xl border border-line bg-paper px-4 py-2.5 text-xs font-bold text-ink transition hover:border-brand hover:text-brand-fg"
+                  >
+                    ذخیره پیش‌نویس (مخفی از مشتری)
+                  </button>
+
+                  <button
+                    type="submit"
+                    name="_action"
+                    value="mark_ready"
+                    class="rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-xs font-bold text-accent-fg transition hover:bg-accent/20"
+                  >
+                    ذخیره و علامت‌گذاری «آماده تحویل»
+                  </button>
+
+                  <button
+                    type="submit"
+                    name="_action"
+                    value="publish_delivery"
+                    class="rounded-xl bg-brand px-5 py-2.5 text-xs font-extrabold text-on-brand shadow-xs transition hover:bg-brand-hover"
+                  >
+                    {isPublished
+                      ? 'به‌روزرسانی و انتشار نسخه جدید برای مشتری'
+                      : 'تایید و انتشار نهایی تحویل برای مشتری'}
+                  </button>
+                </div>
+              )}
+            </form>
+
+            {/* فهرست فایل‌های پیوست موجود برای این آیتم (با امکان دانلود ادمین و حذف) */}
+            {itemAttachments.length > 0 && (
+              <div class="mt-4 rounded-xl border border-line bg-paper p-4">
+                <h5 class="text-xs font-bold text-ink">
+                  فایل‌های پیوست ثبت‌شده برای این آیتم ({toPersianDigits(itemAttachments.length)} فایل)
+                </h5>
+                <ul class="mt-3 divide-y divide-line text-xs">
+                  {itemAttachments.map((att) => (
+                    <li class="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span dir="ltr" class="ltr-inline font-mono font-bold text-ink">
+                          {att.file_name}
+                        </span>
+                        <span class="text-[11px] text-muted">
+                          ({Math.max(1, Math.round(att.size_bytes / 1024))} KB · {att.mime_type})
+                        </span>
+                        <span
+                          class:list={[
+                            'rounded px-2 py-0.5 text-[10px] font-bold',
+                            att.is_published === 1
+                              ? 'bg-success/15 text-success'
+                              : 'bg-warning/15 text-warning',
+                          ]}
+                        >
+                          {att.is_published === 1 ? 'منتشرشده برای مشتری' : 'پیش‌نویس (غیرقابل دانلود برای مشتری)'}
+                        </span>
+                        <span class="text-[11px] text-muted">
+                          تعداد دانلود مشتری: {toPersianDigits(att.download_count)}
+                        </span>
+                      </div>
+
+                      <div class="flex items-center gap-2">
+                        {canDownloadFiles && (
+                          <a
+                            href={`/api/admin/fulfillment/attachments/${att.public_id}`}
+                            class="rounded-lg border border-line bg-surface px-3 py-1.5 text-[11px] font-bold text-brand-fg hover:border-brand"
+                          >
+                            دانلود فایل (ادمین)
+                          </a>
+                        )}
+                        {!itemFormDisabled && (
+                          <form method="POST" action="/api/admin/fulfillment/item">
+                            <input type="hidden" name="_action" value="remove_attachment" />
+                            <input type="hidden" name="order_public_id" value={order.public_id ?? ''} />
+                            <input type="hidden" name="attachment_public_id" value={att.public_id} />
+                            <input
+                              type="hidden"
+                              name="return_to"
+                              value={`/admin/orders/${order.public_id}#fulfill-item-${item.public_id ?? item.id}`}
+                            />
+                            <button
+                              type="submit"
+                              class="rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-[11px] font-bold text-danger hover:bg-danger/20"
+                            >
+                              حذف پیوست
+                            </button>
+                          </form>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* تاریخچه نسخه‌های منتشرشده این آیتم (Delivery Versions) */}
+            {itemVersions.length > 0 && (
+              <details class="mt-4 rounded-xl border border-line bg-paper p-3 text-xs">
+                <summary class="cursor-pointer font-bold text-muted hover:text-ink">
+                  تاریخچه نسخه‌های منتشرشده این آیتم ({toPersianDigits(itemVersions.length)} نسخه)
+                </summary>
+                <div class="mt-3 space-y-2 border-t border-line pt-3">
+                  {itemVersions.map((ver) => {
+                    const verSections = parseStoredDeliverySections(ver.sections_json);
+                    return (
+                      <div class="rounded-lg border border-line bg-surface p-3">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                          <span class="font-bold text-ink">
+                            نسخه {toPersianDigits(ver.version_number)} ({ver.public_id})
+                          </span>
+                          <span class="text-[11px] text-muted">
+                            منتشرشده توسط {ver.published_by} در{' '}
+                            {formatJalaliDateTime(ver.published_at, { timeZone })}
+                          </span>
+                        </div>
+                        {ver.change_reason && (
+                          <p class="mt-1 text-[11px] text-brand-fg">
+                            علت ویرایش: {ver.change_reason}
+                          </p>
+                        )}
+                        <p class="mt-1 text-[11px] text-muted">
+                          تعداد بخش‌های تحویلی: {toPersianDigits(verSections.length)} بخش
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
+          </article>
+        );
+      })
+    )}
+  </div>
+
+  {/* ۳. تاریخچه تغییر وضعیت، اعلان‌های ارسالی و لاگ حسابرسی تحویل */}
+  <div class="grid gap-6 lg:grid-cols-2">
+    <div class="rounded-2xl border border-line bg-surface p-5">
+      <h3 class="text-sm font-extrabold text-ink">تاریخچه تغییر وضعیت‌های سفارش و تحویل</h3>
+      {!hasStatusHistory ? (
+        <p class="mt-3 text-xs text-muted">هنوز رویداد تغییر وضعیتی ثبت نشده است.</p>
+      ) : (
+        <ol class="mt-3 divide-y divide-line text-xs">
+          {statusHistory.map((h) => (
+            <li class="py-2.5 first:pt-0 last:pb-0">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="font-bold text-ink">
+                  {h.status_type === 'item_fulfillment' ? 'وضعیت آیتم' : 'وضعیت سفارش'}:{' '}
+                  <span dir="ltr" class="ltr-inline font-mono text-[11px]">
+                    {h.from_status ?? '—'} &rarr; {h.to_status}
+                  </span>
+                </span>
+                <span class="text-[11px] text-muted">
+                  {formatJalaliDateTime(h.created_at, { timeZone })}
+                </span>
+              </div>
+              {h.note && <p class="mt-1 text-muted">{h.note}</p>}
+              <p class="mt-0.5 text-[11px] text-faint">اپراتور: {h.actor}</p>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+
+    <div class="rounded-2xl border border-line bg-surface p-5">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-sm font-extrabold text-ink">اعلان‌های ایمیل تحویل و لاگ حسابرسی</h3>
+        {canSendNotifications && order.email && (
+          <form method="POST" action="/api/admin/fulfillment/item">
+            <input type="hidden" name="_action" value="send_notification" />
+            <input type="hidden" name="order_public_id" value={order.public_id ?? ''} />
+            <input type="hidden" name="event_type" value="delivery_published" />
+            <input type="hidden" name="return_to" value={`/admin/orders/${order.public_id}`} />
+            <button
+              type="submit"
+              class="rounded-lg border border-line bg-paper px-3 py-1.5 text-[11px] font-bold text-ink hover:border-brand hover:text-brand-fg"
+            >
+              ارسال مجدد اعلان تحویل به ایمیل
+            </button>
+          </form>
+        )}
+      </div>
+
+      {hasNotificationEvents && (
+        <div class="mt-3 space-y-2">
+          <h4 class="text-xs font-bold text-muted">رویدادهای اعلان ثبت‌شده در Outbox:</h4>
+          <ul class="divide-y divide-line rounded-xl border border-line bg-paper px-3 py-2 text-xs">
+            {notificationEvents.map((ev) => (
+              <li class="flex flex-wrap items-center justify-between gap-2 py-1.5">
+                <span class="font-semibold text-ink">{ev.event_type}</span>
+                <span class="text-[11px] text-muted">
+                  {formatJalaliDateTime(ev.created_at, { timeZone })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {hasAuditLogs && (
+        <div class="mt-4 space-y-2">
+          <h4 class="text-xs font-bold text-muted">آخرین لاگ‌های حسابرسی امنیتی (بدون افشای کدها):</h4>
+          <ul class="divide-y divide-line rounded-xl border border-line bg-paper px-3 py-2 text-xs">
+            {auditLogs.slice(0, 8).map((log) => (
+              <li class="py-1.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <span dir="ltr" class="ltr-inline font-mono font-bold text-ink">{log.action}</span>
+                  <span class="text-[11px] text-muted">
+                    {formatJalaliDateTime(log.created_at, { timeZone })}
+                  </span>
+                </div>
+                <p class="mt-0.5 text-[11px] text-muted">توسط: {log.actor}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  </div>
+</section>
+
+<script is:inline>
+  (() => {
+    const forms = document.querySelectorAll('[data-delivery-item-form]');
+    forms.forEach((form) => {
+      const container = form.querySelector('[data-delivery-sections-container]');
+      const addBtn = form.querySelector('[data-add-delivery-section]');
+      if (!container || !addBtn) return;
+
+      const bindRemoveButtons = () => {
+        const rows = container.querySelectorAll('[data-delivery-section-row]');
+        rows.forEach((row) => {
+          const btn = row.querySelector('[data-remove-delivery-section]');
+          if (!btn || btn.dataset.bound === '1') return;
+          btn.dataset.bound = '1';
+          btn.addEventListener('click', () => {
+            const currentRows = container.querySelectorAll('[data-delivery-section-row]');
+            if (currentRows.length > 1) {
+              row.remove();
+            } else {
+              const inputs = row.querySelectorAll('input, textarea');
+              inputs.forEach((inp) => {
+                inp.value = '';
+              });
+            }
+          });
+        });
+      };
+
+      bindRemoveButtons();
+
+      addBtn.addEventListener('click', () => {
+        const firstRow = container.querySelector('[data-delivery-section-row]');
+        if (!firstRow) return;
+        const clone = firstRow.cloneNode(true);
+        clone.querySelectorAll('input, textarea').forEach((inp) => {
+          inp.value = '';
+        });
+        const removeBtn = clone.querySelector('[data-remove-delivery-section]');
+        if (removeBtn) delete removeBtn.dataset.bound;
+        container.appendChild(clone);
+        bindRemoveButtons();
+      });
+    });
+  })();
+</script>

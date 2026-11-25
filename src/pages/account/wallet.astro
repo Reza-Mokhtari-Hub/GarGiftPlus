@@ -1,0 +1,485 @@
+---
+export const prerender = false;
+import { env } from 'cloudflare:workers';
+import Layout from '../../layouts/Layout.astro';
+import AccountShell from '../../features/account/AccountShell.astro';
+import { getConfig } from '../../config';
+import { accountsEnabled, getVerifiedCustomer } from '../../features/auth/customer';
+import {
+  getOrCreateWalletByCustomerId,
+  listWalletTopupsByCustomer,
+  listWalletTransactionsByCustomer,
+  getWalletTopupByPublicId,
+} from '../../features/wallet/db';
+import { WALLET_TX_LABELS } from '../../features/wallet/rules';
+import { listBankAccounts } from '../../features/payments/bankAccountsDb';
+import { formatCardNumber } from '../../features/payments/bankTransfer';
+import { getLatestPaymentTxForTarget } from '../../features/payments/transactionsDb';
+import { listReceiptsForTarget } from '../../features/payments/receiptsDb';
+import { isMethodAvailable } from '../../features/payments';
+import { formatMoney } from '../../money';
+import { formatJalaliDateTime } from '../../lib/format';
+
+if (!(await accountsEnabled())) return Astro.redirect('/', 303);
+const customer = await getVerifiedCustomer(Astro.cookies);
+if (!customer) return Astro.redirect('/account/login', 303);
+
+const settings = Astro.locals.settings;
+const wallet = await getOrCreateWalletByCustomerId(env.DB, customer.id);
+const topups = await listWalletTopupsByCustomer(env.DB, customer.id, 15);
+const walletTxs = await listWalletTransactionsByCustomer(env.DB, customer.id, 20, 0);
+const activeBankAccounts = await listBankAccounts(env.DB, true);
+
+const zarinpalAvailable = settings ? isMethodAvailable('zarinpal', settings) : false;
+const zibalAvailable = settings ? isMethodAvailable('zibal', settings) : false;
+const bankTransferAvailable =
+  (settings?.bankTransferEnabled ?? true) && activeBankAccounts.length > 0;
+
+const selectedTopupId = (Astro.url.searchParams.get('topup') ?? '').trim().toLowerCase();
+const activeTopup = selectedTopupId
+  ? await getWalletTopupByPublicId(env.DB, selectedTopupId)
+  : null;
+const ownsActiveTopup = activeTopup && activeTopup.customer_id === customer.id;
+const activeTopupTx =
+  ownsActiveTopup && activeTopup
+    ? await getLatestPaymentTxForTarget(env.DB, 'wallet_topup', activeTopup.public_id)
+    : null;
+const activeTopupReceipts =
+  ownsActiveTopup && activeTopup
+    ? await listReceiptsForTarget(env.DB, 'wallet_topup', activeTopup.public_id)
+    : [];
+
+const minTopup = settings?.walletMinTopup ?? 10_000;
+const maxTopup = settings?.walletMaxTopup ?? 50_000_000;
+const timeZone = settings?.timeZone ?? getConfig().timeZone;
+const error = Astro.url.searchParams.get('error');
+const success = Astro.url.searchParams.get('success');
+
+const presetAmounts = [50_000, 100_000, 250_000, 500_000, 1_000_000];
+---
+
+<Layout title="کیف پول من">
+  <AccountShell
+    customer={customer}
+    wallet={wallet}
+    active="wallet"
+    title="کیف پول اختصاصی GarGift+"
+  >
+    {error && (
+      <div
+        role="alert"
+        class="mb-6 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-xs font-bold text-danger"
+      >
+        {error}
+      </div>
+    )}
+
+    {success && (
+      <div
+        role="status"
+        class="mb-6 rounded-xl border border-success/40 bg-success/10 px-4 py-3 text-xs font-bold text-success"
+      >
+        {success === 'receipt_submitted'
+          ? 'فیش واریزی شما با موفقیت ثبت شد و در صف بررسی مدیریت قرار گرفت. پس از تایید، کیف پول شما شارژ خواهد شد.'
+          : success === 'topup_verified'
+            ? 'شارژ کیف پول شما با موفقیت انجام و به موجودی حساب اضافه شد.'
+            : 'عملیات با موفقیت انجام شد.'}
+      </div>
+    )}
+
+    {/* پنل بارگذاری فیش برای درخواست شارژ کارت‌به‌کارت فعال */}
+    {ownsActiveTopup && activeTopup && activeTopup.payment_method === 'bank_transfer' && activeTopupTx && (
+      <section
+        id="topup-bank"
+        class="mb-6 rounded-xl border-2 border-brand/40 bg-surface p-5 sm:p-6 shadow-sm"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
+          <div>
+            <span class="rounded-md bg-brand/15 px-2.5 py-1 text-xs font-bold text-brand-fg">
+              درخواست شارژ کارت‌به‌کارت #{activeTopup.public_id}
+            </span>
+            <h2 class="mt-2 text-base font-extrabold text-ink">
+              مبلغ قابل واریز: {formatMoney(activeTopup.amount, activeTopup.currency)}
+            </h2>
+          </div>
+          <span class="rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-bold text-warning">
+            {activeTopupTx.status === 'PAYMENT_REVIEW'
+              ? 'در انتظار بررسی فیش توسط مدیر'
+              : activeTopupTx.status === 'VERIFIED'
+                ? 'تایید و شارژشده'
+                : activeTopupTx.status === 'FAILED'
+                  ? 'فیش رد شده — ارسال مجدد فیش'
+                  : 'در انتظار واریز و ارسال تصویر فیش'}
+          </span>
+        </div>
+
+        {activeTopupTx.failure_reason && (
+          <div class="mt-4 rounded-lg border border-danger/40 bg-danger/10 p-3.5 text-xs text-danger">
+            <strong>علت رد فیش قبلی توسط مدیر:</strong> {activeTopupTx.failure_reason}
+          </div>
+        )}
+
+        {activeTopupTx.status !== 'VERIFIED' && (
+          <div class="mt-5 grid gap-6 lg:grid-cols-2">
+            <div class="space-y-3">
+              <h3 class="text-xs font-bold text-ink">۱. واریز به یکی از حساب‌های بانکی رسمی GarGift+:</h3>
+              {activeBankAccounts.map((acc) => (
+                <div class="rounded-xl border border-line bg-paper p-4 space-y-2 text-xs">
+                  <div class="flex items-center justify-between">
+                    <span class="font-bold text-brand-fg">{acc.bank_name}</span>
+                    <span class="font-semibold text-ink">به نام: {acc.account_holder}</span>
+                  </div>
+                  <div class="flex items-center justify-between rounded-lg bg-surface px-3 py-2">
+                    <span class="text-muted">شماره کارت:</span>
+                    <strong dir="ltr" class="ltr-inline font-mono text-sm tracking-wider text-ink">
+                      {formatCardNumber(acc.card_number, true)}
+                    </strong>
+                  </div>
+                  {acc.iban && (
+                    <div class="flex items-center justify-between text-[11px] text-muted">
+                      <span>شماره شبا:</span>
+                      <span dir="ltr" class="ltr-inline font-mono text-ink">{acc.iban}</span>
+                    </div>
+                  )}
+                  {acc.instructions && (
+                    <p class="text-[11px] text-muted border-t border-line pt-2">{acc.instructions}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div>
+              {activeTopupTx.status === 'PAYMENT_REVIEW' ? (
+                <div class="rounded-xl border border-accent/35 bg-paper p-5 text-xs space-y-2">
+                  <p class="font-bold text-accent-fg">فیش واریزی شما دریافت شده و در دست بررسی است.</p>
+                  <p class="text-muted">
+                    به محض تایید فیش توسط واحد مالی، مبلغ{' '}
+                    <strong class="text-ink">{formatMoney(activeTopup.amount, activeTopup.currency)}</strong>{' '}
+                    به‌طور خودکار به موجودی کیف پول شما افزوده می‌شود.
+                  </p>
+                  {activeTopupReceipts[0] && (
+                    <div class="pt-2">
+                      <a
+                        href={`/api/account/receipts/${activeTopupReceipts[0].public_id}/image`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="inline-flex items-center gap-1 text-brand-fg font-semibold hover:underline"
+                      >
+                        مشاهده تصویر فیش ارسالی &larr;
+                      </a>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <form
+                  method="POST"
+                  action="/api/payments/bank-transfer/receipt"
+                  enctype="multipart/form-data"
+                  class="rounded-xl border border-line bg-paper p-4 space-y-4 text-xs"
+                >
+                  <h3 class="font-bold text-ink">۲. ثبت اطلاعات و بارگذاری تصویر فیش واریزی:</h3>
+                  <input type="hidden" name="payment_tx_id" value={activeTopupTx.public_id} />
+                  <input
+                    type="hidden"
+                    name="return_url"
+                    value={`/account/wallet?topup=${activeTopup.public_id}`}
+                  />
+
+                  {activeBankAccounts.length > 1 && (
+                    <label class="block space-y-1 font-semibold text-ink">
+                      <span>حساب مقصد واریزشده</span>
+                      <select
+                        name="bank_account_id"
+                        class="w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-ink"
+                      >
+                        {activeBankAccounts.map((acc) => (
+                          <option value={acc.public_id}>
+                            {acc.bank_name} — {acc.account_holder}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+
+                  <label class="block space-y-1 font-semibold text-ink">
+                    <span>شماره پیگیری / مرجع بانکی (اختیاری)</span>
+                    <input
+                      type="text"
+                      name="tracking_code"
+                      dir="ltr"
+                      placeholder="مثلاً: 123456789"
+                      class="ltr-inline w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-ink"
+                    />
+                  </label>
+
+                  <label class="block space-y-1 font-semibold text-ink">
+                    <span>تصویر واضح رسید بانکی (JPG، PNG، WebP — حداکثر ۵ مگابایت) *</span>
+                    <input
+                      type="file"
+                      name="receipt"
+                      required
+                      accept="image/jpeg,image/png,image/webp,image/gif"
+                      class="w-full rounded-lg border border-line bg-surface px-3 py-2 text-xs text-ink"
+                    />
+                  </label>
+
+                  <button
+                    type="submit"
+                    class="w-full rounded-lg bg-brand px-4 py-2.5 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover"
+                  >
+                    ارسال فیش واریزی برای بررسی و شارژ کیف پول
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+    )}
+
+    <div class="grid gap-6 lg:grid-cols-12">
+      {/* فرم شارژ کیف پول */}
+      <section class="rounded-xl border border-line bg-surface p-5 sm:p-6 lg:col-span-5">
+        <div class="rounded-xl border border-brand/30 bg-paper p-4 mb-5">
+          <span class="text-xs font-medium text-muted">موجودی فعلی قابل استفاده</span>
+          <p class="gg-numeric mt-1.5 text-2xl font-extrabold text-accent-fg">
+            {formatMoney(wallet.balance, wallet.currency)}
+          </p>
+          <p class="mt-1 text-[11px] text-muted">
+            قابل استفاده برای پرداخت آنی تمامی محصولات دیجیتال GarGift+
+          </p>
+        </div>
+
+        <h2 class="text-base font-bold text-ink">افزایش موجودی کیف پول</h2>
+        <p class="mt-1 text-xs text-muted">
+          مبلغ مورد نظر خود را به تومان انتخاب یا وارد کنید ({formatMoney(minTopup, 'irt')} تا{' '}
+          {formatMoney(maxTopup, 'irt')}).
+        </p>
+
+        <form method="POST" action="/api/wallet/topup" class="mt-4 space-y-4">
+          <div>
+            <span class="block text-xs font-semibold text-ink mb-2">مبالغ پیشنهادی سریع:</span>
+            <div class="grid grid-cols-3 gap-2">
+              {presetAmounts.map((amt) => (
+                <button
+                  type="button"
+                  data-topup-preset={amt}
+                  class="gg-numeric rounded-lg border border-line bg-paper px-2.5 py-2 text-xs font-semibold text-ink transition-colors hover:border-brand hover:text-brand-fg"
+                >
+                  {formatMoney(amt, 'irt')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label class="block space-y-1.5 text-xs font-semibold text-ink">
+            <span>مبلغ شارژ (تومان) *</span>
+            <input
+              type="text"
+              inputmode="numeric"
+              name="amount"
+              data-topup-amount-input
+              required
+              dir="ltr"
+              value="100000"
+              placeholder="100000"
+              class="ltr-inline w-full rounded-lg border border-line bg-paper px-3.5 py-2.5 text-sm font-bold text-ink focus:border-brand focus:outline-none"
+            />
+          </label>
+
+          <fieldset class="space-y-2">
+            <legend class="text-xs font-semibold text-ink">انتخاب روش پرداخت شارژ:</legend>
+
+            {zarinpalAvailable && (
+              <label class="flex cursor-pointer items-center justify-between rounded-xl border border-line bg-paper p-3 text-xs transition-colors hover:border-brand">
+                <div class="flex items-center gap-2.5">
+                  <input
+                    type="radio"
+                    name="method"
+                    value="zarinpal"
+                    checked
+                    class="accent-brand"
+                  />
+                  <div>
+                    <span class="font-bold text-ink">درگاه آنلاین زرین‌پال</span>
+                    <span class="block text-[11px] text-muted">شارژ آنی و خودکار با تمامی کارت‌های شتاب</span>
+                  </div>
+                </div>
+              </label>
+            )}
+
+            {zibalAvailable && (
+              <label class="flex cursor-pointer items-center justify-between rounded-xl border border-line bg-paper p-3 text-xs transition-colors hover:border-brand">
+                <div class="flex items-center gap-2.5">
+                  <input
+                    type="radio"
+                    name="method"
+                    value="zibal"
+                    checked={!zarinpalAvailable}
+                    class="accent-brand"
+                  />
+                  <div>
+                    <span class="font-bold text-ink">درگاه آنلاین زیبال</span>
+                    <span class="block text-[11px] text-muted">پرداخت مستقیم شتاب و شارژ خودکار پس از تایید</span>
+                  </div>
+                </div>
+              </label>
+            )}
+
+            {bankTransferAvailable && (
+              <label class="flex cursor-pointer items-center justify-between rounded-xl border border-line bg-paper p-3 text-xs transition-colors hover:border-brand">
+                <div class="flex items-center gap-2.5">
+                  <input
+                    type="radio"
+                    name="method"
+                    value="bank_transfer"
+                    checked={!zarinpalAvailable && !zibalAvailable}
+                    class="accent-brand"
+                  />
+                  <div>
+                    <span class="font-bold text-ink">کارت‌به‌کارت / واریز بانکی</span>
+                    <span class="block text-[11px] text-muted">واریز به حساب و بارگذاری تصویر فیش جهت تایید مدیریت</span>
+                  </div>
+                </div>
+              </label>
+            )}
+
+            {!zarinpalAvailable && !zibalAvailable && !bankTransferAvailable && (
+              <p class="rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                در حال حاضر هیچ درگاه یا حساب بانکی فعالی برای شارژ کیف پول پیکربندی نشده است.
+              </p>
+            )}
+          </fieldset>
+
+          <button
+            type="submit"
+            disabled={!zarinpalAvailable && !zibalAvailable && !bankTransferAvailable}
+            class="w-full rounded-lg bg-brand px-4 py-3 text-xs font-bold text-on-brand transition-colors hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            ثبت درخواست و ادامه پرداخت
+          </button>
+        </form>
+      </section>
+
+      {/* ستون تاریخچه شارژها و گردش کیف پول */}
+      <div class="space-y-6 lg:col-span-7">
+        <section class="rounded-xl border border-line bg-surface p-5">
+          <h2 class="text-sm font-bold text-ink">درخواست‌های شارژ اخیر</h2>
+          {topups.length === 0 ? (
+            <p class="mt-3 rounded-lg border border-line bg-paper p-4 text-center text-xs text-muted">
+              هنوز درخواست شارژی ثبت نکرده‌اید.
+            </p>
+          ) : (
+            <div class="mt-3 divide-y divide-line">
+              {topups.map((t) => (
+                <div class="flex flex-wrap items-center justify-between gap-3 py-3 text-xs">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="font-bold text-ink">#{t.public_id}</span>
+                      <span class="text-muted">
+                        ({t.payment_method === 'bank_transfer'
+                          ? 'کارت‌به‌کارت'
+                          : t.payment_method === 'zarinpal'
+                            ? 'زرین‌پال'
+                            : 'زیبال'})
+                      </span>
+                    </div>
+                    <div class="mt-0.5 text-[11px] text-faint">
+                      {formatJalaliDateTime(t.created_at, { timeZone })}
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-3">
+                    <span class="gg-numeric font-bold text-ink">
+                      {formatMoney(t.amount, t.currency)}
+                    </span>
+                    <span
+                      class:list={[
+                        'rounded-md px-2.5 py-1 text-[11px] font-bold',
+                        t.status === 'completed'
+                          ? 'bg-success/15 text-success'
+                          : t.status === 'failed' || t.status === 'cancelled'
+                            ? 'bg-danger/15 text-danger'
+                            : 'bg-warning/15 text-warning',
+                      ]}
+                    >
+                      {t.status === 'completed'
+                        ? 'شارژشده'
+                        : t.status === 'payment_review'
+                          ? 'در انتظار بررسی فیش'
+                          : t.status === 'failed'
+                            ? 'ناموفق / ردشده'
+                            : 'در انتظار پرداخت'}
+                    </span>
+                    {t.payment_method === 'bank_transfer' && t.status !== 'completed' && (
+                      <a
+                        href={`/account/wallet?topup=${t.public_id}#topup-bank`}
+                        class="rounded-lg border border-brand bg-brand/10 px-2.5 py-1 text-[11px] font-bold text-brand-fg hover:bg-brand hover:text-on-brand"
+                      >
+                        ارسال / وضعیت فیش
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section class="rounded-xl border border-line bg-surface p-5">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-sm font-bold text-ink">گردش حساب کیف پول</h2>
+            <a href="/account/transactions" class="text-xs font-semibold text-brand-fg hover:underline">
+              مشاهده کامل &larr;
+            </a>
+          </div>
+          {walletTxs.length === 0 ? (
+            <p class="rounded-lg border border-line bg-paper p-4 text-center text-xs text-muted">
+              تراکنشی در کیف پول ثبت نشده است.
+            </p>
+          ) : (
+            <div class="divide-y divide-line">
+              {walletTxs.map((tx) => (
+                <div class="flex items-center justify-between gap-3 py-3 text-xs">
+                  <div>
+                    <span class="font-bold text-ink">{WALLET_TX_LABELS[tx.type]}</span>
+                    {tx.reason && <p class="mt-0.5 text-[11px] text-muted">{tx.reason}</p>}
+                    <div class="mt-0.5 text-[11px] text-faint">
+                      {formatJalaliDateTime(tx.created_at, { timeZone })}
+                    </div>
+                  </div>
+                  <div class="text-end">
+                    <div
+                      class:list={[
+                        'gg-numeric font-bold',
+                        tx.amount > 0 ? 'text-success' : 'text-danger',
+                      ]}
+                    >
+                      {tx.amount > 0 ? '+' : ''}
+                      {formatMoney(tx.amount, tx.currency)}
+                    </div>
+                    <div class="gg-numeric mt-0.5 text-[11px] text-muted">
+                      مانده: {formatMoney(tx.balance_after, tx.currency)}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
+  </AccountShell>
+
+  <script>
+    // @ts-nocheck
+    const input = document.querySelector('[data-topup-amount-input]');
+    for (const btn of document.querySelectorAll('[data-topup-preset]')) {
+      btn.addEventListener('click', () => {
+        if (input instanceof HTMLInputElement) {
+          input.value = btn.getAttribute('data-topup-preset') || '';
+        }
+      });
+    }
+  </script>
+</Layout>

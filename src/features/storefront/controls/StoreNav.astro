@@ -1,48 +1,102 @@
 ---
 import type { StorefrontLink } from '../models';
+import { fa } from '../../../i18n/fa';
 
 /**
- * Merchant navigation: the inline row and its mobile disclosure.
- *
- * The disclosure is a native <details>, not a checkbox+label, because it
- * carries the disclosure role and expanded state with NO JavaScript. Navigation
- * is already in the HTML, so making it script-dependent would be a strictly
- * worse trade — which is exactly the kind of decision that should not live in
- * an editable file. `data-nav-disclosure` is part of that contract.
+ * ناوبری اصلی و منوی کشویی موبایل RTL برای GarGift+
+ * از تگ استاندارد <details> استفاده می‌کند تا بدون نیاز به جاوااسکریپت نیز کار کند.
  */
 interface Props {
   links: StorefrontLink[];
-  /**
-   * Two roots, so two class props: the component renders an inline row AND a
-   * disclosure, which sit at different breakpoints and different places in the
-   * header. One `class` could only ever style one of them.
-   */
+  categoryLinks?: StorefrontLink[];
+  accountHref?: string | null;
+  mode?: 'both' | 'inline' | 'disclosure';
   class?: string;
   disclosureClass?: string;
 }
 
 const {
   links,
-  class: inlineClass = 'hidden min-w-0 items-center gap-4 xl:flex xl:gap-6',
+  categoryLinks = [],
+  accountHref = null,
+  mode = 'both',
+  class: inlineClass = 'hidden min-w-0 items-center gap-4 xl:flex xl:gap-5',
   disclosureClass = 'relative order-last xl:hidden',
 } = Astro.props;
+
+const showInline =
+  (mode === 'both' || mode === 'inline') &&
+  (links.length > 0 || categoryLinks.length > 0);
+const showDisclosure =
+  (mode === 'both' || mode === 'disclosure') &&
+  (links.length > 0 || categoryLinks.length > 0 || Boolean(accountHref));
 ---
 
-{/* Merchant navigation, inline only at xl. Below that the row also holds
-    the logo, the search field, and up to four store controls, so six
-    merchant links cannot fit — 1024px is the tightest case, which is
-    why the disclosure runs to xl rather than lg.
-
-    Labels size to their content and ellipsize ONLY when the row runs
-    out. A fixed max-width (this was 12ch) truncates unconditionally:
-    "Privacy Policy" lost its tail while 96px of header sat empty.
-    `min-w-0` is what makes the shrink possible — flex items default to
-    min-width:auto, which would otherwise force overflow instead. */}
 {
-  links.length > 0 && (
+  showInline && (
     <div class={inlineClass}>
+      {categoryLinks.length > 0 && (
+        <details class="group relative shrink-0">
+          <summary class="inline-flex cursor-pointer list-none items-center gap-1.5 whitespace-nowrap rounded-lg border border-brand/25 bg-brand-soft/60 px-3 py-1.5 text-xs font-bold text-brand-fg transition-colors hover:border-brand hover:bg-brand-soft">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="3" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="3" width="7" height="7" rx="1" />
+              <rect x="14" y="14" width="7" height="7" rx="1" />
+              <rect x="3" y="14" width="7" height="7" rx="1" />
+            </svg>
+            <span>{fa.navigation.categories}</span>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+              class="transition-transform group-open:rotate-180"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </summary>
+          <div class="absolute start-0 z-50 mt-2 w-60 rounded-xl border border-line bg-surface p-2 shadow-xl">
+            <div class="flex flex-col gap-0.5 text-xs font-medium">
+              {categoryLinks.map((cat) => (
+                <a
+                  href={cat.href}
+                  class="flex items-center justify-between rounded-lg px-3 py-2 text-ink transition-colors hover:bg-paper hover:text-brand-fg"
+                >
+                  <span>{cat.text}</span>
+                  <span aria-hidden="true" class="text-faint">&larr;</span>
+                </a>
+              ))}
+              <div class="my-1 border-t border-line"></div>
+              <a
+                href="/products"
+                class="flex items-center justify-between rounded-lg px-3 py-2 font-bold text-brand-fg transition-colors hover:bg-brand-soft/60"
+              >
+                <span>{fa.catalog.allProducts}</span>
+                <span aria-hidden="true">&larr;</span>
+              </a>
+            </div>
+          </div>
+        </details>
+      )}
       {links.map((link) => (
-        <a href={link.href} title={link.text} class="min-w-0 truncate hover:text-brand">
+        <a
+          href={link.href}
+          title={link.text}
+          class="min-w-0 truncate transition-colors hover:text-brand-fg"
+        >
           {link.text}
         </a>
       ))}
@@ -50,15 +104,11 @@ const {
   )
 }
 {
-  links.length > 0 && (
-    /* order-last puts the hamburger at the far right of the row. In
-       source order it precedes Search/Cart/Account so the menu reads
-       first for a screen reader and in the no-CSS fallback, but
-       visually it belongs at the edge, past the store controls. */
+  showDisclosure && (
     <details data-nav-disclosure class={disclosureClass}>
       <summary
-        aria-label="Menu"
-        class="flex cursor-pointer list-none items-center hover:text-brand"
+        aria-label={fa.navigation.menu}
+        class="flex min-h-8 min-w-8 sm:min-h-10 sm:min-w-10 cursor-pointer list-none items-center justify-center rounded-lg border border-line bg-surface px-2 sm:px-2.5 text-ink transition-colors hover:border-brand hover:text-brand-fg"
       >
         <svg
           width="18"
@@ -73,13 +123,70 @@ const {
         </svg>
       </summary>
       <div
-        class="absolute right-0 z-40 mt-3 flex min-w-44 flex-col gap-3 border border-line bg-surface p-4 shadow-lg"
+        class="fixed inset-x-3 top-16 z-50 flex max-h-[calc(100vh-5rem)] flex-col gap-1.5 overflow-y-auto rounded-2xl border border-line bg-surface p-3 shadow-xl sm:absolute sm:inset-x-auto sm:end-0 sm:top-auto sm:mt-3 sm:w-72"
       >
-        {links.map((link) => (
-          <a href={link.href} class="hover:text-brand">
-            {link.text}
-          </a>
-        ))}
+        {links.length > 0 && (
+          <div class="flex flex-col gap-0.5">
+            {links.map((link) => (
+              <a
+                href={link.href}
+                class="rounded-lg px-3 py-2 text-sm font-medium text-ink transition-colors hover:bg-surface-elevated hover:text-brand-fg"
+              >
+                {link.text}
+              </a>
+            ))}
+          </div>
+        )}
+
+        {categoryLinks.length > 0 && (
+          <div class="border-t border-line pt-2">
+            <p class="px-3 pb-1 text-[11px] font-bold text-faint">{fa.navigation.categories}</p>
+            <div class="flex flex-col gap-0.5">
+              {categoryLinks.map((cat) => (
+                <a
+                  href={cat.href}
+                  class="flex items-center justify-between rounded-lg px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:bg-surface-elevated hover:text-brand-fg"
+                >
+                  <span>{cat.text}</span>
+                  <span aria-hidden="true" class="text-faint">&larr;</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {accountHref && (
+          <div class="mt-1 border-t border-line pt-2.5 flex flex-col gap-1.5">
+            <a
+              href={accountHref}
+              data-mobile-account-link
+              class="flex items-center justify-between rounded-xl bg-brand/10 px-3 py-2.5 text-xs font-bold text-brand-fg transition-colors hover:bg-brand hover:text-on-brand"
+            >
+              <span data-mobile-account-label>{fa.navigation.account}</span>
+              <span aria-hidden="true">&larr;</span>
+            </a>
+            <div data-mobile-account-sublinks class="hidden flex-col gap-0.5 ps-2 text-xs">
+              <a href="/account" class="rounded-md px-2.5 py-1.5 text-muted hover:text-ink">
+                {fa.accountMenu.dashboard}
+              </a>
+              <a href="/account/orders" class="rounded-md px-2.5 py-1.5 text-muted hover:text-ink">
+                {fa.accountMenu.orders}
+              </a>
+              <a href="/account/wallet" class="rounded-md px-2.5 py-1.5 text-muted hover:text-ink">
+                {fa.accountMenu.wallet}
+              </a>
+              <a href="/account/transactions" class="rounded-md px-2.5 py-1.5 text-muted hover:text-ink">
+                {fa.accountMenu.transactions}
+              </a>
+              <a href="/account/profile" class="rounded-md px-2.5 py-1.5 text-muted hover:text-ink">
+                {fa.accountMenu.profile}
+              </a>
+              <a href="/account/logout" class="rounded-md px-2.5 py-1.5 text-danger hover:underline">
+                {fa.accountMenu.logout}
+              </a>
+            </div>
+          </div>
+        )}
       </div>
     </details>
   )

@@ -1,0 +1,389 @@
+---
+import type { Order } from '../orders/db';
+import type { CustomerOrderDeliveryView } from './db';
+import {
+  DELIVERY_SECTION_TYPE_LABELS,
+  isSafeActivationUrl,
+  renderSafeInstructionsHtml,
+} from './sections';
+import {
+  buildCustomerOrderTimeline,
+  CUSTOMER_FULFILLMENT_MESSAGES,
+  FULFILLMENT_STATE_LABELS,
+  ITEM_FULFILLMENT_STATE_LABELS,
+  toOrderFulfillmentState,
+} from './status';
+import { formatJalaliDateTime, toPersianDigits } from '../../lib/format';
+
+interface Props {
+  order: Order;
+  deliveryView: CustomerOrderDeliveryView;
+  timeZone: string;
+  attachmentDownloadBasePath: string;
+}
+
+const { order, deliveryView, timeZone, attachmentDownloadBasePath } = Astro.props;
+
+const canonicalState = toOrderFulfillmentState(deliveryView.fulfillmentStatus);
+const statusBannerMessage = CUSTOMER_FULFILLMENT_MESSAGES[canonicalState];
+const statusLabel = FULFILLMENT_STATE_LABELS[canonicalState];
+
+const timelineSteps = buildCustomerOrderTimeline({
+  orderCreatedAt: order.created_at,
+  paymentState: deliveryView.paymentState,
+  fulfillmentStatus: deliveryView.fulfillmentStatus,
+  processingStartedAt: deliveryView.processingStartedAt,
+  readyForDeliveryAt: deliveryView.readyForDeliveryAt,
+  fulfilledAt: deliveryView.fulfilledAt,
+});
+
+function getBannerStyle(state: string): string {
+  switch (state) {
+    case 'FULFILLED':
+      return 'border-success/40 bg-success/10 text-success';
+    case 'PARTIALLY_FULFILLED':
+      return 'border-brand/40 bg-brand/10 text-brand-fg';
+    case 'READY_FOR_DELIVERY':
+      return 'border-accent/40 bg-accent/10 text-accent-fg';
+    case 'PROCESSING':
+      return 'border-info/40 bg-info/10 text-info';
+    case 'CANCELLED':
+      return 'border-danger/40 bg-danger/10 text-danger';
+    default:
+      return 'border-warning/40 bg-warning/10 text-warning';
+  }
+}
+
+const hasPublishedItems = deliveryView.items.some((it) => it.isPublished);
+---
+
+<section id="customer-delivery-panel" class="mt-6 space-y-6">
+  {/* ۱. کارت وضعیت کلی تحویل و تایم‌لاین مراحل سفارش */}
+  <div class="rounded-2xl border border-line bg-surface p-5 shadow-xs sm:p-6">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
+      <div>
+        <h2 class="text-base font-extrabold text-ink">وضعیت پردازش و تحویل سفارش دیجیتال</h2>
+        <p class="mt-1 text-xs text-muted">
+          پیگیری لحظه‌ای مراحل آماده‌سازی و دریافت کدها، لایسنس‌ها و فایل‌های سفارش شما
+        </p>
+      </div>
+      <span
+        class:list={[
+          'inline-flex items-center rounded-xl border px-3 py-1.5 text-xs font-extrabold',
+          getBannerStyle(canonicalState),
+        ]}
+      >
+        {statusLabel}
+      </span>
+    </div>
+
+    {/* پیام راهنمای وضعیت فعلی */}
+    <div
+      class:list={[
+        'mt-4 rounded-xl border p-4 text-xs leading-relaxed',
+        getBannerStyle(canonicalState),
+      ]}
+    >
+      <p class="font-bold">{statusBannerMessage}</p>
+    </div>
+
+    {/* تایم‌لاین ۵ مرحله‌ای فارسی با تاریخ جلالی */}
+    <ol class="mt-6 grid gap-3 sm:grid-cols-5">
+      {timelineSteps.map((step, idx) => {
+        const isCompleted = step.state === 'completed';
+        const isCurrent = step.state === 'current';
+        const isCancelled = step.state === 'cancelled';
+        return (
+          <li
+            class:list={[
+              'relative rounded-xl border p-3.5 text-xs transition',
+              isCompleted
+                ? 'border-success/35 bg-success/5 text-ink'
+                : isCurrent
+                  ? 'border-brand bg-brand/10 text-ink ring-1 ring-brand/30'
+                  : isCancelled
+                    ? 'border-danger/35 bg-danger/5 text-danger'
+                    : 'border-line bg-paper/60 text-muted',
+            ]}
+          >
+            <div class="flex items-center gap-2">
+              <span
+                class:list={[
+                  'inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-extrabold',
+                  isCompleted
+                    ? 'bg-success text-white'
+                    : isCurrent
+                      ? 'bg-brand text-on-brand'
+                      : isCancelled
+                        ? 'bg-danger text-white'
+                        : 'bg-surface text-muted border border-line',
+                ]}
+              >
+                {isCompleted ? '✓' : toPersianDigits(idx + 1)}
+              </span>
+              <span class="font-extrabold">{step.label}</span>
+            </div>
+            <p class="mt-2 text-[11px] leading-relaxed text-muted">{step.description}</p>
+            {step.timestamp && (
+              <p class="mt-2 font-mono text-[10px] font-semibold text-ink/80">
+                {formatJalaliDateTime(step.timestamp, { timeZone })}
+              </p>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  </div>
+
+  {/* ۲. باکس تحویل هر آیتم سفارش (کدها، کلیدهای فعال‌سازی، لینک‌ها، راهنما و فایل‌های پیوست) */}
+  <div class="space-y-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h3 class="text-sm font-extrabold text-ink">
+        محتوای تحویل اقلام سفارش ({toPersianDigits(deliveryView.items.length)} مورد)
+      </h3>
+      {hasPublishedItems && (
+        <span class="text-xs font-semibold text-success">
+          اطلاعات تحویل شما آماده استفاده است
+        </span>
+      )}
+    </div>
+
+    {deliveryView.items.map((item, idx) => (
+      <article
+        id={`customer-delivery-item-${item.orderItemPublicId ?? item.orderItemId}`}
+        class="rounded-2xl border border-line bg-surface p-5 shadow-xs sm:p-6"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3.5">
+          <div class="flex items-center gap-2.5">
+            <span class="inline-flex size-6 items-center justify-center rounded-full bg-brand/15 text-xs font-extrabold text-brand-fg">
+              {toPersianDigits(idx + 1)}
+            </span>
+            <h4 class="text-sm font-extrabold text-ink">{item.itemName}</h4>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <span
+              class:list={[
+                'rounded-lg border px-2.5 py-1 text-xs font-bold',
+                item.isPublished
+                  ? 'border-success/35 bg-success/15 text-success'
+                  : item.itemFulfillmentStatus === 'ready_for_delivery'
+                    ? 'border-accent/35 bg-accent/15 text-accent-fg'
+                    : item.itemFulfillmentStatus === 'processing'
+                      ? 'border-info/35 bg-info/15 text-info'
+                      : 'border-warning/35 bg-warning/15 text-warning',
+              ]}
+            >
+              {ITEM_FULFILLMENT_STATE_LABELS[item.itemFulfillmentStatus]}
+            </span>
+
+            {item.isPublished && item.publishedAt && (
+              <span class="text-[11px] text-muted">
+                تحویل در {formatJalaliDateTime(item.publishedAt, { timeZone })}
+                {item.versionNumber > 1 && ` · نسخه ${toPersianDigits(item.versionNumber)}`}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {!item.isPublished ? (
+          <div class="mt-4 rounded-xl border border-line bg-paper p-4 text-xs text-muted">
+            <p class="font-bold text-ink">
+              این آیتم در حال آماده‌سازی و بررسی توسط کارشناسان GarGift+ است.
+            </p>
+            <p class="mt-1 leading-relaxed">
+              به محض ثبت و انتشار کد، لایسنس یا تایید شارژ اکانت توسط اپراتور، جزئیات کامل تحویل در همین بخش نمایش داده خواهد شد و از طریق ایمیل نیز به شما اطلاع‌رسانی می‌شود.
+            </p>
+          </div>
+        ) : (
+          <div class="mt-4 space-y-4">
+            {/* پیام اختصاصی اپراتور برای مشتری */}
+            {item.customerNote && (
+              <div class="rounded-xl border border-brand/30 bg-brand/5 p-3.5 text-xs">
+                <p class="font-bold text-brand-fg">پیام کارشناس تحویل:</p>
+                <p class="mt-1 whitespace-pre-line leading-relaxed text-ink">{item.customerNote}</p>
+              </div>
+            )}
+
+            {/* بخش‌های تحویل ساختاریافته */}
+            <div class="space-y-3.5">
+              {item.sections.map((sec) => {
+                const title = sec.title || DELIVERY_SECTION_TYPE_LABELS[sec.type];
+                const isCodeOrKey = sec.type === 'gift_card_code' || sec.type === 'license_key';
+                const isLink = sec.type === 'activation_link' && isSafeActivationUrl(sec.url ?? '');
+                const isRich = sec.type === 'rich_instructions';
+
+                return (
+                  <div class="rounded-xl border border-line bg-paper p-4">
+                    <div class="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+                      <span class="text-xs font-extrabold text-ink">{title}</span>
+                      <span class="rounded bg-surface px-2 py-0.5 text-[10px] font-semibold text-muted border border-line">
+                        {DELIVERY_SECTION_TYPE_LABELS[sec.type]}
+                      </span>
+                    </div>
+
+                    {isCodeOrKey && sec.value && (
+                      <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-brand/35 bg-surface px-4 py-3">
+                        <code
+                          dir="ltr"
+                          class="ltr-inline select-all font-mono text-sm font-extrabold tracking-wider text-ink break-all"
+                        >
+                          {sec.value}
+                        </code>
+                        {sec.copyable !== false && (
+                          <button
+                            type="button"
+                            data-copy-delivery-value={sec.value}
+                            class="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+                          >
+                            <span>کپی کد</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {isLink && sec.url && (
+                      <div class="space-y-2.5">
+                        <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3">
+                          <span
+                            dir="ltr"
+                            class="ltr-inline font-mono text-xs text-muted break-all"
+                          >
+                            {sec.url}
+                          </span>
+                          <div class="flex flex-wrap items-center gap-2">
+                            <a
+                              href={sec.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              class="inline-flex items-center gap-1.5 rounded-lg bg-brand px-4 py-2 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+                            >
+                              <span>{sec.linkLabel || 'ورود به لینک فعال‌سازی'}</span>
+                              <span aria-hidden="true">&nearr;</span>
+                            </a>
+                            {sec.copyable !== false && (
+                              <button
+                                type="button"
+                                data-copy-delivery-value={sec.url}
+                                class="rounded-lg border border-line bg-paper px-3 py-2 text-xs font-bold text-ink hover:border-brand hover:text-brand-fg"
+                              >
+                                کپی لینک
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {sec.value && (
+                          <p class="whitespace-pre-line text-xs leading-relaxed text-ink">
+                            {sec.value}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {sec.type === 'custom_text' && sec.value && (
+                      <div class="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-line bg-surface p-3.5">
+                        <p class="whitespace-pre-line text-xs font-medium leading-relaxed text-ink break-words">
+                          {sec.value}
+                        </p>
+                        {sec.copyable !== false && (
+                          <button
+                            type="button"
+                            data-copy-delivery-value={sec.value}
+                            class="shrink-0 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-bold text-ink hover:border-brand hover:text-brand-fg"
+                          >
+                            کپی متن
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {isRich && (sec.instructions || sec.value) && (
+                      <div
+                        class="rounded-xl border border-line bg-surface p-4 text-xs"
+                        set:html={renderSafeInstructionsHtml(sec.instructions || sec.value)}
+                      />
+                    )}
+
+                    {!isRich && sec.instructions && (
+                      <p class="mt-2.5 text-xs leading-relaxed text-muted">
+                        <strong class="font-bold text-ink">راهنما:</strong> {sec.instructions}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* فایل‌های پیوست منتشرشده برای دانلود امن توسط مشتری */}
+            {item.attachments.length > 0 && (
+              <div class="rounded-xl border border-line bg-paper p-4">
+                <h5 class="text-xs font-extrabold text-ink">
+                  فایل‌های پیوست و اسناد تحویل ({toPersianDigits(item.attachments.length)} فایل)
+                </h5>
+                <ul class="mt-3 divide-y divide-line text-xs">
+                  {item.attachments.map((att) => (
+                    <li class="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span dir="ltr" class="ltr-inline font-mono font-bold text-ink">
+                          {att.fileName}
+                        </span>
+                        <span class="text-[11px] text-muted">
+                          ({Math.max(1, Math.round(att.sizeBytes / 1024))} KB)
+                        </span>
+                      </div>
+                      <a
+                        href={`${attachmentDownloadBasePath}/${att.publicId}`}
+                        class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-xs font-bold text-on-brand transition hover:bg-brand-hover"
+                      >
+                        <span>دانلود فایل پیوست</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </article>
+    ))}
+  </div>
+</section>
+
+<script is:inline>
+  (() => {
+    const copyButtons = document.querySelectorAll('[data-copy-delivery-value]');
+    copyButtons.forEach((btn) => {
+      if (btn.dataset.bound === '1') return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', async () => {
+        const value = btn.getAttribute('data-copy-delivery-value') || '';
+        if (!value) return;
+        const originalText = btn.textContent;
+        try {
+          await navigator.clipboard.writeText(value);
+          btn.textContent = 'کپی شد ✓';
+          setTimeout(() => {
+            btn.textContent = originalText;
+          }, 2000);
+        } catch {
+          // Fallback for restricted clipboard contexts
+          const ta = document.createElement('textarea');
+          ta.value = value;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand('copy');
+            btn.textContent = 'کپی شد ✓';
+            setTimeout(() => {
+              btn.textContent = originalText;
+            }, 2000);
+          } finally {
+            document.body.removeChild(ta);
+          }
+        }
+      });
+    });
+  })();
+</script>
